@@ -254,11 +254,9 @@ export function financialTransactionToken(row: FinancialTransactionTokenRow): st
 }
 
 /**
- * Stable actor for the single-user database.
- *
- * Routes historically pass a raw body to services and do not carry the session
- * user id, so transaction writes resolve the one local user here. Tests may
- * inject an explicit actor through `TransactionServiceOptions.actorId`.
+ * Compatibility fallback for legacy single-ledger fixtures. Production private
+ * ledgers contain no credentials: tenant service graphs must supply the immutable
+ * session user through `TransactionServiceOptions.actorId`, including nested tools.
  */
 export function resolveFinancialActorId(db: Db): string {
   const row = db.prepare('SELECT id FROM users ORDER BY created_at, id LIMIT 1').get() as

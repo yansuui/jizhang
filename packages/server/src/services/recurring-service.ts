@@ -110,6 +110,7 @@ interface OccurrenceRow {
 }
 
 export interface RecurringServiceOptions {
+  readonly actorId?: string | undefined;
   readonly now?: (() => number) | undefined;
 }
 

@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initializeDatabase, type Db } from '../src/db/index.js';
 import { PortabilityService } from '../src/services/portability-service.js';
 import { ValidationError } from '../src/services/transaction-service.js';
+import { writeFundPurpose } from '../src/services/financial-fund-purpose-store.js';
 
 const FOOD = 'builtin-expense-food';
 const TRANSPORT = 'builtin-expense-transport';
@@ -106,7 +107,7 @@ beforeEach(() => {
   db.pragma('foreign_keys = ON');
   initializeDatabase(db, null);
   dataDir = mkdtempSync(join(tmpdir(), 'jizhang-portability-'));
-  service = new PortabilityService(db, { dataDir });
+  service = new PortabilityService(db, { dataDir, dbFile: join(dataDir, 'jizhang.db') });
 });
 
 afterEach(() => {
@@ -159,7 +160,7 @@ describe('export', () => {
 
     // Quoted in the file...
     expect(csv).toContain('"午饭, 加饮料"');
-    expect(header).toHaveLength(9);
+    expect(header).toHaveLength(10);
 
     // ...and the importer's parser reads it back as ONE field, which is what actually
     // protects the columns. A `split(',')` parser would produce an extra field here and
@@ -213,6 +214,32 @@ describe('export', () => {
 // ---------------------------------------------------------------------------
 
 describe('round trip', () => {
+  it('preserves exported four-purpose evidence and rejects unknown purpose values atomically', () => {
+    const id = addTxn({ id: 'purpose-roundtrip' });
+    writeFundPurpose(db, id, 'reserve', null, null, Date.now(), true);
+    const csv = service.exportTransactionsCsv();
+    expect(csv).toContain('reserve');
+    db.prepare('DELETE FROM financial_fund_purpose_events').run();
+    db.prepare('DELETE FROM financial_fund_purposes').run();
+    db.prepare('DELETE FROM transactions').run();
+    expect(() => service.importTransactionsCsv(csv.replace('reserve', 'invented-purpose'))).toThrow(/fundPurpose/);
+    expect(rowCount()).toBe(0);
+    expect(service.importTransactionsCsv(csv).inserted).toBe(1);
+    expect(db.prepare('SELECT purpose FROM financial_fund_purposes WHERE transaction_id = ?').get(id))
+      .toEqual({ purpose: 'reserve' });
+  });
+
+  it('imports legacy CSV without the later optional fundPurpose column', () => {
+    addTxn({ id: 'legacy-purpose-less', note: 'legacy plain text' });
+    const csv = service.exportTransactionsCsv().trimEnd().split('\n')
+      .map((line) => line.replace(/,[^,\r]*\r?$/, '')).join('\n');
+    expect(csv.split('\n')[0]).not.toContain('fundPurpose');
+    db.prepare('DELETE FROM transactions').run();
+    expect(service.importTransactionsCsv(csv).inserted).toBe(1);
+    expect(db.prepare('SELECT id, amount_cents FROM transactions').get())
+      .toEqual({ id: 'legacy-purpose-less', amount_cents: 10000 });
+  });
+
   it('AC2/AC4 re-importing reproduces the count and both totals', () => {
     addTxn({ note: '买菜', amountCents: 15_000, tags: ['日常'] });
     addTxn({ note: '退款, 部分', amountCents: 4_000, type: 1, categoryId: REFUND_CATEGORY, isRefund: true });

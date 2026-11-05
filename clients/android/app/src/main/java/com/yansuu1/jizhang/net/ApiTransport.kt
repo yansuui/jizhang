@@ -54,8 +54,11 @@ internal class ApiTransport(
         // 2. Attach cookies if current identity
         val reqBuilder = request.newBuilder()
             .tag(ApiRequestIdentity::class.java, identity)
+        val publicAuthentication = request.method == "POST" && isPublicAuthenticationPath(request.url.encodedPath)
 
-        if (request.header("Cookie") == null) {
+        if (publicAuthentication) {
+            reqBuilder.removeHeader("Cookie")
+        } else if (request.header("Cookie") == null) {
             val cookies = if (owner.isCurrent(identity)) {
                 cookieJar.loadForRequest(request.url)
             } else {
@@ -71,6 +74,9 @@ internal class ApiTransport(
         val base = clientOverride ?: http
         val client = base.newBuilder()
             .cookieJar(CookieJar.NO_COOKIES)
+            .apply {
+                if (publicAuthentication) { followRedirects(false); followSslRedirects(false) }
+            }
             .build()
 
         val call = client.newCall(req)
@@ -89,19 +95,8 @@ internal class ApiTransport(
                         throw CancellationException("Response arrived for expired request identity ($identity)")
                     }
 
-                    // 5. Parse and save Set-Cookie only if current
-                    val setCookieHeaders = resp.headers("Set-Cookie")
-                    if (setCookieHeaders.isNotEmpty()) {
-                        val parsed = setCookieHeaders.mapNotNull { Cookie.parse(req.url, it) }
-                        if (parsed.isNotEmpty()) {
-                            owner.ifCurrent(identity) {
-                                cookieJar.saveFromResponse(req.url, parsed)
-                            }
-                        }
-                    }
-
-                    // 6. 401 handling
-                    if (resp.code == 401 && !req.url.encodedPath.endsWith("/auth/login")) {
+                    // Public authentication errors belong to this attempt, not a saved account.
+                    if (resp.code == 401 && !publicAuthentication) {
                         owner.ifCurrent(identity) {
                             cookieJar.clear()
                             onCurrentSessionExpired()
@@ -113,6 +108,21 @@ internal class ApiTransport(
                     // 7. Post-read check
                     if (!owner.isCurrent(identity)) {
                         throw CancellationException("Request identity expired after reading response ($identity)")
+                    }
+                    // A malformed/rejected auth envelope must never replace a saved credential.
+                    if (resp.isSuccessful) {
+                        val parsed = resp.headers("Set-Cookie").mapNotNull { Cookie.parse(req.url, it) }
+                        val sessionUrl = req.url.newBuilder().encodedPath("/api/v1/auth/me").query(null).build()
+                        if (publicAuthentication && parsed.none {
+                            it.name == "jizhang_session" && it.value.isNotEmpty() &&
+                                it.expiresAt > System.currentTimeMillis() && it.matches(sessionUrl)
+                        }) {
+                            throw ApiException(401, "SESSION_MISSING", "未收到有效登录会话，请检查服务连接。")
+                        }
+                        owner.ifCurrent(identity) {
+                            if (publicAuthentication) cookieJar.clear()
+                            if (parsed.isNotEmpty()) cookieJar.saveFromResponse(req.url, parsed)
+                        }
                     }
                     result
                 }

@@ -20,6 +20,15 @@ Native source uses Swift language mode 5 and iOS 17-compatible APIs. Keep app/te
 
 Use a dedicated ephemeral URLSession and server-scoped Keychain credentials; preserve cookie domain/path/Secure/expiry behavior. Reject credentialed redirects. A saved username is not authentication: restore requires a successful `/auth/me`. Server/session change must reject stale callbacks and replace feature ownership. Never log passwords, keys or cookies.
 
+Invitation registration uses the same fresh-session activation as login and never
+sends the old account's cookie. Validate the complete auth DTO and accepted session
+before persisting credentials. A failed public login/register request must not
+expire an existing saved account. New auth fields (`id`, `role`, `capabilities`)
+are additive for legacy login, but registration requires immutable `id`; admin UI
+requires both role `admin` and capability `manageInvitations`. No local username or
+missing capability grants admin access. Plaintext invitation codes exist only in
+the creation view and are cleared when leaving; never persist passwords or codes.
+
 Amounts are Int64 cents and timestamps epoch milliseconds. Views render authoritative server totals/windows. The current four-purpose fund surface is cumulative; do not silently revive legacy monthly-reset arithmetic. Read-only views and generated action previews must not call accounting confirmation/mutation endpoints.
 
 Generation events follow the existing backend protocol, including UTF-16 offsets, monotonically increasing sequence, stable provisional/final message identity and snapshot reconciliation. Leaving a view unsubscribes; Stop explicitly cancels server generation. Network loss does not authorize a new inference POST.

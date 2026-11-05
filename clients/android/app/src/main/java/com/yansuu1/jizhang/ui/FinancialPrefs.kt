@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.yansuu1.jizhang.net.ApiClient
 import com.yansuu1.jizhang.net.AuthExpiredException
+import com.yansuu1.jizhang.net.AuthenticatedUser
 import com.yansuu1.jizhang.net.appPrefsOf
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -33,37 +34,41 @@ enum class HomeBudgetMode(val wire: String, val label: String) {
 data class FinancialScope(
     val serverBaseUrl: String,
     val username: String,
+    val userId: String? = null,
 ) {
+    /** New identities use a distinct namespace; never adopt username-only pending writes. */
+    val storageIdentity: String get() = userId?.let { "id:$it" } ?: username
     init {
         require(serverBaseUrl.isNotBlank()) { "serverBaseUrl 不能为空" }
         require(username.isNotBlank()) { "username 不能为空，不可使用匿名未认证会话持久化未决操作" }
+        require(userId == null || userId.isNotBlank()) { "userId 不能为空" }
     }
 }
 
 /**
- * 首页模式与理财规划偏好持久化（按 serverBaseUrl + username 维度隔离存储）。
+ * 首页模式与理财规划偏好按 serverBaseUrl + FinancialScope.storageIdentity 隔离。
+ * 新服务使用不可变用户 ID；只有未提供 ID 的旧服务器回退用户名。
  */
 object FinancialPrefs {
 
     /**
-     * 解析并校验当前已认证的 serverBaseUrl 与 username。
+     * 解析并校验当前已认证的 serverBaseUrl、不可变用户 ID 与显示用户名。
      * 直接在 Dispatchers.IO 上调用 api.get("/api/v1/auth/me")，确保 CancellationException 与 401 正常抛出。
      * 校验前后 baseURL 一致且 session 未过期，严格拒绝匿名与非受信会话。
      */
     suspend fun resolveAuthenticatedScope(api: ApiClient): FinancialScope = withContext(Dispatchers.IO) {
+        val requestIdentity = api.captureRequestIdentity()
         val beforeUrl = api.getBaseUrl() ?: throw IllegalStateException("未配置服务端地址")
         val me = api.get("/api/v1/auth/me")
         val afterUrl = api.getBaseUrl() ?: throw IllegalStateException("服务端地址已丢失")
-        if (beforeUrl != afterUrl) {
+        if (beforeUrl != afterUrl || !api.isCurrent(requestIdentity)) {
             throw IllegalStateException("解析认证上下文期间服务端地址发生变动，已阻断写操作")
         }
         if (api.sessionExpired.value) {
             throw com.yansuu1.jizhang.net.AuthExpiredException("登录会话已过期，已阻断写操作")
         }
-        require(me.has("username") && !me.isNull("username")) { "auth/me 响应缺少 username" }
-        val username = me.getString("username").trim()
-        require(username.isNotBlank()) { "认证 username 为空白，拒绝写入未隔离的离线操作" }
-        FinancialScope(serverBaseUrl = afterUrl, username = username)
+        val user = AuthenticatedUser.fromJson(me)
+        FinancialScope(serverBaseUrl = afterUrl, username = user.username, userId = user.id)
     }
 
     suspend fun resolveFinancialScope(api: ApiClient): FinancialScope = resolveAuthenticatedScope(api)
@@ -84,7 +89,8 @@ object FinancialPrefs {
         val md = MessageDigest.getInstance("SHA-256")
         val digest = md.digest(raw.toByteArray(Charsets.UTF_8))
         val hash = digest.joinToString("") { "%02x".format(it) }.take(16)
-        return "home_budget_mode_$hash"
+        val version = if (username?.startsWith("id:") == true) "home_budget_mode_v2_" else "home_budget_mode_"
+        return "$version$hash"
     }
 
     suspend fun readHomeBudgetMode(
@@ -188,6 +194,8 @@ class OperationReplayStore(context: Context) {
     private val sp = context.getSharedPreferences("financial_operations_replay", Context.MODE_PRIVATE)
 
     companion object {
+        // Callers pass FinancialScope.storageIdentity in the legacy-named username argument.
+        // v2 keys are intentionally disjoint from every old op_<hash> key; no automatic migration.
         // 全局单例锁，防止同一应用内多个 Store 实例产生并发盘读写竞争
         private val GLOBAL_LOCK = Any()
 
@@ -201,12 +209,18 @@ class OperationReplayStore(context: Context) {
         }
 
         internal fun prefixFor(serverBaseUrl: String?, username: String?): String {
-            return "op_${scopeHash(serverBaseUrl, username)}_"
+            val version = if (username?.startsWith("id:") == true) "op_v2_" else "op_"
+            return "$version${scopeHash(serverBaseUrl, username)}_"
         }
 
         internal fun keyFor(serverBaseUrl: String?, username: String?, operationId: String): String {
             return "${prefixFor(serverBaseUrl, username)}$operationId"
         }
+    }
+
+    fun hasLegacyRecords(serverBaseUrl: String?, username: String): Boolean = synchronized(GLOBAL_LOCK) {
+        val oldPrefix = "op_${scopeHash(serverBaseUrl, username)}_"
+        sp.all.keys.any { it.startsWith(oldPrefix) }
     }
 
     suspend fun record(serverBaseUrl: String?, username: String?, op: PendingFinancialOperation) = withContext(Dispatchers.IO) {

@@ -465,6 +465,8 @@ export class ImportBatchService {
     this.aborts.delete(batchId);
   }
 
+  abortAnalysis(batchId: string): void { this.abortReaders(batchId); }
+
   private abortReaders(batchId: string): void {
     const abort = this.aborts.get(batchId);
     if (abort === undefined) return;

@@ -347,7 +347,8 @@ describe('read-only duplicate candidates use the existing local-day heuristic', 
     expect(second.nextCursor).toBeNull();
     const refund = service.duplicateCandidates({ ...source, type: 1 }, undefined, undefined);
     expect(refund.items[0]).toMatchObject({ id: 'wrong-type', isRefund: true });
-    expect(db.serialize()).toEqual(before);
+    // Compare every byte without expanding the SQLite image into JS assertion nodes.
+    expect(db.serialize().equals(before)).toBe(true);
     db.prepare("UPDATE transactions SET deleted = 1 WHERE id = 'a'").run();
     const afterCursorDeletion = service.duplicateCandidates(source, '1', first.nextCursor);
     expect(afterCursorDeletion).toMatchObject({ total: 1, nextCursor: null });

@@ -25,8 +25,13 @@ import { registerFinancialGoalsRoutes } from './routes/financial-goals.js';
 import { registerFinancialFundRoutes } from './routes/financial-funds.js';
 import { AuthService } from './services/auth-service.js';
 import type { Db } from './db/index.js';
+import type { IdentityStore } from './identity/store.js';
+import { TenantContextManager, registerTenantHooks } from './tenancy/context.js';
 
 export interface BuildAppOptions {
+  readonly identityStore?: IdentityStore;
+  /** Bounded open service graphs; active requests and jobs are never evicted. */
+  readonly maxTenantContexts?: number;
   readonly config: AppConfig;
   /**
    * Database handle. Required to enable authentication; when omitted the app runs
@@ -132,7 +137,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   // The guard and protected routes must share ONE module/context. Health remains
   // public, and unknown API paths still pass through the same authentication guard.
   const authService =
-    options.authService ??
+    options.identityStore?.authService ?? options.authService ??
     (options.db === undefined
       ? undefined
       : new AuthService(options.db, { sessionTtlDays: config.sessionTtlDays }));
@@ -140,6 +145,12 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   if (authService !== undefined && options.db !== undefined) {
     const secureCookies = options.secureCookies ?? config.nodeEnv === 'production';
     const db = options.db;
+    const tenants = options.identityStore === undefined ? undefined :
+      new TenantContextManager(options.identityStore, config, db, options.maxTenantContexts);
+    if (tenants !== undefined) {
+      app.addHook('preClose', async () => { await tenants.drain(); });
+      app.addHook('onClose', async () => { await tenants.close(); });
+    }
 
     // Protected route groups are passed INTO the auth module so the guard's hooks
     // apply to them (see plugins/auth.ts `extraRoutes`).
@@ -147,27 +158,32 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       config,
       authService,
       secureCookies,
+      ...(options.identityStore === undefined ? {} : { identityStore: options.identityStore }),
       extraRoutes: [
-        (instance) => registerTransactionRoutes(instance, { db, now: options.now }),
-        (instance) => registerMasterDataRoutes(instance, { db, now: options.now }),
-        (instance) => registerBudgetRoutes(instance, { db, now: options.now }),
+        (instance) => { if (tenants !== undefined) registerTenantHooks(instance, tenants); },
+        (instance) => registerTransactionRoutes(instance, { db, tenants, now: options.now }),
+        (instance) => registerMasterDataRoutes(instance, { db, tenants, now: options.now }),
+        (instance) => registerBudgetRoutes(instance, { db, tenants, now: options.now }),
         // Must be in this array, not a sibling `app.register`: a hook and the routes it should
         // protect have to share an encapsulation context, or the routes escape the guard
         // silently (`plugins/auth.ts`, and `spec/backend/index.md` "the most expensive
         // mistake"). Asserted endpoint-by-endpoint in `e2e-transfers.mjs`.
-        (instance) => registerTransferRoutes(instance, { db, now: options.now }),
-        (instance) => registerStatsRoutes(instance, { db, now: options.now }),
-        (instance) => registerTrashRoutes(instance, { db, now: options.now }),
-        (instance) => registerRecurringRoutes(instance, { db, now: options.now }),
+        (instance) => registerTransferRoutes(instance, { db, tenants, now: options.now }),
+        (instance) => registerStatsRoutes(instance, { db, tenants, now: options.now }),
+        (instance) => registerTrashRoutes(instance, { db, tenants, now: options.now }),
+        (instance) => registerRecurringRoutes(instance, { db, tenants, now: options.now }),
         (instance) =>
           registerPortabilityRoutes(instance, {
             db,
+            tenants,
             dataDir: config.dataDir,
+            dbFile: config.dbFile,
             now: options.now,
           }),
         (instance) =>
           registerAiRoutes(instance, {
             db,
+            tenants,
             config,
             now: options.now,
             fetchImpl: options.fetchImpl,
@@ -175,25 +191,28 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         (instance) =>
           registerAssistantRoutes(instance, {
             db,
+            tenants,
             config,
             now: options.now,
             fetchImpl: options.fetchImpl,
             generationDelayMs: options.generationDelayMs,
             generationStepDelayMs: options.generationStepDelayMs,
           }),
-        (instance) => registerItemRoutes(instance, { db, now: options.now }),
+        (instance) => registerItemRoutes(instance, { db, tenants, now: options.now }),
         (instance) =>
           registerItemCutoutRoutes(instance, {
             serviceUrl: config.itemCutoutServiceUrl,
+            identityDb: options.identityStore?.db,
             fetchImpl: options.fetchImpl,
           }),
         (instance) =>
           registerFinancialPlanningRoutes(instance, {
             db,
+            tenants,
             now: options.now,
           }),
-        (instance) => registerFinancialGoalsRoutes(instance, { db, now: options.now }),
-        (instance) => registerFinancialFundRoutes(instance, { db, now: options.now }),
+        (instance) => registerFinancialGoalsRoutes(instance, { db, tenants, now: options.now }),
+        (instance) => registerFinancialFundRoutes(instance, { db, tenants, now: options.now }),
       ],
     });
   } else {

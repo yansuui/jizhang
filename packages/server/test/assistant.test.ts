@@ -468,7 +468,7 @@ describe('current action-row scoped duplicate comparison', () => {
     expect(response.json()).toMatchObject({ total: 0, items: [], nextCursor: null, readAt: NOW });
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(billCalls).toBe(calls);
-    expect(db.serialize()).toEqual(before);
+    expect(db.serialize().equals(before)).toBe(true);
   });
   it('rejects the original comparison after explicit analysis replacement and an archived workspace', async () => {
     const { conversation, card, url } = await prepareComparison();

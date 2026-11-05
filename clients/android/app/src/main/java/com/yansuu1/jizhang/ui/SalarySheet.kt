@@ -937,7 +937,7 @@ fun SalarySheet(
                             pendingSalaryOperation?.let { op ->
                                 try {
                                     val scopeInfo = FinancialPrefs.resolveFinancialScope(api)
-                                    replayStore.remove(scopeInfo.serverBaseUrl, scopeInfo.username, op.operationId)
+                                    replayStore.remove(scopeInfo.serverBaseUrl, scopeInfo.storageIdentity, op.operationId)
                                 } catch (_: Exception) {}
                                 pendingSalaryOperation = null
                                 salaryPendingUnknown = false

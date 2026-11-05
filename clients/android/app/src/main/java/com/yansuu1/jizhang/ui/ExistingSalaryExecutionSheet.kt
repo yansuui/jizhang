@@ -297,7 +297,7 @@ fun ExistingSalaryExecutionSheet(
                 }
 
                 loadedScope = authScope
-                val periodPendingOps = replayStore.list(authScope.serverBaseUrl, authScope.username).filter { op ->
+                val periodPendingOps = replayStore.list(authScope.serverBaseUrl, authScope.storageIdentity).filter { op ->
                     op.path == "/api/v1/financial-planning/periods/confirm" ||
                         (op.path.startsWith("/api/v1/financial-planning/periods/") && op.path.endsWith("/reconcile"))
                 }
@@ -316,7 +316,7 @@ fun ExistingSalaryExecutionSheet(
                         val scopeNow = FinancialPrefs.resolveAuthenticatedScope(api)
                         if (matched && scopeNow.sameIdentity(authScope)) {
                             try {
-                                replayStore.remove(authScope.serverBaseUrl, authScope.username, pendingOp.operationId)
+                                replayStore.remove(authScope.serverBaseUrl, authScope.storageIdentity, pendingOp.operationId)
                                 resolvingPendingMessage = "已自动确认并回收此前成功提交的操作（${pendingOp.operationId.take(8)}...），请刷新。"
                                 pendingOperationToResolve = null
                                 pendingOperationScope = null
@@ -456,7 +456,7 @@ fun ExistingSalaryExecutionSheet(
 
                 var cleanupError: String? = null
                 try {
-                    replayStore.remove(origScope.serverBaseUrl, origScope.username, op.operationId)
+                    replayStore.remove(origScope.serverBaseUrl, origScope.storageIdentity, op.operationId)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -480,7 +480,7 @@ fun ExistingSalaryExecutionSheet(
                     is FinancialWriteFailure.Rejected -> {
                         // 服务端 4xx 确切拒绝，移除已作废的未决记录
                         try {
-                            replayStore.remove(origScope.serverBaseUrl, origScope.username, op.operationId)
+                            replayStore.remove(origScope.serverBaseUrl, origScope.storageIdentity, op.operationId)
                         } catch (ce: CancellationException) {
                             throw ce
                         } catch (_: Exception) {}
@@ -643,12 +643,12 @@ fun ExistingSalaryExecutionSheet(
                     expectedRevision = preview.proposal.expectedRevision,
                 )
                 try {
-                    val unresolved = replayStore.list(authScope.serverBaseUrl, authScope.username).any { op ->
+                    val unresolved = replayStore.list(authScope.serverBaseUrl, authScope.storageIdentity).any { op ->
                         op.path == "/api/v1/financial-planning/periods/confirm" ||
                             (op.path.startsWith("/api/v1/financial-planning/periods/") && op.path.endsWith("/reconcile"))
                     }
                     check(!unresolved) { "发现尚未核对的周期操作，请关闭并重新进入以核对原请求。" }
-                    replayStore.record(authScope.serverBaseUrl, authScope.username, pending)
+                    replayStore.record(authScope.serverBaseUrl, authScope.storageIdentity, pending)
                     activePendingConfirm = pending
                     activePendingConfirmScope = authScope
                     pendingScope = authScope
@@ -695,7 +695,7 @@ fun ExistingSalaryExecutionSheet(
                 // 提交成功，尝试清理本地持久化记录
                 var cleanupError: String? = null
                 try {
-                    replayStore.remove(targetScope.serverBaseUrl, targetScope.username, pending.operationId)
+                    replayStore.remove(targetScope.serverBaseUrl, targetScope.storageIdentity, pending.operationId)
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (e: Exception) {
@@ -730,7 +730,7 @@ fun ExistingSalaryExecutionSheet(
                         }
                         if (scopeCheck != null && scopeCheck.sameIdentity(targetScope)) {
                             try {
-                                replayStore.remove(targetScope.serverBaseUrl, targetScope.username, pending.operationId)
+                                replayStore.remove(targetScope.serverBaseUrl, targetScope.storageIdentity, pending.operationId)
                             } catch (ce: CancellationException) {
                                 throw ce
                             } catch (_: Exception) {}

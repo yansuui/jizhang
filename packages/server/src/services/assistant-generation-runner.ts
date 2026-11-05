@@ -112,6 +112,7 @@ interface ProviderAbortOptions {
 }
 
 export interface AssistantGenerationRunnerOptions {
+  readonly actorId?: string | undefined;
   readonly db: Db;
   readonly config: AppConfig;
   readonly now?: (() => number) | undefined;
@@ -216,6 +217,7 @@ export class AssistantGenerationRunner {
   private closing = false;
   private readonly appConfig: AppConfig;
   private readonly fetchImpl: typeof fetch;
+  private readonly actorId: string | undefined;
 
   constructor(
     db: Db,
@@ -227,12 +229,14 @@ export class AssistantGenerationRunner {
     this.db = db;
     this.appConfig = config;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.actorId = options.actorId;
     this.conversations = conversations;
     this.generations = generations;
     const now = options.now ?? (() => Date.now());
     this.now = now;
     this.stepDelayMs = options.stepDelayMs ?? 0;
     const built = buildAssistantContext({
+      actorId: this.actorId,
       db,
       config,
       now,
@@ -242,6 +246,8 @@ export class AssistantGenerationRunner {
     this.aiConfig = built.config;
     this.providerTransport = built.provider as unknown as AssistantGenerationRunner['providerTransport'];
   }
+
+  get hasActiveWork(): boolean { return this.runs.size > 0; }
 
   /** Boot recovery: unfinished generations become interrupted; nothing is rerun. */
   recover(): number {
@@ -787,6 +793,7 @@ export class AssistantGenerationRunner {
       }
     }(this.fetchImpl);
     const context = buildAssistantContext({
+      actorId: this.actorId,
       db: this.db,
       config: this.appConfig,
       now: this.now,

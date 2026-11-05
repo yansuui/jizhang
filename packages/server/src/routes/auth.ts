@@ -19,12 +19,20 @@ import {
   type AuthedRequest,
 } from '../plugins/auth.js';
 import type { AuthService } from '../services/auth-service.js';
-import { MIN_PASSWORD_LENGTH, PasswordPolicyError } from '../services/password.js';
+import {
+  MIN_PASSWORD_LENGTH,
+  MAX_PASSWORD_LENGTH,
+  PasswordPolicyError,
+} from '../services/password.js';
+import type { IdentityStore } from '../identity/store.js';
+import { IdentityError } from '../identity/errors.js';
+import { AuthRequestLimiter } from '../identity/request-limiter.js';
 
 export interface AuthRoutesOptions {
   readonly config: AppConfig;
   readonly authService: AuthService;
   readonly secureCookies: boolean;
+  readonly identityStore?: IdentityStore;
 }
 
 /** Identical body for every credential failure. */
@@ -46,11 +54,33 @@ interface ChangePasswordBody {
   newPassword?: unknown;
 }
 
+interface RegisterBody {
+  username?: unknown;
+  password?: unknown;
+  invitationCode?: unknown;
+}
+
+function identityResponse(authService: AuthService, userId: string, expiresAt: number) {
+  const user = authService.findUserById(userId);
+  if (user === undefined || user.status === 'disabled') {
+    throw new IdentityError(401, 'UNAUTHORIZED', 'Authentication required.');
+  }
+  const role = user.role ?? 'member';
+  return {
+    id: user.id,
+    username: user.username,
+    role,
+    capabilities: role === 'admin' ? ['manageInvitations'] : [],
+    expiresAt,
+  };
+}
+
 export async function registerAuthRoutes(
   app: FastifyInstance,
   options: AuthRoutesOptions,
 ): Promise<void> {
   const { config, authService, secureCookies } = options;
+  const limiter = new AuthRequestLimiter();
 
   app.get('/api/v1/auth/me', async (request: FastifyRequest, reply: FastifyReply) => {
     const auth = (request as AuthedRequest).auth;
@@ -60,42 +90,72 @@ export async function registerAuthRoutes(
       });
     }
 
-    const user = authService.findUserByUsername(config.username);
-    return reply.send({
-      username: user?.username ?? config.username,
-      expiresAt: auth.expiresAtMs,
-    });
+    return reply.send(identityResponse(authService, auth.userId, auth.expiresAtMs));
   });
 
-  app.post('/api/v1/auth/login', async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = (request.body ?? {}) as LoginBody;
+  app.post(
+    '/api/v1/auth/login',
+    { bodyLimit: 4096 },
+    async (request: FastifyRequest, reply: FastifyReply) =>
+      limiter.run(request.ip, 'login', async () => {
+        const body = (request.body ?? {}) as LoginBody;
 
-    if (!isNonEmptyString(body.username) || !isNonEmptyString(body.password)) {
-      // Still the credentials error: a malformed body must not be distinguishable
-      // from a wrong password either.
-      return reply.status(401).send(INVALID_CREDENTIALS);
-    }
+        if (
+          !isNonEmptyString(body.username) ||
+          body.username.length > 256 ||
+          !isNonEmptyString(body.password)
+        ) {
+          // Still the credentials error: a malformed body must not be distinguishable
+          // from a wrong password either.
+          return reply.status(401).send(INVALID_CREDENTIALS);
+        }
 
-    const username = body.username.trim();
+        const username = body.username.trim();
 
-    // Compare against the configured name FIRST. Without this, a wrong username
-    // would short-circuit while a wrong password would run argon2, and the timing
-    // (or a 400 from a later branch) would reveal whether the account exists.
-    if (username !== config.username) {
-      request.log.warn({ username }, 'login rejected: unknown username');
-      return reply.status(401).send(INVALID_CREDENTIALS);
-    }
+        const result = await authService.login(username, body.password);
+        if (!result.ok) {
+          request.log.warn({ reason: result.reason }, 'login rejected');
+          return reply.status(401).send(INVALID_CREDENTIALS);
+        }
 
-    const result = await authService.login(username, body.password);
-    if (!result.ok) {
-      request.log.warn({ reason: result.reason }, 'login rejected');
-      return reply.status(401).send(INVALID_CREDENTIALS);
-    }
+        setSessionCookie(reply, result.token, config.sessionTtlDays, secureCookies);
+        request.log.info({ userId: result.userId }, 'login succeeded');
+        return reply.send(identityResponse(authService, result.userId, result.expiresAtMs));
+      }),
+  );
 
-    setSessionCookie(reply, result.token, config.sessionTtlDays, secureCookies);
-    request.log.info({ username: result.username }, 'login succeeded');
-    return reply.send({ username: result.username, expiresAt: result.expiresAtMs });
-  });
+  if (options.identityStore !== undefined) {
+    const identity = options.identityStore;
+    app.post('/api/v1/auth/register', { bodyLimit: 4096 }, async (request, reply) =>
+      limiter.run(request.ip, 'register', async () => {
+        const body = request.body as RegisterBody | undefined;
+        if (
+          body === null ||
+          typeof body !== 'object' ||
+          Array.isArray(body) ||
+          Object.keys(body).some((key) => !['username', 'password', 'invitationCode'].includes(key))
+        ) {
+          throw new IdentityError(
+            400,
+            'VALIDATION',
+            'Provide username, password and invitationCode only.',
+          );
+        }
+        let user;
+        try {
+          user = await identity.register(body.username, body.password, body.invitationCode);
+        } catch (error) {
+          if (error instanceof PasswordPolicyError)
+            throw new IdentityError(400, 'WEAK_PASSWORD', error.message);
+          throw error;
+        }
+        const session = authService.createSession(user.id);
+        if (!session.ok) throw new Error('Registered account could not start a session.');
+        setSessionCookie(reply, session.token, config.sessionTtlDays, secureCookies);
+        return reply.status(201).send(identityResponse(authService, user.id, session.expiresAtMs));
+      }),
+    );
+  }
 
   app.post('/api/v1/auth/logout', async (request: FastifyRequest, reply: FastifyReply) => {
     const token = (request as AuthedRequest).sessionToken;
@@ -108,55 +168,60 @@ export async function registerAuthRoutes(
 
   app.post(
     '/api/v1/auth/password',
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      const userId = requireUserId(request);
-      const body = (request.body ?? {}) as ChangePasswordBody;
+    { bodyLimit: 4096 },
+    async (request: FastifyRequest, reply: FastifyReply) =>
+      limiter.run(request.ip, 'password', async () => {
+        const userId = requireUserId(request);
+        const body = (request.body ?? {}) as ChangePasswordBody;
 
-      if (!isNonEmptyString(body.currentPassword) || !isNonEmptyString(body.newPassword)) {
-        return reply.status(400).send({
-          error: {
-            code: 'VALIDATION',
-            message: 'Both currentPassword and newPassword are required.',
-          },
-        });
-      }
-
-      if (body.newPassword.length < MIN_PASSWORD_LENGTH) {
-        return reply.status(400).send({
-          error: {
-            code: 'WEAK_PASSWORD',
-            message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters long.`,
-          },
-        });
-      }
-
-      let changed: boolean;
-      try {
-        changed = await authService.changePassword(
-          userId,
-          body.currentPassword,
-          body.newPassword,
-        );
-      } catch (error) {
-        if (error instanceof PasswordPolicyError) {
-          return reply
-            .status(400)
-            .send({ error: { code: 'WEAK_PASSWORD', message: error.message } });
+        if (!isNonEmptyString(body.currentPassword) || !isNonEmptyString(body.newPassword)) {
+          return reply.status(400).send({
+            error: {
+              code: 'VALIDATION',
+              message: 'Both currentPassword and newPassword are required.',
+            },
+          });
         }
-        throw error;
-      }
 
-      if (!changed) {
-        return reply.status(401).send({
-          error: { code: 'INVALID_CREDENTIALS', message: 'Current password is incorrect.' },
-        });
-      }
+        if (
+          body.newPassword.length < MIN_PASSWORD_LENGTH ||
+          body.newPassword.length > MAX_PASSWORD_LENGTH
+        ) {
+          return reply.status(400).send({
+            error: {
+              code: 'WEAK_PASSWORD',
+              message: `Password must be at least ${MIN_PASSWORD_LENGTH} and at most ${MAX_PASSWORD_LENGTH} characters long.`,
+            },
+          });
+        }
 
-      // Every session is gone, including this one, so clear the cookie to match the
-      // server state instead of leaving the client with a dead token (PRD AC7).
-      clearSessionCookie(reply, secureCookies);
-      request.log.info('password changed; all sessions invalidated');
-      return reply.send({ ok: true, reauthenticate: true });
-    },
+        let changed: boolean;
+        try {
+          changed = await authService.changePassword(
+            userId,
+            body.currentPassword,
+            body.newPassword,
+          );
+        } catch (error) {
+          if (error instanceof PasswordPolicyError) {
+            return reply
+              .status(400)
+              .send({ error: { code: 'WEAK_PASSWORD', message: error.message } });
+          }
+          throw error;
+        }
+
+        if (!changed) {
+          return reply.status(401).send({
+            error: { code: 'INVALID_CREDENTIALS', message: 'Current password is incorrect.' },
+          });
+        }
+
+        // Every session is gone, including this one, so clear the cookie to match the
+        // server state instead of leaving the client with a dead token (PRD AC7).
+        clearSessionCookie(reply, secureCookies);
+        request.log.info('password changed; user sessions invalidated');
+        return reply.send({ ok: true, reauthenticate: true });
+      }),
   );
 }

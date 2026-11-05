@@ -51,11 +51,20 @@ and the real message appears only in the log.
 ## Auth failures must not leak account existence
 
 `POST /auth/login` answers **byte-identical** responses for "wrong username", "wrong
-password" and a malformed body: `401 INVALID_CREDENTIALS`. The route compares the username
-against `config.username` *before* running argon2, so the two paths cannot diverge in
-status or (meaningfully) in timing.
+password" and a malformed credential body: `401 INVALID_CREDENTIALS`. Login resolves
+the actual central identity, not `config.username`. An unknown or disabled user runs
+password verification against a cached dummy Argon2 hash; never restore the old
+configured-username shortcut, which skipped expensive work for unknown accounts.
+Oversized request bodies are separately rejected with 413. Authentication rate or
+concurrency limits produce `429 RATE_LIMITED` before password hashing.
 
 The real reason lives only in the server log: `reason: 'no-user' | 'wrong-password'`.
+
+Registration is a separate invitation-authorized operation: invalid/expired/revoked/used
+codes share `400 INVALID_INVITATION`; after validating a real invitation, an existing
+username returns `409 USERNAME_TAKEN`. Administrator routes enforce `403 FORBIDDEN`
+even when a client forges its UI role. Exact DTOs, limits and recovery behavior are
+in [Multi-user identity](./multiuser-identity.md).
 
 > An earlier version returned 400 for a missing field and 401 for a bad password, which
 > told an attacker whether the account existed.

@@ -12,7 +12,7 @@
  *   * every route re-checks that the batch belongs to the conversation in the path;
  *   * the legacy single-file import routes are untouched.
  */
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { AssistantConversationService } from '../services/assistant-conversation-service.js';
 import { ImportBatchAnalysisRunner } from '../services/import-batch-analysis.js';
 import {
@@ -29,7 +29,8 @@ import {
 import { parseImportBatchFiles, parseOriginalFiles } from '../services/import-batch-service.js';
 
 export interface ImportBatchRoutesOptions {
-  readonly analysis: ImportBatchAnalysisRunner;
+  readonly analysis?: ImportBatchAnalysisRunner;
+  readonly resolveAnalysis?: (request: FastifyRequest) => ImportBatchAnalysisRunner;
 }
 
 function record(value: unknown, field: string): Record<string, unknown> {
@@ -158,12 +159,17 @@ export async function registerImportBatchRoutes(
   app: FastifyInstance,
   options: ImportBatchRoutesOptions,
 ): Promise<void> {
-  const batches = options.analysis.service;
+  const getServices = (request: FastifyRequest) => {
+    const analysis = options.resolveAnalysis?.(request) ?? options.analysis;
+    if (analysis === undefined) throw new Error("Import analysis context unavailable");
+    return { batches: analysis.service, analysis };
+  };
 
   app.post<{ Params: { conversationId: string } }>(
     '/api/v1/assistant/conversations/:conversationId/import-batches',
     { bodyLimit: MERGED_BODY_LIMIT },
     async (request, reply) => {
+      const { batches, analysis } = getServices(request);
       const body = record(request.body, 'body');
       const files = parseImportBatchFiles(body['files']);
       const clientRequestId = body['clientRequestId'];
@@ -179,7 +185,7 @@ export async function registerImportBatchRoutes(
         `已读取 ${created.batch.files.length} 个账单文件，融合后共 ${created.batch.summary.totalItems} 条待核对记录。`,
       );
       if (created.created && analyse && created.batch.files.every((file) => file.parseStatus === 'ok')) {
-        if (!options.analysis.start(request.params.conversationId, created.batch.batchId)) {
+        if (!analysis.start(request.params.conversationId, created.batch.batchId)) {
           throw new ImportBatchActiveError();
         }
       } else if (!created.created) {
@@ -192,6 +198,7 @@ export async function registerImportBatchRoutes(
   app.get<{ Params: { conversationId: string; batchId: string } }>(
     '/api/v1/assistant/conversations/:conversationId/import-batches/:batchId',
     async (request, reply) => {
+      const { batches } = getServices(request);
       reply.header('Cache-Control', 'no-store');
       return { batch: batches.get(request.params.conversationId, request.params.batchId) };
     },
@@ -203,6 +210,7 @@ export async function registerImportBatchRoutes(
   }>(
     '/api/v1/assistant/conversations/:conversationId/import-batches/:batchId/rows',
     async (request, reply) => {
+      const { batches } = getServices(request);
       reply.header('Cache-Control', 'no-store');
       return batches.rows(request.params.conversationId, request.params.batchId, {
         limit: request.query.limit,
@@ -219,6 +227,7 @@ export async function registerImportBatchRoutes(
   }>(
     '/api/v1/assistant/conversations/:conversationId/import-batches/:batchId/rows/:itemId/duplicates',
     async (request, reply) => {
+      const { batches } = getServices(request);
       reply.header('Cache-Control', 'no-store');
       return batches.duplicates(
         request.params.conversationId,
@@ -236,6 +245,7 @@ export async function registerImportBatchRoutes(
   }>(
     '/api/v1/assistant/conversations/:conversationId/import-batches/:batchId/categories',
     async (request, reply) => {
+      const { batches } = getServices(request);
       reply.header('Cache-Control', 'no-store');
       return batches.categories(request.params.conversationId, request.params.batchId, request.query.includeVersion);
     },
@@ -245,6 +255,7 @@ export async function registerImportBatchRoutes(
     '/api/v1/assistant/conversations/:conversationId/import-batches/:batchId/review',
     { bodyLimit: MERGED_BODY_LIMIT },
     async (request, reply) => {
+      const { batches } = getServices(request);
       const body = record(request.body, 'body');
       const selectedItemIds = stringArray(body['selectedItemIds'], 'selectedItemIds', 500);
       const viewRevision = body['viewRevision'];
@@ -270,12 +281,13 @@ export async function registerImportBatchRoutes(
     '/api/v1/assistant/conversations/:conversationId/import-batches/:batchId/analyse',
     { bodyLimit: MERGED_BODY_LIMIT },
     async (request, reply) => {
+      const { batches, analysis } = getServices(request);
       const body = record(request.body, 'body');
       const clientRequestId = body['clientRequestId'];
       if (typeof clientRequestId !== 'string') throw new ImportBatchInvalidError('clientRequestId 必须是文本。');
       const files = parseOriginalFiles(body['files']);
       const result = batches.analyse(request.params.conversationId, request.params.batchId, { files, clientRequestId });
-      if (result.created && !options.analysis.start(request.params.conversationId, request.params.batchId)) {
+      if (result.created && !analysis.start(request.params.conversationId, request.params.batchId)) {
         batches.markAnalysisNotStarted(request.params.batchId, '当前会话仍有进行中的 AI 生成，本次分析未开始，请稍后显式重试。');
         throw new ImportBatchActiveError();
       }
@@ -287,6 +299,7 @@ export async function registerImportBatchRoutes(
     '/api/v1/assistant/conversations/:conversationId/import-batches/:batchId/files/:fileIndex/remove',
     { bodyLimit: MERGED_BODY_LIMIT },
     async (request, reply) => {
+      const { batches } = getServices(request);
       const body = record(request.body, 'body');
       const files = parseImportBatchFiles(body['files']);
       const outcome = batches.mutateFiles(
@@ -309,6 +322,7 @@ export async function registerImportBatchRoutes(
     '/api/v1/assistant/conversations/:conversationId/import-batches/:batchId/files/:fileIndex/replace',
     { bodyLimit: MERGED_BODY_LIMIT },
     async (request, reply) => {
+      const { batches } = getServices(request);
       const body = record(request.body, 'body');
       const files = parseImportBatchFiles(body['files']);
       const outcome = batches.mutateFiles(
@@ -330,6 +344,7 @@ export async function registerImportBatchRoutes(
     '/api/v1/assistant/conversations/:conversationId/import-batches/:batchId/confirm',
     { bodyLimit: MERGED_BODY_LIMIT },
     async (request, reply) => {
+      const { batches } = getServices(request);
       const body = record(request.body, 'body');
       const reviewToken = body['reviewToken'];
       if (typeof reviewToken !== 'string' || reviewToken === '') throw new ImportBatchInvalidError('reviewToken 不能为空。');
@@ -346,6 +361,7 @@ export async function registerImportBatchRoutes(
   app.post<{ Params: { conversationId: string; batchId: string } }>(
     '/api/v1/assistant/conversations/:conversationId/import-batches/:batchId/cancel',
     async (request, reply) => {
+      const { batches } = getServices(request);
       const body = request.body === undefined ? {} : record(request.body, 'body');
       const batch = batches.cancel(request.params.conversationId, request.params.batchId, {
         expectedVersion: integer(body['expectedVersion'], 'expectedVersion'),

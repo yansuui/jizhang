@@ -15,6 +15,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
 import com.yansuu1.jizhang.net.ApiClient
 import com.yansuu1.jizhang.repo.AuthRepository
@@ -67,6 +68,7 @@ class MainActivity : ComponentActivity() {
                     val expired by api.sessionExpired.collectAsState()
                     LaunchedEffect(expired) { if (expired) signedIn = false }
                     if (signedIn) {
+                        key(auth.sessionKey) {
                         MainShell(
                             api = api,
                             auth = auth,
@@ -98,6 +100,7 @@ class MainActivity : ComponentActivity() {
                             onLogout = { signedIn = false },
                             onAuthExpired = { signedIn = false },
                         )
+                        }
                     } else {
                         LoginScreen(
                             api = api,

@@ -1,0 +1,8 @@
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Preserve shipped migrations, original ledger data and consistent SQLite backup behavior"}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Keep Fastify authentication boundaries and service ownership explicit"}
+{"file":".trellis/spec/backend/assistant-streaming.md","reason":"Preserve generation, SSE, cancellation and recovery lifetimes inside each user context"}
+{"file":".trellis/spec/frontend/ios-client.md","reason":"Native iOS session ownership and simple phone configuration"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Prevent stale responses and persisted operations from crossing account boundaries"}
+{"file":".trellis/tasks/11-05-multiuser-invites/design.md","reason":"Proposed central identity and private-ledger architecture, pending product scope approval"}
+{"file":".trellis/tasks/11-05-multiuser-invites/research/backend-audit.md","reason":"Existing global SQL, filesystem and worker ownership inventory"}
+{"file":".trellis/tasks/11-05-multiuser-invites/research/client-audit.md","reason":"iOS and Android authentication contracts, caches and inventory changes"}

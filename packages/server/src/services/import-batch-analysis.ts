@@ -115,6 +115,7 @@ export class ImportBatchAnalysisRunner {
   private readonly now: () => number;
   private readonly lock: ConversationActiveLock | null;
   private readonly running = new Set<string>();
+  private readonly tasks = new Set<Promise<void>>();
   private closing = false;
 
   constructor(options: ImportBatchAnalysisOptions) {
@@ -143,9 +144,12 @@ export class ImportBatchAnalysisRunner {
     return this.batches.recoverRunning();
   }
 
+  get hasActiveWork(): boolean { return this.running.size > 0; }
+
   async shutdown(): Promise<void> {
     this.closing = true;
-    for (const batchId of [...this.running]) this.batches.clearAnalysisAbort(batchId);
+    for (const batchId of [...this.running]) this.batches.abortAnalysis(batchId);
+    await Promise.allSettled([...this.tasks]);
   }
 
   /**
@@ -176,11 +180,16 @@ export class ImportBatchAnalysisRunner {
     const version = fence.batch.version;
     const revision = fence.revision;
     this.running.add(batchId);
-    void this.run(batchId, owner, version, revision).finally(() => {
+    const task = this.run(batchId, owner, version, revision).finally(() => {
       this.running.delete(batchId);
       this.batches.clearAnalysisAbort(batchId);
       this.lock?.end(conversationId, 'batch');
+      this.tasks.delete(task);
     });
+    this.tasks.add(task);
+    // Domain failures are persisted in run(); surface an unexpected failure without
+    // leaving an unhandled rejection while shutdown still waits for the same task.
+    void task.catch(() => undefined);
     return true;
   }
 

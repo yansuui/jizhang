@@ -17,6 +17,8 @@ import fp from 'fastify-plugin';
 import type { AppConfig } from '../config.js';
 import { registerAuthRoutes } from '../routes/auth.js';
 import type { AuthService } from '../services/auth-service.js';
+import type { IdentityStore } from '../identity/store.js';
+import { registerInvitationRoutes } from '../routes/invitations.js';
 
 /** Cookie name. Prefixed to avoid collisions with anything else on the domain. */
 export const SESSION_COOKIE = 'jizhang_session';
@@ -33,10 +35,7 @@ export const CSRF_HEADER_VALUE = 'fetch';
  * require a session by definition, and is still subject to the CSRF header check
  * so a cross-site form cannot silently establish a session.
  */
-const PUBLIC_ROUTES = new Set<string>([
-  'GET /api/v1/health',
-  'POST /api/v1/auth/login',
-]);
+const PUBLIC_ROUTES = new Set<string>(['GET /api/v1/health', 'POST /api/v1/auth/login']);
 
 /** Fastify request decorated with the resolved session. */
 export interface AuthedRequest extends FastifyRequest {
@@ -47,6 +46,7 @@ export interface AuthedRequest extends FastifyRequest {
 export interface AuthModuleOptions {
   readonly config: AppConfig;
   readonly authService: AuthService;
+  readonly identityStore?: IdentityStore;
   /** `Secure` cookies require HTTPS; false for plain-http local runs. */
   readonly secureCookies: boolean;
   /**
@@ -57,9 +57,7 @@ export interface AuthModuleOptions {
    * by the caller as a sibling of this module would silently escape the guard.
    * Passing them here makes that structurally impossible.
    */
-  readonly extraRoutes?: readonly ((
-    app: FastifyInstance,
-  ) => Promise<void> | void)[];
+  readonly extraRoutes?: readonly ((app: FastifyInstance) => Promise<void> | void)[];
 }
 
 export class UnauthorizedError extends Error {
@@ -75,9 +73,7 @@ export class CsrfError extends Error {
   readonly statusCode = 403;
   readonly code = 'CSRF_REQUIRED';
   constructor() {
-    super(
-      `Mutating requests must send the ${CSRF_HEADER}: ${CSRF_HEADER_VALUE} header.`,
-    );
+    super(`Mutating requests must send the ${CSRF_HEADER}: ${CSRF_HEADER_VALUE} header.`);
     this.name = 'CsrfError';
   }
 }
@@ -114,7 +110,10 @@ export const authModule = fp<AuthModuleOptions>(
     // ── Enforce, for /api routes that are not explicitly public ───────────────
     app.addHook('onRequest', async (request: FastifyRequest) => {
       const route = `${request.method.toUpperCase()} ${pathOf(request.url)}`;
-      if (PUBLIC_ROUTES.has(route)) {
+      if (
+        PUBLIC_ROUTES.has(route) ||
+        (options.identityStore !== undefined && route === 'POST /api/v1/auth/register')
+      ) {
         // Login still has to prove the request came from our own page.
         if (isMutating(request.method) && request.headers[CSRF_HEADER] !== CSRF_HEADER_VALUE) {
           throw new CsrfError();
@@ -137,6 +136,8 @@ export const authModule = fp<AuthModuleOptions>(
 
     // Routes live INSIDE this plugin so the hooks above apply to them.
     await registerAuthRoutes(app, options);
+    if (options.identityStore !== undefined)
+      await registerInvitationRoutes(app, options.identityStore);
 
     // Protected resources (transactions, budgets, ...) are registered here too.
     for (const register of options.extraRoutes ?? []) {
@@ -163,10 +164,7 @@ export function setSessionCookie(
 }
 
 /** Clears the session cookie (logout, password change). */
-export function clearSessionCookie(
-  reply: import('fastify').FastifyReply,
-  secure: boolean,
-): void {
+export function clearSessionCookie(reply: import('fastify').FastifyReply, secure: boolean): void {
   reply.clearCookie(SESSION_COOKIE, {
     path: '/',
     httpOnly: true,

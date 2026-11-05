@@ -103,7 +103,8 @@ export interface ItemPhoto {
 }
 
 export interface ItemServiceOptions {
-  readonly now?: () => number;
+  readonly now?: (() => number) | undefined;
+  readonly actorId?: string | undefined;
 }
 
 function recordOf(value: unknown, label: string): Record<string, unknown> {
@@ -345,7 +346,7 @@ export class ItemService {
   constructor(db: Db, options: ItemServiceOptions = {}) {
     this.db = db;
     this.now = options.now ?? (() => Date.now());
-    this.transactions = new TransactionService(db, { now: this.now });
+    this.transactions = new TransactionService(db, { now: this.now, actorId: options.actorId });
   }
 
   list(query: ItemListQuery = {}): ItemListDto {

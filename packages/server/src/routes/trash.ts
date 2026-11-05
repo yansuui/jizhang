@@ -1,3 +1,4 @@
+import { createRouteServices, type TenantContextManager } from '../tenancy/context.js';
 /**
  * Recycle-bin routes (T12 PRD R1–R3).
  *
@@ -32,6 +33,8 @@ import type { Db } from '../db/index.js';
 import { NotFoundError, TransactionService } from '../services/transaction-service.js';
 
 export interface TrashRoutesOptions {
+  readonly actorId?: string | undefined;
+  readonly tenants?: TenantContextManager | undefined;
   readonly db: Db;
   readonly now?: (() => number) | undefined;
 }
@@ -53,12 +56,17 @@ export async function registerTrashRoutes(
   app: FastifyInstance,
   options: TrashRoutesOptions,
 ): Promise<void> {
-  const service = new TransactionService(
-    options.db,
-    options.now === undefined ? {} : { now: options.now },
-  );
+  const getServices = createRouteServices(app, options, (options, _lifecycle) => {
+    const service = new TransactionService(
+      options.db,
+    options,
+    );
+
+    return { service, options };
+  });
 
   app.get('/api/v1/trash', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(_request);
     const items = service.listDeleted();
     return reply.send({ items, total: service.countDeleted() });
   });
@@ -69,6 +77,7 @@ export async function registerTrashRoutes(
   app.post(
     '/api/v1/trash/restore-all',
     async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(_request);
       const restored = service.restoreAll();
       return reply.send({ restored, remaining: service.countDeleted() });
     },
@@ -77,16 +86,19 @@ export async function registerTrashRoutes(
   app.post(
     '/api/v1/trash/:id/restore',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       return reply.send(service.restore(requireId(request)));
     },
   );
 
   app.delete('/api/v1/trash/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     service.purge(requireId(request));
     return reply.status(204).send();
   });
 
   app.delete('/api/v1/trash', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(_request);
     const purged = service.purgeAll();
     return reply.send({ purged, remaining: service.countDeleted() });
   });

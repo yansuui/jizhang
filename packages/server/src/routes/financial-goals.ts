@@ -1,3 +1,4 @@
+import { createRouteServices, type TenantContextManager } from '../tenancy/context.js';
 /**
  * 手动存钱与投资进度 HTTP 路由:`/api/v1/financial-goals/*`(C4 / F08+F09)。
  *
@@ -16,6 +17,7 @@ import { FinancialNotFoundError } from '../services/financial-errors.js';
 import { FinancialGoalsService } from '../services/financial-goals-service.js';
 
 export interface FinancialGoalsRoutesOptions {
+  readonly tenants?: TenantContextManager | undefined;
   readonly db: Db;
   readonly now?: (() => number) | undefined;
   /** 测试注入的操作者;缺省取单用户表里的唯一用户。 */
@@ -38,28 +40,37 @@ export async function registerFinancialGoalsRoutes(
   app: FastifyInstance,
   options: FinancialGoalsRoutesOptions,
 ): Promise<void> {
-  const service = new FinancialGoalsService(options.db, {
-    now: options.now,
-    actorId: options.actorId,
+  const getServices = createRouteServices(app, options, (options, _lifecycle) => {
+    const service = new FinancialGoalsService(options.db, {
+      now: options.now,
+      actorId: options.actorId,
+    });
+
+    // ── 进度视图 ────────────────────────────────────────────────────────────────
+
+    return { service, options };
   });
 
-  // ── 进度视图 ────────────────────────────────────────────────────────────────
   app.get('/api/v1/financial-goals', async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
     return reply.send(service.view(queryObject(request)));
   });
 
   // ── 起始值(显式确认/更正) ──────────────────────────────────────────────────
   app.put('/api/v1/financial-goals/opening', async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const result = service.putOpening(request.body);
     return reply.status(result.statusCode).send(result.body);
   });
 
   // ── 记录列表(有界游标) ─────────────────────────────────────────────────────
   app.get('/api/v1/financial-goals/entries', async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
     return reply.send(service.listEntries(queryObject(request)));
   });
 
   app.post('/api/v1/financial-goals/entries', async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const result = service.createEntry(request.body);
     return reply.status(result.statusCode).send(result.body);
   });
@@ -67,6 +78,7 @@ export async function registerFinancialGoalsRoutes(
   app.patch(
     '/api/v1/financial-goals/entries/:entryId',
     async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
       const result = service.patchEntry(requireParam(request, 'entryId'), request.body);
       return reply.status(result.statusCode).send(result.body);
     },
@@ -75,6 +87,7 @@ export async function registerFinancialGoalsRoutes(
   app.delete(
     '/api/v1/financial-goals/entries/:entryId',
     async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
       const result = service.deleteEntry(requireParam(request, 'entryId'), request.body);
       return reply.status(result.statusCode).send(result.body);
     },
@@ -84,6 +97,7 @@ export async function registerFinancialGoalsRoutes(
   app.get(
     '/api/v1/financial-goals/operations/:operationId',
     async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
       const found = service.operation(requireParam(request, 'operationId'));
       if (found === undefined) {
         throw new FinancialNotFoundError('This operation is not known on this server.');

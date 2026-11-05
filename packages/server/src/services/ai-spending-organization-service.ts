@@ -369,6 +369,8 @@ export class AiSpendingOrganizationService {
     }
   }
 
+  get hasActiveWork(): boolean { return this.active.size > 0; }
+
   async close(): Promise<void> {
     this.closing = true;
     for (const entry of this.active.values()) entry.controller.abort();

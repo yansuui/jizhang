@@ -1,3 +1,4 @@
+import { createRouteServices, type TenantContextManager } from '../tenancy/context.js';
 /**
  * Statistics routes (T8 PRD R1, C3 F06/F07):
  *
@@ -22,6 +23,7 @@ import { StatsService } from '../services/stats-service.js';
 import { ValidationError } from '../services/transaction-service.js';
 
 export interface StatsRoutesOptions {
+  readonly tenants?: TenantContextManager | undefined;
   readonly db: Db;
   readonly now?: (() => number) | undefined;
   /**
@@ -63,12 +65,18 @@ export async function registerStatsRoutes(
   app: FastifyInstance,
   options: StatsRoutesOptions,
 ): Promise<void> {
-  const service = new StatsService(options.db, options);
+  const getServices = createRouteServices(app, options, (options, _lifecycle) => {
+    const service = new StatsService(options.db, options);
 
-  // The authoritative range for every "本月 / 近30天" label. Clients pass the returned
-  // from/to straight to category-share and the drilldown, so the numbers and the caption
-  // cannot disagree. Invalid input is a 400 — never a silent fallback to a guessed range.
+    // The authoritative range for every "本月 / 近30天" label. Clients pass the returned
+    // from/to straight to category-share and the drilldown, so the numbers and the caption
+    // cannot disagree. Invalid input is a 400 — never a silent fallback to a guessed range.
+
+    return { service, options };
+  });
+
   app.get('/api/v1/stats/window', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { options } = getServices(request);
     const query = (request.query ?? {}) as Record<string, unknown>;
 
     const rawKind = query['kind'];
@@ -97,6 +105,7 @@ export async function registerStatsRoutes(
   app.get(
     '/api/v1/stats/category-share',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { options, service } = getServices(request);
       const query = (request.query ?? {}) as Record<string, unknown>;
 
       const rawFrom = query['from'];
@@ -139,6 +148,7 @@ export async function registerStatsRoutes(
   app.get(
     '/api/v1/stats/monthly-trend',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       const query = (request.query ?? {}) as Record<string, unknown>;
       const raw = query['months'];
       const months = raw === undefined || raw === '' ? 6 : Number(raw);
@@ -157,10 +167,12 @@ export async function registerStatsRoutes(
   );
 
   app.get('/api/v1/stats/pool-trend', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(_request);
     return reply.send(service.poolTrend());
   });
 
   app.get('/api/v1/stats/range', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(_request);
     return reply.send(service.availableRange());
   });
 

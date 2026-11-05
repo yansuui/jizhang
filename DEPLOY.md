@@ -1,5 +1,12 @@
 # API deployment and migration
 
+For the invitation/multi-user release, read [MULTIUSER.md](./docs/MULTIUSER.md) first.
+It supersedes single-file backup/restore and online password-bootstrap steps below:
+the server now holds an exclusive storage lock, identity is in `auth.db`, and full
+recovery requires every mapped ledger. Existing production helpers and old image
+rollback procedures require review before applying this release. No production
+cutover is implied by source or CI verification.
+
 Target: Android / HarmonyOS 4 APK -> `https://jz.yansuu1.xyz/api/v1/**` -> existing Caddy -> Fastify -> existing `/data`.
 The supplied inventory shows `caddy` (`caddy:2`) uses **host networking**. Use `127.0.0.1:8081` and the host Caddy site example; do not apply the shared-network Caddy overlay to this server. Inspect the actual config mount/path before editing or reloading.
 The image contains no Web UI. `/`, old page routes and static assets return JSON 404. Existing Caddy keeps ports 80/443 and TLS.

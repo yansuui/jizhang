@@ -28,6 +28,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync 
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { ConfigError, loadConfig } from './config.js';
+import { acquireStorageLock } from './storage-lock.js';
 
 /** Result of inspecting a candidate backup file. */
 interface Verification {
@@ -55,8 +56,7 @@ export function verifyBackup(file: string): Verification {
   try {
     db = new Database(file, { readonly: true, fileMustExist: true });
     const integrityRow = db.prepare('PRAGMA integrity_check').get() as
-      | { integrity_check: string }
-      | undefined;
+      { integrity_check: string } | undefined;
     const integrity = integrityRow?.integrity_check ?? 'unknown';
 
     const tablesRow = db
@@ -111,11 +111,7 @@ export interface BackupResult {
  *
  * @param retainDays delete archives older than this; 0 disables pruning.
  */
-export function createBackup(
-  dbFile: string,
-  targetDir: string,
-  retainDays = 30,
-): BackupResult {
+export function createBackup(dbFile: string, targetDir: string, retainDays = 30): BackupResult {
   mkdirSync(targetDir, { recursive: true });
 
   const target = path.join(targetDir, backupFileName());
@@ -246,19 +242,29 @@ function runBackup(args: string[]): void {
     return;
   }
 
-  const { dbFile } = resolveDatabasePath();
-  if (!existsSync(dbFile)) {
-    console.error(`[jizhang] No database at ${dbFile} — nothing to back up.\n`);
-    process.exitCode = 1;
-    return;
-  }
+  const { dbFile, dataDir } = resolveDatabasePath();
+  const releaseStorage = acquireStorageLock(dataDir);
+  try {
+    if (existsSync(path.join(dataDir, 'auth.db'))) {
+      throw new Error(
+        'This is a multi-user deployment. Stop all writers and use backup-all <dir> for a complete recovery bundle. Personal snapshots are available through each account’s /backups API.',
+      );
+    }
+    if (!existsSync(dbFile)) {
+      console.error(`[jizhang] No database at ${dbFile} — nothing to back up.\n`);
+      process.exitCode = 1;
+      return;
+    }
 
-  const result = createBackup(dbFile, path.resolve(targetDir), retainDays);
-  console.log(
-    `[jizhang] Backup ok: ${result.file}\n` +
-      `          ${result.tables} tables, ${(result.bytes / 1024).toFixed(1)} KiB` +
-      (result.pruned > 0 ? `, pruned ${result.pruned} old archive(s)` : ''),
-  );
+    const result = createBackup(dbFile, path.resolve(targetDir), retainDays);
+    console.log(
+      `[jizhang] Backup ok: ${result.file}\n` +
+        `          ${result.tables} tables, ${(result.bytes / 1024).toFixed(1)} KiB` +
+        (result.pruned > 0 ? `, pruned ${result.pruned} old archive(s)` : ''),
+    );
+  } finally {
+    releaseStorage();
+  }
 }
 
 function runVerify(args: string[]): void {
@@ -274,9 +280,7 @@ function runVerify(args: string[]): void {
     console.log(`[jizhang] ${file} is a valid database (${result.tables} tables).`);
     return;
   }
-  console.error(
-    `[jizhang] ${file} is NOT a usable database: ${result.reason ?? result.integrity}`,
-  );
+  console.error(`[jizhang] ${file} is NOT a usable database: ${result.reason ?? result.integrity}`);
   process.exitCode = 1;
 }
 
@@ -310,23 +314,33 @@ async function runRestore(args: string[]): Promise<void> {
     return;
   }
 
-  const { dbFile, port } = resolveDatabasePath();
+  const { dbFile, dataDir, port } = resolveDatabasePath();
+  const releaseStorage = acquireStorageLock(dataDir);
+  try {
+    if (existsSync(path.join(dataDir, 'auth.db'))) {
+      throw new Error(
+        'Single-file restore cannot restore a multi-user deployment. Use restore-all <bundle> <new-empty-dir>; the current data directory is preserved.',
+      );
+    }
 
-  if (await serverIsRunning(port)) {
-    console.error(
-      '[jizhang] The server is still answering on port ' +
-        `${port} — stop it first, or the restore will pull the database out from ` +
-        'under a running process.\n' +
-        '          With Docker:  docker compose stop\n' +
-        '          Then re-run this command (docker compose run --rm jizhang node packages/server/dist/cli.js restore ...).',
-    );
-    process.exitCode = 1;
-    return;
+    if (await serverIsRunning(port)) {
+      console.error(
+        '[jizhang] The server is still answering on port ' +
+          `${port} — stop it first, or the restore will pull the database out from ` +
+          'under a running process.\n' +
+          '          With Docker:  docker compose stop\n' +
+          '          Then re-run this command (docker compose run --rm jizhang node packages/server/dist/cli.js restore ...).',
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    restoreBackup(path.resolve(file), dbFile);
+    console.log(`[jizhang] Restored ${file} -> ${dbFile}`);
+    console.log('[jizhang] Start the server again and check /api/v1/health.');
+  } finally {
+    releaseStorage();
   }
-
-  restoreBackup(path.resolve(file), dbFile);
-  console.log(`[jizhang] Restored ${file} -> ${dbFile}`);
-  console.log('[jizhang] Start the server again and check /api/v1/health.');
 }
 
 export async function runDatabaseCommand(command: string, args: string[]): Promise<boolean> {

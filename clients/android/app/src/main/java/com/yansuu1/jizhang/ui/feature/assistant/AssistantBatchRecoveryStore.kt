@@ -19,8 +19,13 @@ class SharedPreferencesAssistantBatchRecoveryStore(context: Context) : Assistant
     private val prefs = context.getSharedPreferences("batch_mutation_recovery", Context.MODE_PRIVATE)
     private val lock = Any()
 
+    fun hasLegacyRecords(serverBaseUrl: String, username: String): Boolean = synchronized(lock) {
+        prefs.all.keys.any { it.startsWith("$serverBaseUrl|$username|") }
+    }
+
     private fun storageKey(scope: FinancialScope, conversationId: String, batchId: String): String {
-        return "${scope.serverBaseUrl}|${scope.username}|$conversationId|$batchId"
+        val version = if (scope.userId != null) "v2|" else ""
+        return "$version${scope.serverBaseUrl}|${scope.storageIdentity}|$conversationId|$batchId"
     }
 
     override suspend fun record(scope: FinancialScope, metadata: BatchMutationMetadata) {

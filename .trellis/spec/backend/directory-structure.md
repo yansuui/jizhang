@@ -43,6 +43,25 @@ packages/server/
 
 ## Module Organization
 
+### Private account contexts
+
+`identity/` owns its separate schema, original-owner cutover and immutable relative
+ledger bindings. Production `index.ts` acquires `storage-lock.ts` before opening
+storage, then passes the identity store into `buildApp`. The explicit legacy
+single-DB test mode does not expose registration.
+
+`tenancy/context.ts` resolves only the authenticated immutable user ID inside the
+auth module. A request leases a context until the response/stream closes. Route
+service factories are cached per context, with busy checks preventing eviction
+while background work runs. Shutdown cancels and drains work before closing DBs.
+Never switch a process-global DB, proxy SQL, or build one Fastify app per user.
+
+Every nested service receives the selected `dbFile`/`dataDir`; direct worker job
+IDs require durable account ownership checks too. `cli-system.ts` coordinates
+offline full-system recovery; `cli-db.ts` single-file snapshots remain personal
+or legacy operations. The complete recovery and stale-lock procedures live in
+`docs/MULTIUSER.md`. An interrupted restore marker blocks startup.
+
 - **`config.ts` is the only place that touches `process.env`.** Add a variable by
   extending `AppConfig`, adding it to `DEFAULTS` (defaulted) or `REQUIRED` (no
   default) and validating it; collect problems and throw one `ConfigError` that

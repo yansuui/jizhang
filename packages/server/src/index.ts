@@ -6,7 +6,9 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { buildApp } from './app.js';
 import { ConfigError, loadConfig, type AppConfig } from './config.js';
-import { closeDatabase, initializeDatabase, openDatabase } from './db/index.js';
+import { closeDatabase, initializeDatabase, openDatabase, type Db } from './db/index.js';
+import { openIdentityStore, type IdentityStore } from './identity/store.js';
+import { acquireStorageLock } from './storage-lock.js';
 
 const SIGNALS = ['SIGTERM', 'SIGINT'] as const;
 
@@ -49,9 +51,26 @@ async function main(): Promise<void> {
   loadLocalEnvFile();
   const config = resolveConfig();
 
-  const db = openDatabase(config);
-  const { migrations, seed } = initializeDatabase(db, config.dataDir);
-  const app = buildApp({ config, db });
+  const releaseStorageLock = acquireStorageLock(config.dataDir);
+  const { db, identityStore, app, migrations, seed } = (() => {
+    let openedDb: Db | undefined;
+    let openedIdentity: IdentityStore | undefined;
+    try {
+      openedDb = openDatabase(config);
+      const initialized = initializeDatabase(openedDb, config.dataDir);
+      openedIdentity = openIdentityStore({ config, legacyDb: openedDb });
+      return {
+        db: openedDb, identityStore: openedIdentity,
+        app: buildApp({ config, db: openedDb, identityStore: openedIdentity }),
+        ...initialized,
+      };
+    } catch (error) {
+      openedIdentity?.close();
+      if (openedDb !== undefined) closeDatabase(openedDb);
+      releaseStorageLock();
+      throw error;
+    }
+  })();
 
   app.log.info(
     {
@@ -73,7 +92,9 @@ async function main(): Promise<void> {
     app.log.info({ signal }, 'shutdown requested — draining connections');
     try {
       await app.close();
+      identityStore.close();
       closeDatabase(db);
+      releaseStorageLock();
       app.log.info('shutdown complete');
       process.exit(0);
     } catch (error) {
@@ -93,9 +114,15 @@ async function main(): Promise<void> {
     app.log.info({ address, version: config.version }, 'jizhang server listening');
   } catch (error) {
     app.log.error({ err: error }, 'failed to start');
+    await app.close();
+    identityStore.close();
     closeDatabase(db);
+    releaseStorageLock();
     process.exit(1);
   }
 }
 
-void main();
+void main().catch((error: unknown) => {
+  console.error('[jizhang] Startup aborted', error);
+  process.exitCode = 1;
+});

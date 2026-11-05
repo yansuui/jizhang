@@ -17,6 +17,8 @@ current Android implementation instructions or acceptance evidence.
   from source, JVM tests, lint, or APK compilation.
 - Read [Native Client Delivery](../backend/native-delivery.md) and the relevant backend
   feature spec for the actual API contract. Public Web hosting is retired.
+- Read [Native account ownership](./native-account-state.md) before changing
+  registration, account switching or persisted financial/import recovery.
 
 ## Accounting boundary
 

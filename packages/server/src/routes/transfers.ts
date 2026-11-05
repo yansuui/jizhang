@@ -1,3 +1,4 @@
+import { createRouteServices, type TenantContextManager } from '../tenancy/context.js';
 /**
  * Transfer routes (child task `09-13-account-transfer`).
  *
@@ -63,6 +64,7 @@ function parseListQuery(query: Record<string, unknown>): ListTransfersQuery {
 }
 
 export interface TransferRoutesOptions {
+  readonly tenants?: TenantContextManager | undefined;
   readonly db: Db;
   readonly now?: (() => number) | undefined;
 }
@@ -71,23 +73,31 @@ export async function registerTransferRoutes(
   app: FastifyInstance,
   options: TransferRoutesOptions,
 ): Promise<void> {
-  const transfers = new TransferService(options.db, options);
+  const getServices = createRouteServices(app, options, (options, _lifecycle) => {
+    const transfers = new TransferService(options.db, options);
+
+    return { transfers, options };
+  });
 
   app.get('/api/v1/transfers', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { transfers } = getServices(request);
     const query = parseListQuery((request.query ?? {}) as Record<string, unknown>);
     return reply.send(transfers.list(query));
   });
 
   app.post('/api/v1/transfers', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { transfers } = getServices(request);
     const created = transfers.create((request.body ?? {}) as Record<string, unknown>);
     return reply.status(201).send(created);
   });
 
   app.get('/api/v1/transfers/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { transfers } = getServices(request);
     return reply.send(transfers.getByIdOrThrow(requireId(request)));
   });
 
   app.patch('/api/v1/transfers/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { transfers } = getServices(request);
     const updated = transfers.update(
       requireId(request),
       (request.body ?? {}) as Record<string, unknown>,
@@ -96,6 +106,7 @@ export async function registerTransferRoutes(
   });
 
   app.delete('/api/v1/transfers/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { transfers } = getServices(request);
     transfers.softDelete(requireId(request));
     return reply.status(204).send();
   });

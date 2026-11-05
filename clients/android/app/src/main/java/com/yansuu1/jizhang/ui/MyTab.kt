@@ -104,6 +104,17 @@ fun MyTab(
     var showingTemplateRepairFromSalary by remember { mutableStateOf(false) }
     var salaryTemplateRefreshToken by remember { mutableStateOf(0) }
     var dataNavigationHandlers by remember { mutableStateOf<ActiveNavigationHandlers?>(null) }
+    val context = LocalContext.current
+    var hasLegacyPending by remember { mutableStateOf(false) }
+    LaunchedEffect(auth?.sessionKey) {
+        val user = auth?.user
+        if (user?.id != null) {
+            val server = api.getBaseUrl()
+            hasLegacyPending = OperationReplayStore(context).hasLegacyRecords(server, user.username) ||
+                (server != null && com.yansuu1.jizhang.ui.feature.assistant.SharedPreferencesAssistantBatchRecoveryStore(context)
+                    .hasLegacyRecords(server, user.username))
+        }
+    }
 
     DisposableEffect(section, dataNavigationHandlers) {
         if (section == "data" && dataNavigationHandlers != null) {
@@ -153,6 +164,7 @@ fun MyTab(
                 }
             }
             when (section) {
+                "invitations" -> InvitationManagementScreen(api, auth?.user, onAuthExpired)
                 "financial_plan" -> FinancialHostScreen(
                     api = api,
                     onAuthExpired = onAuthExpired,
@@ -302,6 +314,17 @@ fun MyTab(
                 ),
                 onSelect = { openSection(it) },
             )
+            if (auth?.user?.canManageInvitations == true) {
+                SettingsGroup(
+                    title = "账号管理",
+                    links = listOf(SettingLink("invitations", "邀请码管理", "邀请新用户，账本各自独立", Icons.Filled.Description)),
+                    onSelect = { openSection(it) },
+                )
+            }
+            if (hasLegacyPending) {
+                Text("本机保留了旧版本按用户名保存的待确认操作。升级后不会自动重放，请先核对服务器记录，再联系维护者恢复。",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             SettingsGroup(
                 title = "更多工具",
                 links = listOf(
@@ -389,6 +412,7 @@ private fun SettingsGroup(title: String, links: List<SettingLink>, onSelect: (St
 }
 
 private fun sectionTitle(section: String): String = when (section) {
+    "invitations" -> "邀请码管理"
     "manage" -> "分类与账户"
     "templates" -> "分配模板"
     "recurring" -> "周期账单"

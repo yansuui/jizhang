@@ -1,3 +1,4 @@
+import { createRouteServices, type TenantContextManager } from '../tenancy/context.js';
 /**
  * 财务执行(Phase 1)HTTP 路由:`/api/v1/financial-planning/*`。
  *
@@ -20,6 +21,7 @@ import { FinancialInvalidError, FinancialNotFoundError } from '../services/finan
 import { requireUserId } from '../plugins/auth.js';
 
 export interface FinancialPlanningRoutesOptions {
+  readonly tenants?: TenantContextManager | undefined;
   readonly db: Db;
   readonly now?: (() => number) | undefined;
   /** 测试注入的操作者;缺省取单用户表里的唯一用户。 */
@@ -54,22 +56,28 @@ export async function registerFinancialPlanningRoutes(
   app: FastifyInstance,
   options: FinancialPlanningRoutesOptions,
 ): Promise<void> {
-  const service = new FinancialPlanningService(options.db, {
-    now: options.now,
-    actorId: options.actorId,
-    serverTimeZone: options.serverTimeZone,
+  const getServices = createRouteServices(app, options, (options, _lifecycle) => {
+    const service = new FinancialPlanningService(options.db, {
+      now: options.now,
+      actorId: options.actorId,
+      serverTimeZone: options.serverTimeZone,
+    });
+
+    // 月计划(C2)是**只读**汇总:同一份已确认执行事实的另一个视图,不创建周期、
+    // 不改分配。它沿用本模块的 auth 封装与统一错误处理器。
+    const monthlyPlanService = new MonthlyPlanService(options.db, {
+      now: options.now,
+      actorId: options.actorId,
+      serverTimeZone: options.serverTimeZone,
+    });
+
+    /** `?periodId=` 或 `?month=YYYY-MM`,互斥;都不给 = 包含服务器当前时刻的冻结区间。 */
+
+    return { service, monthlyPlanService, options };
   });
 
-  // 月计划(C2)是**只读**汇总:同一份已确认执行事实的另一个视图,不创建周期、
-  // 不改分配。它沿用本模块的 auth 封装与统一错误处理器。
-  const monthlyPlanService = new MonthlyPlanService(options.db, {
-    now: options.now,
-    actorId: options.actorId,
-    serverTimeZone: options.serverTimeZone,
-  });
-
-  /** `?periodId=` 或 `?month=YYYY-MM`,互斥;都不给 = 包含服务器当前时刻的冻结区间。 */
   app.get('/api/v1/monthly-plan', async (request, reply: FastifyReply) => {
+      const { monthlyPlanService } = getServices(request);
     const query = queryObject(request);
     return reply.send(
       monthlyPlanService.getMonthlyPlan({
@@ -81,50 +89,60 @@ export async function registerFinancialPlanningRoutes(
 
   // ── 能力 / 配置 ────────────────────────────────────────────────────────────
   app.get('/api/v1/financial-planning/capabilities', async (_request, reply: FastifyReply) => {
+      const { service } = getServices(_request);
     return reply.send(service.capabilities());
   });
 
   app.get('/api/v1/financial-planning/config', async (_request, reply: FastifyReply) => {
+      const { service } = getServices(_request);
     return reply.send(service.getConfig());
   });
 
   app.put('/api/v1/financial-planning/config', async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
     return reply.send(service.putConfig(request.body));
   });
 
   // ── 类别映射 ───────────────────────────────────────────────────────────────
   app.get('/api/v1/financial-planning/category-rules', async (_request, reply: FastifyReply) => {
+      const { service } = getServices(_request);
     return reply.send(service.getMapping());
   });
 
   app.put('/api/v1/financial-planning/category-rules', async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
     return reply.send(service.putMapping(request.body));
   });
 
   // ── 工资来源 ───────────────────────────────────────────────────────────────
   app.get('/api/v1/financial-planning/sources/salaries', async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
     return reply.send(service.listSalarySources(queryObject(request)));
   });
 
   app.get(
     '/api/v1/financial-planning/sources/salaries/:salaryId',
     async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
       return reply.send(service.getSalarySource(requireParam(request, 'salaryId')));
     },
   );
 
   // ── 周期 ───────────────────────────────────────────────────────────────────
   app.post('/api/v1/financial-planning/periods/preview', async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
     return reply.send(service.previewPeriod(request.body));
   });
 
   app.post('/api/v1/financial-planning/periods/confirm', async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
     return reply.send(service.confirmPeriod(request.body));
   });
 
   app.post(
     '/api/v1/financial-planning/periods/:periodId/reconcile',
     async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
       return reply.send(
         service.reconcilePeriod(requireParam(request, 'periodId'), request.body),
       );
@@ -132,10 +150,12 @@ export async function registerFinancialPlanningRoutes(
   );
 
   app.get('/api/v1/financial-planning/periods', async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
     return reply.send(service.listPeriods(queryObject(request)));
   });
 
   app.get('/api/v1/financial-planning/periods/:periodId', async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
     return reply.send(
       service.getPeriod(requireParam(request, 'periodId'), optionalRevision(request)),
     );
@@ -144,6 +164,7 @@ export async function registerFinancialPlanningRoutes(
   app.get(
     '/api/v1/financial-planning/periods/:periodId/revisions',
     async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
       return reply.send(
         service.listPeriodRevisions(requireParam(request, 'periodId'), queryObject(request)),
       );
@@ -153,6 +174,7 @@ export async function registerFinancialPlanningRoutes(
   app.get(
     '/api/v1/financial-planning/periods/:periodId/execution',
     async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
       return reply.send(service.getExecution(requireParam(request, 'periodId')));
     },
   );
@@ -160,6 +182,7 @@ export async function registerFinancialPlanningRoutes(
   app.get(
     '/api/v1/financial-planning/periods/:periodId/details',
     async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
       return reply.send(
         service.listExecutionFacts(requireParam(request, 'periodId'), queryObject(request)),
       );
@@ -168,6 +191,7 @@ export async function registerFinancialPlanningRoutes(
 
   /** 首页/统一入口的规范化读取:当前周期,没有就是 `no-period`。 */
   app.get('/api/v1/financial-planning/execution', async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const periodId = queryObject(request)['periodId'];
     return reply.send(
       service.getExecution(
@@ -180,6 +204,7 @@ export async function registerFinancialPlanningRoutes(
   app.get(
     '/api/v1/financial-planning/bill-purposes/:transactionId',
     async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
       return reply.send(service.getBillPurpose(requireParam(request, 'transactionId')));
     },
   );
@@ -187,6 +212,7 @@ export async function registerFinancialPlanningRoutes(
   app.put(
     '/api/v1/financial-planning/bill-purposes/:transactionId',
     async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
       return reply.send(
         service.putBillPurpose(requireParam(request, 'transactionId'), request.body),
       );
@@ -195,16 +221,19 @@ export async function registerFinancialPlanningRoutes(
 
   // ── 退款 ───────────────────────────────────────────────────────────────────
   app.get('/api/v1/financial-planning/refunds', async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
     return reply.send(service.listRefunds(queryObject(request)));
   });
 
   app.get('/api/v1/financial-planning/refunds/:refundId', async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
     return reply.send(service.getRefund(requireParam(request, 'refundId')));
   });
 
   app.put(
     '/api/v1/financial-planning/refunds/:refundId/splits',
     async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
       return reply.send(
         service.putRefundSplits(requireParam(request, 'refundId'), request.body),
       );
@@ -215,6 +244,7 @@ export async function registerFinancialPlanningRoutes(
   app.get(
     '/api/v1/financial-planning/operations/:operationId',
     async (request, reply: FastifyReply) => {
+      const { service } = getServices(request);
       // Scoped to the signed-in actor: an operationId belonging to another account
       // must answer 404 exactly like an unknown one, not leak its stored response.
       const found = service.operation(

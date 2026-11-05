@@ -122,7 +122,7 @@ function hasFundPurpose(input: UpdateTransactionInput): boolean {
   return Object.prototype.hasOwnProperty.call(input, 'fundPurpose') && input.fundPurpose !== undefined;
 }
 
-function parseFundPurpose(value: unknown): FundPurpose | null {
+export function parseFundPurpose(value: unknown): FundPurpose | null {
   if (value === null || value === 'growth' || value === 'reserve' || value === 'essentials' || value === 'joy') return value;
   throw new FinancialInvalidError("fundPurpose must be null, 'growth', 'reserve', 'essentials' or 'joy'.");
 }
@@ -323,7 +323,7 @@ export class TransactionService {
     this.actorId = options.actorId;
   }
 
-  /** Stable financial actor: injected in tests, otherwise the one local user. */
+  /** Production injects the tenant actor; legacy single-ledger fixtures may resolve locally. */
   private resolveActorId(): string {
     return this.actorId ?? resolveFinancialActorId(this.db);
   }

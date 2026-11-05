@@ -52,7 +52,8 @@ import org.json.JSONObject
 /** Restore guidance stays server-specific; the client never replaces the database. */
 private const val RESTORE_GUIDANCE =
     "请按服务器部署文档中的恢复步骤操作，并确保使用运行中服务的 Compose 项目、环境配置和原数据卷。" +
-        "恢复前先备份当前数据库并核对目标快照；恢复后检查 /api/v1/health 和账本数据。"
+        "多用户服务需区分当前账号账本恢复与全站恢复，不能将个人账本快照替换身份库。" +
+        "恢复前先备份并核对目标账号与快照；恢复后检查 /api/v1/health 和对应账本数据。"
 
 /**
  * 数据导出与备份 (A8). Mirrors web `DataView.vue` four cards:
@@ -262,7 +263,7 @@ fun DataTab(
 
         JzCard(Modifier.fillMaxWidth()) {
         Text("备份", style = MaterialTheme.typography.titleSmall)
-        Text("备份是数据库快照，用于整库恢复；导出文件用于查看与迁移。", style = MaterialTheme.typography.bodySmall)
+        Text("多用户服务的备份只包含当前账号账本；全站恢复由管理员在服务器操作。导出文件用于查看与迁移。", style = MaterialTheme.typography.bodySmall)
         Button(
             enabled = !busy,
             onClick = {

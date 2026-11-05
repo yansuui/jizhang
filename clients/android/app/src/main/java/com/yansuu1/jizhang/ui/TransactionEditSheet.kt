@@ -302,14 +302,14 @@ fun TransactionEditSheet(
             } else {
                 "/api/v1/transactions/" + financialPathSegment(editId)
             }
-            val pending = replayStore.list(scopeInfo.serverBaseUrl, scopeInfo.username)
+            val pending = replayStore.list(scopeInfo.serverBaseUrl, scopeInfo.storageIdentity)
                 .filter { it.method == method && it.path == path }
                 .maxByOrNull { it.createdAt }
             if (pending != null) {
                 try {
                     financial.getOperation(pending.operationId)
                     runCatching {
-                        replayStore.remove(scopeInfo.serverBaseUrl, scopeInfo.username, pending.operationId)
+                        replayStore.remove(scopeInfo.serverBaseUrl, scopeInfo.storageIdentity, pending.operationId)
                     }
                     pendingPurposeOperation = null
                     pendingPurposeMessage = null
@@ -320,7 +320,7 @@ fun TransactionEditSheet(
                         when (val failure = classifyFinancialWriteFailure(e)) {
                             is FinancialWriteFailure.Rejected -> {
                                 runCatching {
-                                    replayStore.remove(scopeInfo.serverBaseUrl, scopeInfo.username, pending.operationId)
+                                    replayStore.remove(scopeInfo.serverBaseUrl, scopeInfo.storageIdentity, pending.operationId)
                                 }
                                 pendingPurposeMessage = failure.message
                             }
@@ -420,7 +420,7 @@ fun TransactionEditSheet(
                 else -> {
                     val rememberedAccountId = try {
                         recordingScope?.let { accountScope ->
-                            RecordingAccountPrefs.read(context, accountScope.serverBaseUrl, accountScope.username)
+                            RecordingAccountPrefs.read(context, accountScope.serverBaseUrl, accountScope.storageIdentity)
                         }
                     } catch (e: CancellationException) {
                         throw e
@@ -566,7 +566,7 @@ fun TransactionEditSheet(
         // A pending write for this exact target may have survived a restart.
         if (wantsExplicit) {
             val scopeNow = FinancialPrefs.resolveFinancialScope(api)
-            val stored = replayStore.list(scopeNow.serverBaseUrl, scopeNow.username)
+            val stored = replayStore.list(scopeNow.serverBaseUrl, scopeNow.storageIdentity)
                 .filter { it.method == method && it.path == path }
                 .maxByOrNull { it.createdAt }
             if (stored != null) {
@@ -616,7 +616,7 @@ fun TransactionEditSheet(
         )
         // Synchronous durable commit before the first send. If this throws we do
         // not dispatch, so no unkeyed duplicate can be created.
-        replayStore.record(scopeNow.serverBaseUrl, scopeNow.username, pending)
+        replayStore.record(scopeNow.serverBaseUrl, scopeNow.storageIdentity, pending)
         pendingPurposeOperation = pending
         pendingPurposeScope = scopeNow
         pendingPurposeMessage = "保存结果尚未确认时，重试会发送与本次完全相同的请求。"
@@ -635,7 +635,7 @@ fun TransactionEditSheet(
         if (savedAccountId.isBlank()) return
         val owner = recordingScope ?: return
         try {
-            RecordingAccountPrefs.write(context, owner.serverBaseUrl, owner.username, savedAccountId)
+            RecordingAccountPrefs.write(context, owner.serverBaseUrl, owner.storageIdentity, savedAccountId)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -647,7 +647,7 @@ fun TransactionEditSheet(
         val scopeNow = FinancialPrefs.resolveFinancialScope(api)
         val recorded = pendingPurposeScope
         if (recorded != null &&
-            (recorded.serverBaseUrl != scopeNow.serverBaseUrl || recorded.username != scopeNow.username)
+            (recorded.serverBaseUrl != scopeNow.serverBaseUrl || recorded.storageIdentity != scopeNow.storageIdentity)
         ) {
             throw IllegalStateException("登录用户或服务端地址已变化，已阻断保存重放；请重新打开账单。")
         }
@@ -659,7 +659,7 @@ fun TransactionEditSheet(
                 // The server already committed. A local cleanup failure must not
                 // turn a committed write into a reported failure.
                 runCatching {
-                    replayStore.remove(scopeNow.serverBaseUrl, scopeNow.username, pending.operationId)
+                    replayStore.remove(scopeNow.serverBaseUrl, scopeNow.storageIdentity, pending.operationId)
                 }
             }
             pendingPurposeOperation = null
@@ -675,7 +675,7 @@ fun TransactionEditSheet(
                     val pending = pendingPurposeOperation
                     if (pending != null) {
                         runCatching {
-                            replayStore.remove(scopeNow.serverBaseUrl, scopeNow.username, pending.operationId)
+                            replayStore.remove(scopeNow.serverBaseUrl, scopeNow.storageIdentity, pending.operationId)
                         }
                     }
                     pendingPurposeOperation = null

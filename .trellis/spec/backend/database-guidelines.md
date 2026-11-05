@@ -18,6 +18,14 @@ Everything else goes through `db/index.ts`. Nothing outside this directory opens
 `Database` of its own — except `cli-db.ts`, which must, because it operates on files the
 running server is not using.
 
+Multi-user deployment adds `identity/store.ts` and `identity/schema.ts`. They still
+open connections through `db/index.ts`, but initialize `auth.db` using an independent
+`identity_migrations` journal. Do not run ledger migrations or seeds on `auth.db`.
+`ledger_bindings.storage_key` is `owner` or a server-generated immutable user UUID;
+paths resolve under the configured data directory. Existing `users`/`sessions` in
+ledger files become empty, inert compatibility tables after verified credential
+cutover. See [Multi-user identity](./multiuser-identity.md) before migration changes.
+
 ---
 
 ## The rules, and why each one exists
@@ -151,6 +159,12 @@ a whole list query.
 | `foreign_keys` | `ON` | SQLite defaults this OFF per connection |
 | `busy_timeout` | `5000` | Avoids spurious `SQLITE_BUSY` under brief contention |
 | `synchronous` | `NORMAL` | Durable enough with WAL, much faster than `FULL` |
+
+The central identity connection overrides `synchronous` to `FULL`: committed user
+activation and invitation consumption are the authority for separately initialized
+ledger files. This does **not** make transactions across WAL files atomic. An unreachable
+ledger is initialized first, then identity/binding/invitation changes commit together
+inside `auth.db`; `ledger_provisions` records cleanup work across process restarts.
 
 ---
 

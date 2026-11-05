@@ -36,6 +36,7 @@ const TURN_SCHEMA: Record<string, unknown> = {
 };
 
 export interface AssistantOrchestratorOptions {
+  readonly actorId?: string | undefined;
   readonly db: Db;
   readonly config: AppConfig;
   readonly conversations: AssistantConversationService;
@@ -93,16 +94,16 @@ export function buildAssistantContext(
     config,
     provider,
     services: {
-      transactions: new TransactionService(options.db, { now }),
+      transactions: new TransactionService(options.db, { now, actorId: options.actorId }),
       balances: new AccountBalanceService(options.db),
       budget: new BudgetOverviewService(options.db, { now }),
       stats: new StatsService(options.db, { now }),
-      recurring: new RecurringService(options.db, { now }),
+      recurring: new RecurringService(options.db, { now, actorId: options.actorId }),
       monthly: new MonthlyEvaluationService(options.db, config, provider, now),
       organization: new AiOrganizationService(options.db, config, provider, { now }),
-      portability: new PortabilityService(options.db, { dataDir: options.config.dataDir }),
+      portability: new PortabilityService(options.db, { dataDir: options.config.dataDir, dbFile: options.config.dbFile, actorId: options.actorId }),
       masterData,
-      salaries: new SalaryService(options.db, { now }),
+      salaries: new SalaryService(options.db, { now, actorId: options.actorId }),
       transfers: new TransferService(options.db, { now }),
       templates: new TemplateService(options.db, { now }),
     },

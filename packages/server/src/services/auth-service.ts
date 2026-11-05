@@ -1,12 +1,11 @@
 /**
- * Authentication service: the single user, their sessions, and password changes.
+ * Authentication service: identities, sessions, and per-user password changes.
  *
  * Contract (T3 PRD R1-R4):
- *   * one account only (parent task D7) — no registration route exists;
+ *   * public account creation belongs to the invitation/identity store;
  *   * a wrong username and a wrong password are indistinguishable to the caller,
  *     so the API never reveals whether the account is configured (PRD AC3);
- *   * changing the password invalidates every existing session, forcing a fresh
- *     login on any device still holding a cookie (PRD AC7);
+ *   * changing a password invalidates that user's sessions only;
  *   * expiry is driven by an injectable clock so tests never sleep.
  *
  * All functions take `Db` explicitly; none of them import Fastify.
@@ -28,6 +27,9 @@ export interface UserRow {
   readonly password_hash: string;
   readonly created_at: number;
   readonly updated_at: number;
+  /** Absent only in the legacy ledger schema used by isolated compatibility tests. */
+  readonly role?: 'admin' | 'member';
+  readonly status?: 'active' | 'disabled';
 }
 
 export interface SessionRow {
@@ -56,24 +58,37 @@ export interface AuthServiceOptions {
   readonly sessionTtlDays: number;
   /** Injectable clock; defaults to `Date.now`. */
   readonly now?: () => number;
+  /** Central users must be created with an explicit ledger binding by IdentityStore. */
+  readonly centralIdentity?: boolean;
+}
+
+let dummyHash: Promise<string> | undefined;
+async function verifyMissingUserPassword(password: string): Promise<void> {
+  dummyHash ??= hashPassword(generateSessionToken().token);
+  await verifyPassword(await dummyHash, password);
 }
 
 export class AuthService {
   private readonly db: Db;
   private readonly ttlDays: number;
   private readonly now: () => number;
+  private readonly centralIdentity: boolean;
 
   constructor(db: Db, options: AuthServiceOptions) {
     this.db = db;
     this.ttlDays = options.sessionTtlDays;
     this.now = options.now ?? (() => Date.now());
+    this.centralIdentity = options.centralIdentity ?? false;
   }
 
-  /** The configured account, or `undefined` before `set-password` has been run. */
+  /** An existing account, or `undefined` when the username is unknown. */
   findUserByUsername(username: string): UserRow | undefined {
-    return this.db
-      .prepare('SELECT * FROM users WHERE username = ?')
-      .get(username) as UserRow | undefined;
+    return this.db.prepare('SELECT * FROM users WHERE username = ?').get(username) as
+      UserRow | undefined;
+  }
+
+  findUserById(userId: string): UserRow | undefined {
+    return this.db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as UserRow | undefined;
   }
 
   /** True once an account exists (i.e. the CLI has been run). */
@@ -85,18 +100,18 @@ export class AuthService {
   }
 
   /**
-   * Creates or updates the single account.
+   * Updates an account; legacy isolated databases also support initial creation.
    *
    * Always deletes existing sessions: rotating the password must not leave a
    * previously-issued cookie working (PRD AC7). Returns the user id.
    */
-  async setPassword(
-    username: string,
-    plainPassword: string,
-  ): Promise<string> {
+  async setPassword(username: string, plainPassword: string): Promise<string> {
     const passwordHash = await hashPassword(plainPassword);
     const nowMs = this.now();
     const existing = this.findUserByUsername(username);
+    if (existing === undefined && this.centralIdentity) {
+      throw new Error('Create the initial account with IdentityStore.bootstrapPassword.');
+    }
 
     const run = this.db.transaction((): string => {
       let userId: string;
@@ -115,9 +130,8 @@ export class AuthService {
           .run(passwordHash, nowMs, userId);
       }
 
-      // Any other account would be a bug in a single-user app; clearing every
-      // session is both the correct security behaviour and the simple one.
-      this.db.prepare('DELETE FROM sessions').run();
+      // Password rotation must leave unrelated users' sessions intact.
+      this.db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
       return userId;
     });
 
@@ -132,17 +146,29 @@ export class AuthService {
    */
   async login(username: string, password: string): Promise<LoginResult> {
     const user = this.findUserByUsername(username);
-    if (user === undefined) {
-      // Deliberate: no early return based on "user missing" leaking through timing
-      // is impractical to fully hide, but the response body is identical.
+    if (user === undefined || user.status === 'disabled') {
+      // Perform comparable Argon2 work for missing/disabled identities as well.
+      await verifyMissingUserPassword(password);
       return { ok: false, reason: 'no-user' };
     }
 
     const valid = await verifyPassword(user.password_hash, password);
-    if (!valid) {
+    const currentUser = this.findUserById(user.id);
+    if (
+      !valid ||
+      currentUser?.password_hash !== user.password_hash ||
+      currentUser.status === 'disabled'
+    ) {
       return { ok: false, reason: 'wrong-password' };
     }
 
+    return this.createSession(user.id);
+  }
+
+  /** Internal trusted entry point after verified login or invitation registration. */
+  createSession(userId: string): LoginResult {
+    const user = this.findUserById(userId);
+    if (user === undefined || user.status === 'disabled') return { ok: false, reason: 'no-user' };
     const { token, tokenHash } = generateSessionToken();
     const nowMs = this.now();
     const expiresAtMs = sessionExpiry(nowMs, this.ttlDays);
@@ -170,6 +196,8 @@ export class AuthService {
       .prepare('SELECT * FROM sessions WHERE token_hash = ?')
       .get(hashSessionToken(token)) as SessionRow | undefined;
     if (row === undefined) return undefined;
+    const user = this.findUserById(row.user_id);
+    if (user === undefined || user.status === 'disabled') return undefined;
 
     if (isExpired(row.expires_at, this.now())) {
       this.deleteSession(token);
@@ -182,9 +210,7 @@ export class AuthService {
   /** Deletes one session (logout). No-op when the token is unknown. */
   deleteSession(token: string): void {
     if (typeof token !== 'string' || token === '') return;
-    this.db
-      .prepare('DELETE FROM sessions WHERE token_hash = ?')
-      .run(hashSessionToken(token));
+    this.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashSessionToken(token));
   }
 
   /**
@@ -199,10 +225,9 @@ export class AuthService {
     currentPassword: string,
     newPassword: string,
   ): Promise<boolean> {
-    const user = this.db
-      .prepare('SELECT * FROM users WHERE id = ?')
-      .get(userId) as UserRow | undefined;
-    if (user === undefined) return false;
+    const user = this.db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as
+      UserRow | undefined;
+    if (user === undefined || user.status === 'disabled') return false;
 
     const valid = await verifyPassword(user.password_hash, currentPassword);
     if (!valid) return false;
@@ -210,22 +235,22 @@ export class AuthService {
     const passwordHash = await hashPassword(newPassword);
     const nowMs = this.now();
 
-    const run = this.db.transaction((): void => {
-      this.db
-        .prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
-        .run(passwordHash, nowMs, userId);
+    const run = this.db.transaction((): boolean => {
+      const result = this.db
+        .prepare(
+          'UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ? AND password_hash = ?',
+        )
+        .run(passwordHash, nowMs, userId, user.password_hash);
+      if (result.changes !== 1) return false;
       this.db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+      return true;
     });
-    run();
-
-    return true;
+    return run();
   }
 
   /** Housekeeping: drop every expired session. Returns how many were removed. */
   purgeExpiredSessions(): number {
-    const info = this.db
-      .prepare('DELETE FROM sessions WHERE expires_at <= ?')
-      .run(this.now());
+    const info = this.db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(this.now());
     return info.changes;
   }
 

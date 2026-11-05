@@ -9,7 +9,10 @@
 
 Three properties shape everything below:
 
-1. **It is a single-user SQLite app.** The Fastify app remains a small service; optional
+1. **It uses invitation-only identities and private SQLite ledgers.** Central identity
+   lives in `auth.db`; the original owner retains `jizhang.db` and invited users get
+   separate ledger files. See [identity and invitations](./multiuser-identity.md).
+   The Fastify app remains a small service; optional
    CPU-heavy item-photo inference runs in a separate private, resource-capped container.
    No ORM, persistent job queue, or cache layer. Complexity has to earn its place.
 2. **The accounting rules live in `@jizhang/shared`**, not here. The server reads rows and
@@ -24,7 +27,9 @@ Three properties shape everything below:
 | Guide | Description | Status |
 |-------|-------------|--------|
 | [Directory Structure](./directory-structure.md) | Module organization, and the auth-plugin encapsulation trap | Done |
+| [Private Account Ownership](./tenancy.md) | Per-user service contexts, request/worker lifetime, file and cutout ownership | Source and automated tests |
 | [Database Guidelines](./database-guidelines.md) | better-sqlite3, migrations, soft delete, backup | Done |
+| [Multi-user identity](./multiuser-identity.md) | Original-owner migration, private bindings, sessions and invite consumption | Source and fixture tests; production migration separate |
 | [Error Handling](./error-handling.md) | One error shape, 401 vs 403 vs 404, no leaks | Done |
 | [Assistant Streaming](./assistant-streaming.md) | Generation v1 SSE, clarification, lifecycle and cancellation | Done (source/tests; runtime pending) |
 | [AI Provider Integration](./ai-provider.md) | Configurable provider HTTP, encrypted secrets, draft contract | Done |

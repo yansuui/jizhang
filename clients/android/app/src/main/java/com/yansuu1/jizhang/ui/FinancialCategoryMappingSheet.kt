@@ -120,7 +120,7 @@ fun FinancialCategoryMappingSheet(
 
     suspend fun clearPendingQuietly(scopeInfo: FinancialScope, operationId: String) {
         try {
-            replayStore.remove(scopeInfo.serverBaseUrl, scopeInfo.username, operationId)
+            replayStore.remove(scopeInfo.serverBaseUrl, scopeInfo.storageIdentity, operationId)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -176,7 +176,7 @@ fun FinancialCategoryMappingSheet(
                 rebuildRows(loaded, loadedLabels)
                 try {
                     val scopeInfo = FinancialPrefs.resolveAuthenticatedScope(api)
-                    val persisted = replayStore.list(scopeInfo.serverBaseUrl, scopeInfo.username)
+                    val persisted = replayStore.list(scopeInfo.serverBaseUrl, scopeInfo.storageIdentity)
                         .filter { it.path == CATEGORY_RULES_PATH }
                         .maxByOrNull { it.createdAt }
                     if (persisted != null) {
@@ -290,7 +290,7 @@ fun FinancialCategoryMappingSheet(
                 return@launch
             }
             try {
-                replayStore.record(scopeInfo.serverBaseUrl, scopeInfo.username, pending)
+                replayStore.record(scopeInfo.serverBaseUrl, scopeInfo.storageIdentity, pending)
             } catch (e: CancellationException) {
                 saving = false
                 throw e
@@ -363,7 +363,7 @@ fun FinancialCategoryMappingSheet(
                 return@launch
             }
             if (currentScope.serverBaseUrl != storedScope.serverBaseUrl ||
-                currentScope.username != storedScope.username
+                currentScope.storageIdentity != storedScope.storageIdentity
             ) {
                 recoveryBusy = false
                 actionError = "登录用户或服务端已变化，无法恢复旧操作；请返回后重新进入。"
@@ -438,7 +438,7 @@ fun FinancialCategoryMappingSheet(
                 return@launch
             }
             if (currentScope.serverBaseUrl != storedScope.serverBaseUrl ||
-                currentScope.username != storedScope.username
+                currentScope.storageIdentity != storedScope.storageIdentity
             ) {
                 recoveryBusy = false
                 actionError = "登录用户或服务端已变化，不能重放旧请求；请返回后重新进入。"

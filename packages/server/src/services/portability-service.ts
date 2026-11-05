@@ -38,12 +38,15 @@ import {
   ACCOUNT_TYPE_WECHAT,
   CATEGORY_TYPE_INCOME,
   type CsvRow,
+  type FundPurpose,
   type PlatformBillSource,
 } from '@jizhang/shared';
 import { createBackup } from '../cli-db.js';
 import type { Db } from '../db/index.js';
 import { decodeBillFile } from './bill-decode.js';
-import { TransactionService, ValidationError } from './transaction-service.js';
+import { parseFundPurpose, TransactionService, ValidationError } from './transaction-service.js';
+import { writeFundPurpose } from './financial-fund-purpose-store.js';
+import { writeBillPurposeOverride } from './financial-purpose-store.js';
 
 /** The columns of the transactions export. Order is the file's contract. */
 export const TRANSACTION_COLUMNS = [
@@ -59,14 +62,7 @@ export const TRANSACTION_COLUMNS = [
   'fundPurpose',
 ] as const;
 
-/**
- * Columns an *old* file may omit.
- *
- * `fundPurpose` was added after the first export format shipped. Requiring it would
- * make every pre-existing backup unimportable, so absence means "no purpose evidence"
- * (visibly unassigned), while an unknown non-empty value is a hard line error — the
- * file is wrong, not merely old.
- */
+/** Legacy CSV exports predate the optional purpose evidence column. */
 const OPTIONAL_TRANSACTION_COLUMNS: readonly string[] = ['fundPurpose'];
 
 /**
@@ -189,6 +185,8 @@ export interface BackupFileDto {
 
 export interface PortabilityServiceOptions {
   readonly dataDir: string;
+  readonly dbFile?: string | undefined;
+  readonly actorId?: string | undefined;
   readonly now?: (() => number) | undefined;
 }
 
@@ -233,10 +231,14 @@ function parseAmountToCents(value: string): number | null {
 export class PortabilityService {
   private readonly db: Db;
   private readonly dataDir: string;
+  private readonly dbFile: string;
+  private readonly actorId: string | null;
 
   constructor(db: Db, options: PortabilityServiceOptions) {
     this.db = db;
     this.dataDir = options.dataDir;
+    this.dbFile = options.dbFile ?? db.name;
+    this.actorId = options.actorId ?? null;
   }
 
   /** Current, read-only heuristic matches. Facts must come from a stored preview, not the client. */
@@ -337,6 +339,7 @@ export class PortabilityService {
         // `|` rather than a comma: a comma would need quoting and is harder to read here.
         tags.join('|'),
         row.is_refund === 1 ? 'true' : 'false',
+        row.fund_purpose ?? '',
       ]);
     }
 
@@ -468,7 +471,7 @@ export class PortabilityService {
     }
 
     const missing = TRANSACTION_COLUMNS.filter(
-      (column) => !parsed.header.includes(column),
+      (column) => !OPTIONAL_TRANSACTION_COLUMNS.includes(column) && !parsed.header.includes(column),
     );
     if (missing.length > 0) {
       throw new ValidationError(
@@ -523,6 +526,7 @@ export class PortabilityService {
       readonly note: string;
       readonly tags: string[];
       readonly isRefund: boolean;
+      readonly fundPurpose: FundPurpose | null;
     }
 
     const pendingRows: Pending[] = [];
@@ -606,6 +610,14 @@ export class PortabilityService {
         rowCategoryId = refundCategoryId;
       }
 
+      const purposeInput = (record['fundPurpose'] ?? '').trim();
+      let fundPurpose: FundPurpose | null;
+      try { fundPurpose = parseFundPurpose(purposeInput === '' ? null : purposeInput); }
+      catch { throw new ValidationError(`Line ${line}: fundPurpose must be growth, reserve, essentials, joy, or empty.`); }
+      if (refundLabel === 'true' && fundPurpose !== null) {
+        throw new ValidationError(`Line ${line}: refund purpose must come from confirmed original transactions.`);
+      }
+
       pendingRows.push({
         id,
         type: rowType,
@@ -616,6 +628,7 @@ export class PortabilityService {
         note: record['note'] ?? '',
         tags,
         isRefund: refundLabel === 'true',
+        fundPurpose,
       });
     });
 
@@ -642,6 +655,15 @@ export class PortabilityService {
           row.isRefund ? 1 : 0,
           at,
         );
+        if (row.fundPurpose !== null) {
+          writeFundPurpose(this.db, row.id, row.fundPurpose, this.actorId, null, at, true);
+          if (row.type === 0 && (row.fundPurpose === 'essentials' || row.fundPurpose === 'joy')) {
+            writeBillPurposeOverride(this.db, {
+              transactionId: row.id, purpose: row.fundPurpose, expectedRevision: 0,
+              reason: 'create', operationId: null, actorId: this.actorId, now: at,
+            });
+          }
+        }
       }
     });
     insertMany(pendingRows);
@@ -1201,8 +1223,7 @@ export class PortabilityService {
     const dir = this.backupsDir();
     mkdirSync(dir, { recursive: true });
 
-    const dbFile = join(this.dataDir, 'jizhang.db');
-    const result = createBackup(dbFile, dir, 30);
+    const result = createBackup(this.dbFile, dir, 30);
 
     const stats = statSync(result.file);
     return {

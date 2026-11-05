@@ -1,3 +1,4 @@
+import { createRouteServices, type TenantContextManager } from '../tenancy/context.js';
 /**
  * Transaction routes (T4 PRD R2):
  *
@@ -22,6 +23,8 @@ import {
 } from '../services/transaction-service.js';
 
 export interface TransactionRoutesOptions {
+  readonly actorId?: string | undefined;
+  readonly tenants?: TenantContextManager | undefined;
   readonly db: Db;
   readonly now?: (() => number) | undefined;
 }
@@ -125,14 +128,19 @@ export async function registerTransactionRoutes(
   app: FastifyInstance,
   options: TransactionRoutesOptions,
 ): Promise<void> {
-  const service = new TransactionService(
-    options.db,
-    options.now === undefined ? {} : { now: options.now },
-  );
+  const getServices = createRouteServices(app, options, (options, _lifecycle) => {
+    const service = new TransactionService(
+      options.db,
+    options,
+    );
+
+    return { service, options };
+  });
 
   app.get(
     '/api/v1/transactions',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       const query = parseListQuery((request.query ?? {}) as Record<string, unknown>);
       return reply.send(service.list(query));
     },
@@ -141,6 +149,7 @@ export async function registerTransactionRoutes(
   app.get(
     '/api/v1/transactions/daily-summary',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       const raw = (request.query ?? {}) as Record<string, unknown>;
       // Summary scope is independent of paging, even when paging values are invalid.
       const query = parseListQuery({ ...raw, limit: undefined, offset: undefined });
@@ -151,6 +160,7 @@ export async function registerTransactionRoutes(
   app.get(
     '/api/v1/transactions/:id',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       const found = service.getById(requireId(request));
       if (found === undefined) throw new NotFoundError();
       return reply.send(found);
@@ -160,6 +170,7 @@ export async function registerTransactionRoutes(
   app.post(
     '/api/v1/transactions',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       const created = service.create((request.body ?? {}) as Record<string, unknown>);
       return reply.status(201).send(created);
     },
@@ -168,6 +179,7 @@ export async function registerTransactionRoutes(
   app.patch(
     '/api/v1/transactions/:id',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       const updated = service.update(
         requireId(request),
         (request.body ?? {}) as Record<string, unknown>,
@@ -179,6 +191,7 @@ export async function registerTransactionRoutes(
   app.delete(
     '/api/v1/transactions/:id',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       service.softDelete(requireId(request));
       return reply.status(204).send();
     },

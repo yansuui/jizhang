@@ -1,3 +1,4 @@
+import { createRouteServices, type TenantContextManager } from '../tenancy/context.js';
 /** Authenticated conversation API. File bodies are request-local and never persisted. */
 import { createHash } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -22,6 +23,8 @@ const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 
 export interface AssistantRoutesOptions {
+  readonly actorId?: string | undefined;
+  readonly tenants?: TenantContextManager | undefined;
   readonly db: Db;
   readonly config: AppConfig;
   readonly now?: (() => number) | undefined;
@@ -224,79 +227,91 @@ function safeError(error: unknown): { code: string; message: string } {
 }
 
 export async function registerAssistantRoutes(app: FastifyInstance, options: AssistantRoutesOptions): Promise<void> {
-  const now = options.now ?? (() => Date.now());  const withConversationLock = createConversationWriteLock();
-  const conversations = new AssistantConversationService(options.db, now, { withConversationLock });
-  const orchestrator = new AssistantOrchestrator({
-    db: options.db,
-    config: options.config,
-    conversations,
-    now,
-    fetchImpl: options.fetchImpl,
-  });
-  const confirmingActions = new Map<string, Promise<unknown>>();
-  /**
-   * Live *legacy* provider turns per conversation (message send, import analyse).
-   *
-   * v1 generations and legacy turns are mutually exclusive in both directions. The legacy
-   * routes already refused to start while a generation was live; this counter closes the
-   * other direction, because a legacy turn holds no generation row for `hasActive` to see.
-   * Both checks run under the shared write lock, so a create decision and a legacy start
-   * cannot both pass.
-   */
-  /**
-   * Provider-work exclusion shared by legacy turns and merged-batch analysis.
-   *
-   * The lock reads live generations from the database, so a module that only knows the routes it
-   * registered still observes v1 streaming exactly as `generations.hasActive` would.
-   */
-  const activeLock = new ConversationActiveLock(options.db);
-  const beginLegacyTurn = (conversationId: string): boolean =>
-    withConversationLock(() => activeLock.begin(conversationId, 'legacy'));
-  const endLegacyTurn = (conversationId: string): void => activeLock.end(conversationId, 'legacy');
-  const legacyTurnActiveError = (): AssistantStreamError =>
-    new AssistantStreamError('ASSISTANT_GENERATION_ACTIVE', '当前会话仍有进行中的生成，请先等待或停止。');
+  const getServices = createRouteServices(app, options, (options, lifecycle) => {
+    const now = options.now ?? (() => Date.now());  const withConversationLock = createConversationWriteLock();
+    const conversations = new AssistantConversationService(options.db, now, { withConversationLock });
+    const orchestrator = new AssistantOrchestrator({
+      actorId: options.actorId,
+      db: options.db,
+      config: options.config,
+      conversations,
+      now,
+      fetchImpl: options.fetchImpl,
+    });
+    const confirmingActions = new Map<string, Promise<unknown>>();
+    /**
+     * Live *legacy* provider turns per conversation (message send, import analyse).
+     *
+     * v1 generations and legacy turns are mutually exclusive in both directions. The legacy
+     * routes already refused to start while a generation was live; this counter closes the
+     * other direction, because a legacy turn holds no generation row for `hasActive` to see.
+     * Both checks run under the shared write lock, so a create decision and a legacy start
+     * cannot both pass.
+     */
+    /**
+     * Provider-work exclusion shared by legacy turns and merged-batch analysis.
+     *
+     * The lock reads live generations from the database, so a module that only knows the routes it
+     * registered still observes v1 streaming exactly as `generations.hasActive` would.
+     */
+    const activeLock = new ConversationActiveLock(options.db);
+    const beginLegacyTurn = (conversationId: string): boolean =>
+      withConversationLock(() => activeLock.begin(conversationId, 'legacy'));
+    const endLegacyTurn = (conversationId: string): void => activeLock.end(conversationId, 'legacy');
+    const legacyTurnActiveError = (): AssistantStreamError =>
+      new AssistantStreamError('ASSISTANT_GENERATION_ACTIVE', '当前会话仍有进行中的生成，请先等待或停止。');
 
-  // ── v1 streamed generations (additive; legacy endpoints below stay compatible) ──
-  // `generations` is created after the shared provider-work lock so both can be handed to the
-  // batch analysis runner; the lock itself reads live generations straight from the database.
-  const generations = new AssistantGenerationService(options.db, conversations, now, { withConversationLock });
-  const runner = new AssistantGenerationRunner(options.db, options.config, conversations, generations, {
-    now,
-    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
-    ...(options.generationStepDelayMs === undefined ? {} : { stepDelayMs: options.generationStepDelayMs }),
-  });
-  // Boot recovery: unfinished work becomes `interrupted` and is never rerun automatically.
-  runner.recover();
+    // ── v1 streamed generations (additive; legacy endpoints below stay compatible) ──
+    // `generations` is created after the shared provider-work lock so both can be handed to the
+    // batch analysis runner; the lock itself reads live generations straight from the database.
+    const generations = new AssistantGenerationService(options.db, conversations, now, { withConversationLock });
+    const runner = new AssistantGenerationRunner(options.db, options.config, conversations, generations, {
+      actorId: options.actorId,
+      now,
+      ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+      ...(options.generationStepDelayMs === undefined ? {} : { stepDelayMs: options.generationStepDelayMs }),
+    });
+    // Boot recovery: unfinished work becomes `interrupted` and is never rerun automatically.
+    runner.recover();
 
-  const aiConfigService = new AiConfigService(options.db, {
-    aiEncryptionKey: options.config.aiEncryptionKey,
-    production: options.config.nodeEnv === 'production',
-    now,
+    const aiConfigService = new AiConfigService(options.db, {
+      aiEncryptionKey: options.config.aiEncryptionKey,
+      production: options.config.nodeEnv === 'production',
+      now,
+    });
+
+    /**
+     * Merged (multi-file) import batches. Same authenticated plugin context, same conversation
+     * lock; the legacy single-file import routes below are untouched.
+     */
+    const batchAnalysis = new ImportBatchAnalysisRunner({
+      db: options.db,
+      config: options.config,
+      now,
+      ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+      activeLock,
+    });
+    // Boot recovery: a run left `running` by a previous process becomes `failed`, never resumed.
+    batchAnalysis.recover();
+
+
+    lifecycle.onClose(async () => {
+      await batchAnalysis.shutdown();
+      await runner.shutdown();
+    });
+
+
+    lifecycle.whileBusy(() => runner.hasActiveWork || batchAnalysis.hasActiveWork);
+
+    return { now, withConversationLock, conversations, orchestrator, confirmingActions, activeLock, beginLegacyTurn, endLegacyTurn, legacyTurnActiveError, generations, runner, aiConfigService, batchAnalysis, options };
   });
 
-  /**
-   * Merged (multi-file) import batches. Same authenticated plugin context, same conversation
-   * lock; the legacy single-file import routes below are untouched.
-   */
-  const batchAnalysis = new ImportBatchAnalysisRunner({
-    db: options.db,
-    config: options.config,
-    now,
-    ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
-    activeLock,
-  });
-  // Boot recovery: a run left `running` by a previous process becomes `failed`, never resumed.
-  batchAnalysis.recover();
-  await registerImportBatchRoutes(app, { analysis: batchAnalysis });
-
-  app.addHook('onClose', async () => {
-    await batchAnalysis.shutdown();
-    await runner.shutdown();
-  });
+  await registerImportBatchRoutes(app, { resolveAnalysis: (request) => getServices(request).batchAnalysis });
 
   app.post<{ Params: { conversationId: string } }>(
     '/api/v1/assistant/conversations/:conversationId/generations',
     async (request, reply) => {
+      const { aiConfigService, withConversationLock, activeLock, legacyTurnActiveError, generations, now, runner } = getServices(request);
       const body = parseCreateGenerationRequest(request.body);
       let delivery: 'stream' | 'buffered' = 'buffered';
       try {
@@ -332,6 +347,7 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
   app.get<{ Params: { conversationId: string }; Querystring: { limit?: unknown } }>(
     '/api/v1/assistant/conversations/:conversationId/generations',
     async (request, reply) => {
+      const { generations } = getServices(request);
       reply.header('Cache-Control', 'no-store');
       if (request.query.limit !== undefined && String(request.query.limit) !== '1') {
         throw new AssistantStreamError('ASSISTANT_GENERATION_INVALID', 'limit 仅支持 1。');
@@ -344,6 +360,7 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
   app.get<{ Params: { conversationId: string; generationId: string } }>(
     '/api/v1/assistant/conversations/:conversationId/generations/:generationId',
     async (request, reply) => {
+      const { generations } = getServices(request);
       reply.header('Cache-Control', 'no-store');
       return { generation: generations.get(request.params.conversationId, request.params.generationId) };
     },
@@ -352,6 +369,7 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
   app.post<{ Params: { conversationId: string; generationId: string } }>(
     '/api/v1/assistant/conversations/:conversationId/generations/:generationId/cancel',
     async (request) => {
+      const { generations, runner } = getServices(request);
       const { conversationId, generationId } = request.params;
       // Order matters. Ownership and the durable terminal status first (`requireRow` scopes
       // the generation to this conversation and `cancel` is idempotent), then the upstream
@@ -367,6 +385,7 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
   app.get<{ Params: { conversationId: string; generationId: string }; Querystring: { afterSeq?: unknown } }>(
     '/api/v1/assistant/conversations/:conversationId/generations/:generationId/events',
     async (request, reply) => {
+      const { generations } = getServices(request);
       const { conversationId, generationId } = request.params;
       const raw = request.query.afterSeq === undefined ? 0 : Number(request.query.afterSeq);
       if (!Number.isSafeInteger(raw) || raw < 0) {
@@ -396,19 +415,30 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
     },
   );
 
-  app.get('/api/v1/assistant/tools', async () => ({ items: orchestrator.catalog() }));
-  app.get('/api/v1/assistant/conversations', async () => ({ items: conversations.list() }));
+  app.get('/api/v1/assistant/tools', async (request) => {
+      const { orchestrator } = getServices(request);
+      return ({ items: orchestrator.catalog() });
+    });
+  app.get('/api/v1/assistant/conversations', async (request) => {
+      const { conversations } = getServices(request);
+      return ({ items: conversations.list() });
+    });
   app.post('/api/v1/assistant/conversations', async (request: FastifyRequest) => {
+      const { conversations } = getServices(request);
     const body = request.body === undefined ? {} : record(request.body, 'body');
     const title = typeof body['title'] === 'string' ? body['title'].slice(0, 120) : '';
     return conversations.create(title);
   });
 
-  app.get<{ Params: { id: string } }>('/api/v1/assistant/conversations/:id/messages', async (request) => ({
+  app.get<{ Params: { id: string } }>('/api/v1/assistant/conversations/:id/messages', async (request) => {
+      const { conversations } = getServices(request);
+      return ({
     items: conversations.messages(request.params.id),
-  }));
+  });
+    });
 
   app.post<{ Params: { id: string } }>('/api/v1/assistant/conversations/:id/messages', async (request) => {
+      const { conversations, beginLegacyTurn, legacyTurnActiveError, orchestrator, endLegacyTurn } = getServices(request);
     const body = record(request.body, 'body');
     const text = typeof body['text'] === 'string' ? body['text'].trim() : '';
     const clientRequestId = typeof body['clientRequestId'] === 'string' ? body['clientRequestId'].trim().slice(0, 120) : undefined;
@@ -450,6 +480,7 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
 
   app.get<{ Params: { conversationId: string; id: string; rowId: string }; Querystring: { limit?: unknown; cursor?: unknown } }>(
     '/api/v1/assistant/conversations/:conversationId/actions/:id/rows/:rowId/duplicates', async (request, reply) => {
+      const { options, now } = getServices(request);
       reply.header('Cache-Control', 'no-store');
       return new AssistantImportComparisonService(options.db, options.config.dataDir, now).read(
         request.params.conversationId, request.params.id, request.params.rowId, request.query.limit, request.query.cursor,
@@ -458,6 +489,7 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
   );
 
   app.post<{ Params: { id: string } }>('/api/v1/assistant/actions/:id/analyse', async (request) => {
+      const { conversations, beginLegacyTurn, legacyTurnActiveError, orchestrator, endLegacyTurn } = getServices(request);
     const pending = conversations.pending(request.params.id);
     if (pending.status !== 'pending' || pending.toolName !== 'platform-import.prepare' || !pending.attachment) throw new AssistantActionStaleError();
     const body = record(request.body, 'body');
@@ -487,6 +519,7 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
   });
 
   app.post<{ Params: { id: string } }>('/api/v1/assistant/actions/:id/confirm', async (request) => {
+      const { confirmingActions, conversations, orchestrator } = getServices(request);
     const alreadyConfirming = confirmingActions.get(request.params.id);
     if (alreadyConfirming !== undefined) return alreadyConfirming;
     const operation = (async () => {
@@ -532,6 +565,7 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
   });
 
   app.post<{ Params: { id: string } }>('/api/v1/assistant/actions/:id/cancel', async (request) => {
+      const { conversations } = getServices(request);
     const pending = conversations.pending(request.params.id);
     const action = conversations.setPendingStatus(pending.id, 'cancelled', null);
     const cardMessage = conversations.messages(pending.conversationId).find((message) => message.content.card?.actionId === pending.id);
@@ -540,6 +574,7 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
   });
 
   app.delete<{ Params: { id: string } }>('/api/v1/assistant/conversations/:id', async (request) => {
+      const { generations, batchAnalysis, runner, conversations } = getServices(request);
     // Order matters: fence first, then abort and drain, then hide the conversation.
     // 1. The durable fence writes `interrupted` for every live generation *before* we wait
     //    on the provider, so a slow upstream can never keep the generation live after the

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * `node dist/cli.js set-password` — create or rotate the single account.
+ * `node dist/cli.js set-password` — bootstrap an administrator or rotate an account.
  *
  * Why a CLI instead of an HTTP route or an env var:
- *   * a registration route would have to be public on a hostname reachable from
- *     the internet, i.e. anyone could claim the account;
+ *   * invitation registration creates ordinary members; public requests must
+ *     never claim the initial administrator or existing owner's ledger;
  *   * putting a plaintext password in `.env` puts it in a file that gets copied
  *     around, and a hash in `.env` cannot be rotated without editing and
  *     redeploying.
@@ -15,18 +15,23 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { runDatabaseCommand } from './cli-db.js';
+import { runSystemCommand } from './cli-system.js';
 import { ConfigError, loadConfig } from './config.js';
 import { closeDatabase, initializeDatabase, openDatabase } from './db/index.js';
-import { AuthService } from './services/auth-service.js';
+import { openIdentityStore } from './identity/store.js';
 import { MIN_PASSWORD_LENGTH } from './services/password.js';
+import { acquireStorageLock } from './storage-lock.js';
 
 const USAGE = `Usage: node dist/cli.js <command> [args]
 
 Commands:
-  set-password                  Create or rotate the login password (interactive).
-  backup <dir> [retain-days]    Snapshot the database into <dir> (default retain 30).
-  verify <file.db>              Check that a backup file is a usable database.
-  restore <file.db>             Replace the live database with a backup.
+  set-password                  Offline account bootstrap/password rotation (interactive).
+  backup-all <dir>               Offline verified snapshot of identity and every ledger.
+  verify-all <bundle-dir>        Verify hashes, schemas and every account binding.
+  restore-all <bundle> <dir>     Restore into a new/empty directory; revoke sessions.
+  backup <dir> [retain-days]     Legacy single-user database backup only.
+  verify <file.db>               Verify one SQLite file (not full-system recovery).
+  restore <file.db>              Legacy single-user restore only; stop writers first.
 
 set-password reads JIZHANG_USERNAME from the environment (or .env) to know which
 account to set, and prompts for the password twice. It needs an interactive
@@ -111,7 +116,9 @@ async function setPassword(): Promise<void> {
     config = loadConfig();
   } catch (error) {
     if (error instanceof ConfigError) {
-      console.error(`\n[jizhang] Cannot set a password — configuration error\n\n${error.message}\n`);
+      console.error(
+        `\n[jizhang] Cannot set a password — configuration error\n\n${error.message}\n`,
+      );
       process.exitCode = 1;
       return;
     }
@@ -151,32 +158,38 @@ async function setPassword(): Promise<void> {
     return;
   }
 
-  const db = openDatabase(config);
+  const releaseStorage = acquireStorageLock(config.dataDir);
+  let db;
   try {
+    db = openDatabase(config);
     initializeDatabase(db, config.dataDir);
 
-    const authService = new AuthService(db, {
-      sessionTtlDays: config.sessionTtlDays,
-    });
-    const existed = authService.hasUser();
-    await authService.setPassword(config.username, password);
+    const identity = openIdentityStore({ config, legacyDb: db });
+    let existed: boolean;
+    try {
+      existed = identity.authService.findUserByUsername(config.username) !== undefined;
+      await identity.bootstrapPassword(config.username, password);
+    } finally {
+      identity.close();
+    }
 
-    console.log(
-      `\n[jizhang] Password ${existed ? 'updated' : 'set'} for "${config.username}".`,
-    );
+    console.log(`\n[jizhang] Password ${existed ? 'updated' : 'set'} for "${config.username}".`);
     console.log(
       existed
-        ? 'All existing sessions were invalidated — sign in again on every device.\n'
+        ? 'This account’s existing sessions were invalidated — sign in again on its devices.\n'
         : 'You can now sign in.\n',
     );
   } finally {
-    closeDatabase(db);
+    if (db !== undefined) closeDatabase(db);
+    releaseStorage();
   }
 }
 
 async function main(): Promise<void> {
   const command = process.argv[2];
   const rest = process.argv.slice(3);
+  loadLocalEnvFile();
+  if (runSystemCommand(command ?? '', rest)) return;
 
   // Database maintenance lives in its own module to keep this file focused on the
   // interactive password flow.

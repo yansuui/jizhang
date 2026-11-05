@@ -215,7 +215,7 @@ class ApiTransportTest {
             )
 
             val identity = owner.capture()
-            val req = Request.Builder().url(server.url("/api/v1/auth/login")).build()
+            val req = apiRequest("POST", server.url("/api/v1/auth/login"))
 
             var status = 0
             transport.execute(identity, req) { resp ->

@@ -326,9 +326,14 @@ class ApiClient(private val context: Context) {
         }
         return transport.execute(identity, request, clientOverride) { resp ->
             val text = resp.body?.string().orEmpty()
-            if (resp.code == 401) throw AuthExpiredException(readMessage(text))
+            val publicAuthentication = method == "POST" && isPublicAuthenticationPath(path)
+            if (resp.code == 401 && !publicAuthentication) throw AuthExpiredException(readMessage(text))
             if (!resp.isSuccessful) throw toApiException(resp.code, text)
-            if (text.isBlank()) JSONObject() else JSONObject(text)
+            val result = if (text.isBlank()) JSONObject() else JSONObject(text)
+            if (publicAuthentication) {
+                AuthenticatedUser.fromJson(result, requireStableId = path == "/api/v1/auth/register")
+            }
+            result
         }
     }
 

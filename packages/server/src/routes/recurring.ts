@@ -1,3 +1,4 @@
+import { createRouteServices, type TenantContextManager } from '../tenancy/context.js';
 /**
  * Recurring-bill routes (T13 PRD R1–R3).
  *
@@ -30,6 +31,8 @@ import { RecurringService } from '../services/recurring-service.js';
 import { NotFoundError } from '../services/transaction-service.js';
 
 export interface RecurringRoutesOptions {
+  readonly actorId?: string | undefined;
+  readonly tenants?: TenantContextManager | undefined;
   readonly db: Db;
   readonly now?: (() => number) | undefined;
 }
@@ -51,17 +54,24 @@ export async function registerRecurringRoutes(
   app: FastifyInstance,
   options: RecurringRoutesOptions,
 ): Promise<void> {
-  const service = new RecurringService(
-    options.db,
-    options.now === undefined ? {} : { now: options.now },
-  );
+  const getServices = createRouteServices(app, options, (options, _lifecycle) => {
+    const service = new RecurringService(
+      options.db,
+    options,
+    );
 
-  // ── rules ──────────────────────────────────────────────────────────────────
+    // ── rules ──────────────────────────────────────────────────────────────────
+
+    return { service, options };
+  });
+
   app.get('/api/v1/recurring/rules', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(_request);
     return reply.send({ items: service.listRules() });
   });
 
   app.post('/api/v1/recurring/rules', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const created = service.createRule((request.body ?? {}) as Record<string, unknown>);
     return reply.status(201).send(created);
   });
@@ -69,6 +79,7 @@ export async function registerRecurringRoutes(
   app.patch(
     '/api/v1/recurring/rules/:id',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       const updated = service.updateRule(
         requireId(request),
         (request.body ?? {}) as Record<string, unknown>,
@@ -80,6 +91,7 @@ export async function registerRecurringRoutes(
   app.delete(
     '/api/v1/recurring/rules/:id',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       service.deleteRule(requireId(request));
       return reply.status(204).send();
     },
@@ -90,6 +102,7 @@ export async function registerRecurringRoutes(
   app.post(
     '/api/v1/recurring/rules/:id/enabled',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       const body = (request.body ?? {}) as Record<string, unknown>;
       const enabled = body['enabled'];
       if (typeof enabled !== 'boolean') {
@@ -105,6 +118,7 @@ export async function registerRecurringRoutes(
   // A static segment, so it cannot be confused with `rules/:id`. The e2e suite asserts
   // each path reaches its own handler rather than trusting the router's precedence.
   app.post('/api/v1/recurring/generate', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(_request);
     const result = service.generateDue();
     return reply.send({ ...result, pending: service.listPending().length });
   });
@@ -113,11 +127,13 @@ export async function registerRecurringRoutes(
   app.get(
     '/api/v1/recurring/occurrences',
     async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(_request);
       return reply.send({ items: service.listOccurrences() });
     },
   );
 
   app.get('/api/v1/recurring/pending', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(_request);
     const items = service.listPending();
     return reply.send({ items, total: items.length });
   });
@@ -125,6 +141,7 @@ export async function registerRecurringRoutes(
   app.post(
     '/api/v1/recurring/occurrences/:id/confirm',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       // `created: false` means the occurrence was already confirmed and the bill it
       // produced is being returned — not that a second bill was made.
       return reply.send(service.confirmOccurrence(requireId(request)));
@@ -134,6 +151,7 @@ export async function registerRecurringRoutes(
   app.post(
     '/api/v1/recurring/occurrences/:id/ignore',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       return reply.send(service.ignoreOccurrence(requireId(request)));
     },
   );

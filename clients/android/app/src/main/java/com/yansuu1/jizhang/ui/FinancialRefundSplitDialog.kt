@@ -113,7 +113,7 @@ fun FinancialRefundSplitDialog(
 
     suspend fun clearPendingQuietly(scopeInfo: FinancialScope, operationId: String) {
         try {
-            replayStore.remove(scopeInfo.serverBaseUrl, scopeInfo.username, operationId)
+            replayStore.remove(scopeInfo.serverBaseUrl, scopeInfo.storageIdentity, operationId)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -139,7 +139,7 @@ fun FinancialRefundSplitDialog(
                 conflict = false
                 try {
                     val scopeInfo = FinancialPrefs.resolveAuthenticatedScope(api)
-                    val persisted = replayStore.list(scopeInfo.serverBaseUrl, scopeInfo.username)
+                    val persisted = replayStore.list(scopeInfo.serverBaseUrl, scopeInfo.storageIdentity)
                         .filter { it.path == path }
                         .maxByOrNull { it.createdAt }
                     if (persisted != null) {
@@ -297,7 +297,7 @@ fun FinancialRefundSplitDialog(
                 return@launch
             }
             try {
-                replayStore.record(scopeInfo.serverBaseUrl, scopeInfo.username, pending)
+                replayStore.record(scopeInfo.serverBaseUrl, scopeInfo.storageIdentity, pending)
             } catch (e: CancellationException) {
                 saving = false
                 throw e
@@ -374,7 +374,7 @@ fun FinancialRefundSplitDialog(
                 return@launch
             }
             if (currentScope.serverBaseUrl != storedScope.serverBaseUrl ||
-                currentScope.username != storedScope.username
+                currentScope.storageIdentity != storedScope.storageIdentity
             ) {
                 recoveryBusy = false
                 actionError = "登录用户或服务端已变化，无法恢复旧操作；请返回后重新进入。"
@@ -448,7 +448,7 @@ fun FinancialRefundSplitDialog(
                 return@launch
             }
             if (currentScope.serverBaseUrl != storedScope.serverBaseUrl ||
-                currentScope.username != storedScope.username
+                currentScope.storageIdentity != storedScope.storageIdentity
             ) {
                 recoveryBusy = false
                 actionError = "登录用户或服务端已变化，不能重放旧请求；请返回后重新进入。"

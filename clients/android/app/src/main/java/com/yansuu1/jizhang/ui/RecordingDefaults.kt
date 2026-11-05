@@ -46,7 +46,8 @@ fun resolveRecordingAccount(
 }
 
 /**
- * “上次使用的账户”本地偏好，按 serverBaseUrl + 已认证用户名隔离。
+ * “上次使用的账户”本地偏好，按 serverBaseUrl + FinancialScope.storageIdentity 隔离。
+ * 参数 username 保留旧签名；调用方传入已验证的不可变 ID 命名空间（旧服务器才用用户名）。
  *
  * 现有偏好（主题、首页预算模式、未决理财操作）都没有账户默认值，因此在这里本地实现，
  * 不新增依赖。服务端地址或用户名缺失时既不读也不写，避免把账户记到别的服务器/用户名下。
@@ -57,7 +58,8 @@ object RecordingAccountPrefs {
         val user = (username ?: "anonymous").trim()
         val raw = "server=${server.length}:$server|user=${user.length}:$user"
         val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(Charsets.UTF_8))
-        return "recording_account_" + digest.joinToString("") { "%02x".format(it) }.take(16)
+        val prefix = if (username?.startsWith("id:") == true) "recording_account_v2_" else "recording_account_"
+        return prefix + digest.joinToString("") { "%02x".format(it) }.take(16)
     }
 
     suspend fun read(context: Context, serverBaseUrl: String?, username: String?): String? {

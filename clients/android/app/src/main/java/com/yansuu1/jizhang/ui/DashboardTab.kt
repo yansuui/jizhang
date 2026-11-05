@@ -244,7 +244,7 @@ fun DashboardTab(
 
             try {
                 val authScope = FinancialPrefs.resolveAuthenticatedScope(api)
-                homeMode = FinancialPrefs.readHomeBudgetMode(context, authScope.serverBaseUrl, authScope.username)
+                homeMode = FinancialPrefs.readHomeBudgetMode(context, authScope.serverBaseUrl, authScope.storageIdentity)
             } catch (_: Exception) {}
 
             try {
@@ -533,7 +533,7 @@ fun DashboardTab(
                                 scope.launch {
                                     try {
                                         val authScope = FinancialPrefs.resolveAuthenticatedScope(api)
-                                        FinancialPrefs.writeHomeBudgetMode(context, authScope.serverBaseUrl, authScope.username, next)
+                                        FinancialPrefs.writeHomeBudgetMode(context, authScope.serverBaseUrl, authScope.storageIdentity, next)
                                     } catch (_: Exception) {}
                                 }
                             },

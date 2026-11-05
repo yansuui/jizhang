@@ -1,5 +1,7 @@
 # 记账 Android App：当前功能目录
 
+**2026-11-05 多用户局部源码复核：** 仅复核认证/注册/邀请管理 P003–P013、P020/P031/P033、新增 P042–P045，以及 D023–D025 的个人备份边界和 A041/A056/A060 的账号所有权；其余章节审计日期不变。新增注册、身份解码、公开认证 Cookie、邀请码字段和稳定 ID 隔离的 JVM 测试源码。本机 Gradle 尝试因分发包独占锁等待超时而未进入测试，且未发现 Android SDK；本轮编译/测试/lint 以 GitHub CI 结果单独记录，**没有真机验收或部署证据**。
+
 > 源码核对日期：**2026-10-10**；导航/主题/首页/账单增补核对：**2026-10-10（本轮 UI 重构）**；多文件账单融合导入与边界修复核对：**2026-10-17**；**品牌、首页真实余额与记账交互优化核对：2026-10-22**；**AI 智能整理旧账 Android 接入核对：2026-10-22；超时断点继续及整理卡片账单详情专项核对：2026-10-23**；**C1核心导航与记账表单局部复核：2026-10-30**（仅P017–P020、L00/L01/L04相关条目、A001与主Kotlin目录；未推进全库未修改章节）；**核心财务修复轮复核：2026-11-01**（仅T01–T12 受影响条目：D006/D009/D014/D015、P017、A001/A005/A015/A022/A023/A025/A026/A028/A030/A031/A104、B03.08–B03.13、S01.02/S01.08/S01.10/S01.12、B02.12 及主 Kotlin 目录；未推进全库未修改章节）。维护对象是当前工作区（包含未提交的 UI 改动与边界修复），不是仅以 Git HEAD 或旧设计稿为基准。本文记录“目前有什么、怎样输入和操作、接口及限制是什么”，作为后续 UI 重做、功能验收和维护的事实基线。
 
 **2026-11-01 自动化门禁（本工作区实测）：** `:app:testDebugUnitTest` 62 套/570 项全通过（0 失败 0 跳过）；`:app:lintDebug` 0 错误/43 警告；`:app:assembleDebug` 成功（APK 23,122,366 字节，SHA-256 `7FEC23EE14415B3EDF3F76B0E01D114E414FFCD81665CE32632CDA8649785EEC`）。**未部署、未真机安装**；触摸/IME/SAF/弱网/无障碍/系统返回等设备证据全部保持待验。
@@ -54,7 +56,7 @@
 <a id="scope"></a>
 ## 1. 产品范围与状态标记
 
-这是 Kotlin / Jetpack Compose 单 Activity 记账客户端，连接自托管单用户后端。主要域包括账单、收入/工资、预算分配、账户余额、周期待确认、统计、主数据、转账、文件导入导出、物品持有成本和 AI 助理。金额传输/存储为整数分，页面格式化成元；普通页面金额通常无货币选择。
+这是 Kotlin / Jetpack Compose 单 Activity 记账客户端，连接自托管后端。多用户版本通过邀请码注册，每个账号拥有独立账本和 AI 配置；旧版服务器仍可登录，但不显示邀请管理。主要域包括账单、收入/工资、预算分配、账户余额、周期待确认、统计、主数据、转账、文件导入导出、物品持有成本和 AI 助理。金额传输/存储为整数分，页面格式化成元；普通页面金额通常无货币选择。
 
 默认 API 服务地址为 `https://jz.yansuu1.xyz`，请求前缀 `/api/v1`。仓库中的 Web 工程已退役并移除；当前服务端目标为 API-only，但仓库变更不证明生产服务已升级。Android 实现以本目录所列源码与验证证据为准。
 
@@ -105,7 +107,7 @@
 <a id="platform"></a>
 ## 3. 平台、会话、外观和设置
 
-本节 P001–P041：直接 UI、本地基础设施及明确不存在的能力混合，按每项描述区分。
+本节 P001–P045：直接 UI、本地基础设施及明确不存在的能力混合，按每项描述区分。
 
 ### 3.1 逐项功能
 
@@ -113,24 +115,24 @@
 |---|---|---|
 | P001 | 原生 Kotlin/Compose 单 Activity APK；应用 ID `com.yansuu1.jizhang`，名称“Yansuu1记账”，minSdk26、target/compile34；支持 6 款桌面图标（默认第 6 款橙色，经 activity-alias 动态切换并保留 MainActivity 组件身份）；versionCode3，versionName读取根 package.json |[build.gradle.kts](app/build.gradle.kts)、[AndroidManifest.xml](app/src/main/AndroidManifest.xml)|
 | P002 | Android 和支持 APK 的鸿蒙4是交付目标；Android8/API26和鸿蒙4的本轮设备兼容性没有证据；Harmony5/6 ArkTS代码属另一客户端 |[native-delivery.md](../../.trellis/spec/backend/native-delivery.md)、[build.gradle.kts](app/build.gradle.kts)|
-| P003 | 单用户自托管账本；无注册、多用户、找回密码、客户端 PIN/指纹锁 |[LoginScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/LoginScreen.kt)、[auth.ts](../../packages/server/src/routes/auth.ts)|
-| P004 | 首次使用账号/密码由服务端 set-password CLI配置；客户端给文字指引 |[LoginScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/LoginScreen.kt)|
+| P003 | 自托管多用户独立账本，受邀注册；不共享账本/AI 密钥；无找回密码、客户端 PIN/指纹锁 |[LoginScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/LoginScreen.kt)、[RegistrationScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/RegistrationScreen.kt)|
+| P004 | 原账号/管理员由服务端配置并保留原数据；新用户从登录页“邀请码注册”进入，向管理员获取邀请码 |[LoginScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/LoginScreen.kt)|
 | P005 | 冷启动读取服务地址；有匹配会话才请求 auth/me，验证成功进入首页，期间显示检查状态 |[MainActivity.kt](app/src/main/java/com/yansuu1/jizhang/MainActivity.kt)、[LoginScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/LoginScreen.kt)|
 | P006 | auth/me 请求有10秒 callTimeout，外层会话恢复12秒；失败保持登录界面，不凭旧用户名自动进入 |[ApiClient.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiClient.kt)、[LoginScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/LoginScreen.kt)|
-| P007 | 用户名和密码登录；用户名trim；非空校验；密码可显示/隐藏；提交期间禁登录按钮；错误文字反馈 |[LoginScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/LoginScreen.kt)|
+| P007 | 用户名和密码登录；用户名trim；非空校验；密码可显示/隐藏；提交期间禁登录/注册/改地址及账号密码字段；错误文字反馈 |[LoginScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/LoginScreen.kt)|
 | P008 | 默认服务器 `https://jz.yansuu1.xyz`；登录页显示当前地址，独立子页修改 |[LoginScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/LoginScreen.kt)、[ApiClient.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiClient.kt)|
 | P009 | 地址要求 http(s) origin：禁止用户名/密码、非根路径、query和fragment；可含端口；去尾斜杠；不添加/api/v1 |[ApiClient.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiClient.kt)|
 | P010 | “恢复默认地址”只先改编辑框；点击保存才持久化到DataStore；没有服务器连通性测试按钮 |[LoginScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/LoginScreen.kt)|
-| P011 | 改变服务器会清除旧Cookie并推进代次；退出也清会话并推进代次；新登录开始递增代次；用户名/密码没有保存到DataStore |[ApiClient.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiClient.kt)、[ApiRequestOwner.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiRequestOwner.kt)、[AuthRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/AuthRepository.kt)|
-| P012 | jizhang_session Cookie用SharedPreferences保存，匹配域/路径/过期/Secure，跨进程恢复；不是加密SharedPreferences。服务端SESSION_TTL_DAYS默认30、只接受正整数；登录创建固定到期时间，读取会话不续期。login/me返回expiresAt，但Android只使用username，没有到期时间展示/会话时长设置；默认值不代表实际服务器配置。 |[ApiClient.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiClient.kt)、[config.ts](../../packages/server/src/config.ts)、[auth-service.ts](../../packages/server/src/services/auth-service.ts)|
-| P013 | 除login外HTTP401在属于当前会话代次时触发全局sessionExpired并返回登录；晚到的401或Set-Cookie以CancellationException抛出且不影响新会话Cookie与登录态；登录失败仅显示凭据错误 |[ApiClient.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiClient.kt)、[ApiTransport.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiTransport.kt)、[MainActivity.kt](app/src/main/java/com/yansuu1/jizhang/MainActivity.kt)|
+| P011 | 改变服务器/退出/新登录或注册推进代次；公开认证请求不携带旧 Cookie、不跟随重定向；成功验证响应及新 Cookie 后才替换保存会话。主界面按激活会话 key 重建；密码/邀请码不保存到DataStore |[ApiClient.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiClient.kt)、[ApiTransport.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiTransport.kt)、[AuthRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/AuthRepository.kt)|
+| P012 | jizhang_session Cookie用SharedPreferences保存，匹配域/路径/过期/Secure，跨进程恢复；不是加密存储。读取真实 id/username/role/capabilities/expiresAt，验证到期时间；旧服务器缺少 id/权限可登录但不显示管理入口。无会话时长设置 |[AuthenticatedUser.kt](app/src/main/java/com/yansuu1/jizhang/net/AuthenticatedUser.kt)、[ApiClient.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiClient.kt)|
+| P013 | 除 POST login/register 外，当前代次 HTTP401 触发全局sessionExpired并返回登录；晚到401/Set-Cookie不影响新账号。公开认证失败不清旧Cookie；未验证/失败响应不会保存新Cookie |[ApiTransport.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiTransport.kt)、[MainActivity.kt](app/src/main/java/com/yansuu1/jizhang/MainActivity.kt)|
 | P014 | 请求统一添加变更头 `X-Requested-With: fetch`；空POST/PUT/PATCH无JSON Content-Type；API错误映射为status/code/message |[ApiClient.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiClient.kt)|
 | P015 | 普通HTTP连接15秒、读取90秒；网络传输统一通过ApiTransport管理，支持挂起取消底层OkHttp Call并关闭响应；无HTTP响应缓存/Room业务缓存/离线写队列/离线同步 |[ApiClient.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiClient.kt)、[ApiTransport.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiTransport.kt)、[build.gradle.kts](app/build.gradle.kts)|
 | P016 | 注释提及requireOnline但实际没有该函数/网络监控实现；断网主要由请求失败提示，不能宣称统一预先禁用写入 |[ApiClient.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiClient.kt)、全main源码rg核查|
 | P017 | 4 个一级页面 + 中央记账动作：首页 / 账单 / ＋ / 计划 / 我的；外层底栏切换通过 `NavigationLeaveCoordinator` 咨询当前活跃层（如财务脏草稿、导入批次未决恢复与编辑状态），拒绝后保留当前页；AI 助手从“我的→更多工具”作为二级页打开；首页提供本月计划与统计入口 |[MainShell.kt](app/src/main/java/com/yansuu1/jizhang/ui/MainShell.kt)；[NavigationLeaveGuard.kt](app/src/main/java/com/yansuu1/jizhang/ui/NavigationLeaveGuard.kt)|
 | P018 | 账单详情/新建/编辑、统计、工资、待确认、AI聊天及“我的”二级页隐藏底栏；一级“计划”保留底栏，退出恢复进入前的主页面；状态主要remember，非持久化Navigation页栈 |[MainShell.kt](app/src/main/java/com/yansuu1/jizhang/ui/MainShell.kt)、[MyTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/MyTab.kt)|
 | P019 | 首页可跳全部账单、新账单、最近账单详情、待确认、本月计划、统计；计划为底部一级页面；“我的”分为记账与计划/更多工具，AI聊天从更多工具打开并返回“我的” |[MainShell.kt](app/src/main/java/com/yansuu1/jizhang/ui/MainShell.kt)、[MyTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/MyTab.kt)|
-| P020 | “我的”分两组：记账与计划（工资/分类账户标签/模板/周期/待确认/转账/回收站/数据）；更多工具（AI聊天/接口/物品/桌面图标与外观/旧理财明细）；另有退出登录 |[MyTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/MyTab.kt)|
+| P020 | “我的”保留记账与计划、更多工具两组及退出登录；只有服务端授予 manageInvitations 的管理员新增“账号管理→邀请码管理” |[MyTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/MyTab.kt)|
 | P021 | 子页顶部/系统返回；工资内部处理未保存退出；不是所有表单都有脏草稿确认，不能将规划规则当全部实现 |[MyTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/MyTab.kt)、各表单源码|
 | P022 | ~~首页详情→编辑导航缺口~~ 已修复（2026-10-10）：详情记录来源页，编辑统一路由到账单编辑分支并保留来源返回 |[MainShell.kt](app/src/main/java/com/yansuu1/jizhang/ui/MainShell.kt)|
 | P023 | 浅色/深色/跟随系统三主题，即时切换，本地持久化；读取异常回系统默认；保存异常被吞，可能重启不保留 |[MainActivity.kt](app/src/main/java/com/yansuu1/jizhang/MainActivity.kt)、[MyTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/MyTab.kt)|
@@ -141,9 +143,9 @@
 | P028 | 设置显示服务器当前周期：null自然月或每月1–28日；自然月与1日区分；读取min/max约束网格，失败重试 |[ItemsTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/ItemsTab.kt) SettingsFull|
 | P029 | 选择新起算日仅为草稿，改变后才可保存；读取失败不保存；保存确认服务端返回后显示成功，无金额本地重算 |[ItemsTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/ItemsTab.kt)、[BudgetRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/BudgetRepository.kt)|
 | P030 | 修改密码输入当前/新/确认，遮罩，不用rememberSaveable；校验当前非空、新非空和两次一致；后端至少8字符 |[ItemsTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/ItemsTab.kt)、[auth.ts](../../packages/server/src/routes/auth.ts)、[password.ts](../../packages/server/src/services/password.ts)|
-| P031 | 改密成功后服务端所有会话作废，客户端清密码并退出；当前密码错误后端401也会触发会话清理 |[AuthRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/AuthRepository.kt)、[ApiClient.kt](app/src/main/java/com/yansuu1/jizhang/net/ApiClient.kt)、[auth.ts](../../packages/server/src/routes/auth.ts)|
+| P031 | 改密成功后服务端当前用户的会话作废，不影响其他用户；客户端清密码并退出；当前密码错误401也触发当前会话清理 |[AuthRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/AuthRepository.kt)、[auth.ts](../../packages/server/src/routes/auth.ts)|
 | P032 | 设置只读AI配置状态：读取中/失败重试/未配置/已配置停用/启用；不显示明文密钥，也没有从这里直接跳AI设置按钮 |[ItemsTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/ItemsTab.kt) SettingsFull|
-| P033 | “我的”主页和设置页都可退出，网络注销失败也清本地Cookie并返回登录；主页不显示当前用户名 |[SettingsTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/SettingsTab.kt)、[AuthRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/AuthRepository.kt)|
+| P033 | “我的”显示已验证用户名；主页和设置页都可退出，网络注销失败也清本地Cookie并返回登录；切换账号重建主界面与草稿状态 |[MyTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/MyTab.kt)、[AuthRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/AuthRepository.kt)|
 | P034 | 金额显示整数分转元两位小数；日期epoch ms按设备时区格式化；文本日期以yyyy-MM-dd解析，关闭宽松日历并要求全文消费，但没有固定补零位数的正则校验 |[format.kt](app/src/main/java/com/yansuu1/jizhang/ui/format.kt)|
 | P035 | 设备时区与部署Asia/Shanghai可能不同；不宣称所有客户端显示/输入日期统一服务端时区 |[format.kt](app/src/main/java/com/yansuu1/jizhang/ui/format.kt)、部署合同|
 | P036 | 只声明INTERNET/ACCESS_NETWORK_STATE；无相机权限/通知权限/生物识别权限；主应用allowBackup=false |[main Manifest](app/src/main/AndroidManifest.xml)|
@@ -153,12 +155,20 @@
 | P040 | 仓库服务端为API-only，非API路径不提供Web页面；本报告没有再次访问/部署服务器，不代表生产已升级 |[app.ts](../../packages/server/src/app.ts)、[native-delivery.md](../../.trellis/spec/backend/native-delivery.md)|
 | P041 | 没有客户端数据库恢复、应用内更新/版本关于页、通用帮助页入口；release无本地正式签名材料时用debug签名 |[MyTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/MyTab.kt)、[build.gradle.kts](app/build.gradle.kts)|
 
+| P042 | 登录页→邀请码注册：账号/密码/确认/邀请码；账号trim后3–64位ASCII字母数字_.-，密码8–128 UTF-16单元且确认一致，密码不trim，邀请码trim且非空；密码可见、忙时禁重复与返回；成功201及有效Cookie后登录，网络结果不明可返回普通登录 |[RegistrationScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/RegistrationScreen.kt)、[RegistrationDraft.kt](app/src/main/java/com/yansuu1/jizhang/repo/RegistrationDraft.kt)|
+| P043 | 管理员“我的→邀请码管理”：创建固定单次/7天邀请码，仅本页显示一次明文并可复制；列表显示状态/创建/到期、主动刷新、撤销确认；无权限403清敏感展示，离页丢弃代码并取消请求；无批量/权限编辑器 |[InvitationManagementScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/InvitationManagementScreen.kt)、[InvitationRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/InvitationRepository.kt)|
+| P044 | 财务未决请求、记账默认账户、首页偏好及AI导入恢复以服务地址+不可变用户ID隔离；旧服务器才回退用户名。新版使用独立存储命名空间，保留旧用户名未决记录但不自动归属/重放；“我的”发现旧记录时提示先核对账本后人工恢复 |[FinancialPrefs.kt](app/src/main/java/com/yansuu1/jizhang/ui/FinancialPrefs.kt)、[AssistantBatchRecoveryStore.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantBatchRecoveryStore.kt)|
+| P045 | 登录/恢复读取的权限才用于显示入口；缺少/未知角色不默认管理员；管理员只管理邀请码，个人账本页面仍按当前会话访问，客户端不发送用户ID选择他人账本 |[AuthenticatedUser.kt](app/src/main/java/com/yansuu1/jizhang/net/AuthenticatedUser.kt)、[MyTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/MyTab.kt)|
+
 ### 3.2 API 覆盖
 
 | API | 入口/状态 |
 |---|---|
 | GET /api/v1/auth/me | 冷启动会话恢复 |
 | POST /api/v1/auth/login | 登录 |
+| POST /api/v1/auth/register | 邀请码注册并建立会话 |
+| GET/POST /api/v1/admin/invitations | 管理员列表/创建邀请码 |
+| DELETE /api/v1/admin/invitations/:id | 管理员撤销邀请码 |
 | POST /api/v1/auth/logout | 两处退出与改密成功后的本地清理 |
 | POST /api/v1/auth/password | 设置修改密码 |
 | GET /api/v1/health | 后端存在；登录没有测试服务器按钮 |
@@ -222,7 +232,7 @@
 
 | ID | 当前能力与行为 | 证据 |
 |---|---|---|
-| L04.01 | 新建默认支出、当日、第一可用支出分类；普通记账优先使用按 `serverBaseUrl + authenticated username` 隔离的上次账户，失效/不可读时回退第一活跃账户，无活跃账户显示阻断提示；支持 `refundOriginalId` 退款预填（自动标记退款、关联原支出、金额留空、日期今天、必须保留原账户，原账户失效时不静默切换而提示用户显式选择）。seed 在 baseline 之前应用；编辑与退款互斥。 |[TransactionEditSheet.kt](app/src/main/java/com/yansuu1/jizhang/ui/TransactionEditSheet.kt)、[TransactionRefundSeedHelper.kt](app/src/main/java/com/yansuu1/jizhang/ui/TransactionRefundSeedHelper.kt)、[RecordingDefaults.kt](app/src/main/java/com/yansuu1/jizhang/ui/RecordingDefaults.kt)|
+| L04.01 | 新建默认支出、当日、第一可用支出分类；普通记账优先使用按 `serverBaseUrl + immutable user ID (legacy server: username)` 隔离的上次账户，失效/不可读时回退第一活跃账户，无活跃账户显示阻断提示；支持 `refundOriginalId` 退款预填（自动标记退款、关联原支出、金额留空、日期今天、必须保留原账户，原账户失效时不静默切换而提示用户显式选择）。seed 在 baseline 之前应用；编辑与退款互斥。 |[TransactionEditSheet.kt](app/src/main/java/com/yansuu1/jizhang/ui/TransactionEditSheet.kt)、[TransactionRefundSeedHelper.kt](app/src/main/java/com/yansuu1/jizhang/ui/TransactionRefundSeedHelper.kt)、[RecordingDefaults.kt](app/src/main/java/com/yansuu1/jizhang/ui/RecordingDefaults.kt)|
 | L04.02 | 支出/收入切换选择该类型首个可选子分类（跳过父分类）；收入类型额外提供“记工资”入口，打开既有工资流程而非写入普通transactions，并在工资页关闭后返回且保留收入草稿。切回支出关闭isRefund，退款关联文本可留在内存但支出保存发送空数组。 |[TransactionEditSheet.kt](app/src/main/java/com/yansuu1/jizhang/ui/TransactionEditSheet.kt)、[MainShell.kt](app/src/main/java/com/yansuu1/jizhang/ui/MainShell.kt)|
 | L04.03 | 金额区（32sp 等宽大字）与自定义数字键盘（1-9, ., 0, 退格）固定展示，元数据（分类/账户/日期/备注/标签/退款关联）独立滚动；备注/标签获得焦点时隐藏自定义键盘避让输入法，金额与保存按钮始终可见；2026-10-26修复：整个金额卡片可点击，强制清除备注/标签真实焦点并收起系统输入法，恢复自定义数字键盘；金额为空、先输入备注/标签、系统输入法已收起但文本仍有焦点均可通过点击金额返回，不清空任何草稿字段；紧凑模式也显示切换提示。小屏/大字自动进入紧凑回退模式。仅追加数字/单小数点/删除；parseYuanToCents使用Double+Math.round，拒绝非有限、负数和>JS安全整数分；保存要求大于0；不支持计算器表达式。 |[TransactionEditSheet.kt](app/src/main/java/com/yansuu1/jizhang/ui/TransactionEditSheet.kt)|
 | L04.04 | 分类网格按收支类型展示子分类、可选；有子类的支出父分类展示但不可选并提示“父分类不能直接记账”（服务端拒绝父分类记账）。账户列表选择；旧ID不在可用列表时显示已选项目暂不可用且保留ID，服务端决定可保存性；没有可用项时提示先添加。 |[TransactionEditSheet.kt](app/src/main/java/com/yansuu1/jizhang/ui/TransactionEditSheet.kt)|
@@ -267,7 +277,7 @@
 | B03.04 | 应急目标=用户实际必要月开支×5，展示手动确认储备、目标、缺口、超额、封顶进度及估计月数；已达标为0个月，月储备取整为0时无法估算；超目标金额不截掉；更新只存当前手动快照，没有存取流水或自动账户推断 | [FinancialPlanScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/FinancialPlanScreen.kt)、[financial-plan-service.ts](../../packages/server/src/services/financial-plan-service.ts) |
 | B03.05 | 相对第1–12月预测：假定收入/投入不变、不计利息收益，显示预计备用金及累计成长计划投入（不是资产余额）；目标后固定15%仍仅作假设测算并标出超额，不自动再分配；预计金额不会随时间写成实际储备 | [FinancialPlanScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/FinancialPlanScreen.kt)、[financial-plan.ts](../../packages/shared/src/financial-plan.ts) |
 | B03.06 | 场景提示：必要开支超过收入50%/超过总收入、安全垫不足1月、备用金回补、目标达成/未来15%选择；教育说明包含高息负债、收入波动、24h可取/本金风险、7天冷静期；仅页面提示，不系统推送/拦截记账，不调用付费AI，不保证收益 | [FinancialPlanScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/FinancialPlanScreen.kt)、[FinancialPlanState.kt](app/src/main/java/com/yansuu1/jizhang/ui/FinancialPlanState.kt) |
-| B03.07 | 首页预算卡片支持一键平滑切换“分类信封”与“四用途执行”，持久化至 `FinancialPrefs` (按 serverBaseUrl + username 维度隔离存储，默认分类信封)；[DashboardTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/DashboardTab.kt)、[FinancialPrefs.kt](app/src/main/java/com/yansuu1/jizhang/ui/FinancialPrefs.kt) |
+| B03.07 | 首页预算卡片支持一键平滑切换“分类信封”与“四用途执行”，持久化至 `FinancialPrefs` (按 serverBaseUrl + immutable user ID (legacy server: username) 维度隔离存储，默认分类信封)；[DashboardTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/DashboardTab.kt)、[FinancialPrefs.kt](app/src/main/java/com/yansuu1/jizhang/ui/FinancialPrefs.kt) |
 | B03.08 | “计划”底部一级页默认展示 C2 本月计划摘要；旧四用途执行、分类信封预算/结余池、测算为“明细工具”。FinancialHostScreen 保留四份固定 composition（计划/执行/信封/测算），仅 place 当前页，隐藏页不绘制/不参与触摸或无障碍树；执行/测算脏草稿守卫保留，工具返回摘要、摘要返回来源页；MainShell 统一将 `ledgerRefreshToken: Long` 失效代次与递增回调传给 FinancialHostScreen、MonthlyPlanWorkspace、MyTab 与 StatsTab，所有已确认财务写入与恢复成功后统一触发重读，跳过/取消/失败/未知不伪造成功信号；[FinancialHostScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/FinancialHostScreen.kt)、[MonthlyPlanWorkspace.kt](app/src/main/java/com/yansuu1/jizhang/ui/MonthlyPlanWorkspace.kt)、[MainShell.kt](app/src/main/java/com/yansuu1/jizhang/ui/MainShell.kt) |
 | B03.09 | 四用途执行工作区接入服务端 `/api/v1/financial-planning`；空态“从已有工资开启”，已有周期操作栏“已有工资”进入分页选择工资（单一归属月，已纳入周期不可选），配置未启用可进入规划设置；先由服务器试算展示四项，再由用户明确确认，提交前保存操作及请求以便结果未知时同请求重放。无需再次新建工资、不自动转账；既有周期以显式 ID 追加并保留冻结规则，来源异常或周期匹配歧义时阻断。执行与退款读取使用独立 WorkOwner 代次票据；刷新有进度/禁重复/保留旧数据的错误提示。展示必要/随心实际执行与剩余，成长/应急诚实呈现“未接入实际划拨”，提供分类信封对照。空/有当前周期均有“历史方案”：每页10条读取确认周期及修订，只读查看冻结收入、比例、目标、规则与来源快照；窗口按自身时区且含起不含止，当前来源核对金额/状态明确非历史冻结值。失败可重试原请求页并保留旧行；旧手动测算最新方案仍在“测算预估”，不自动转成执行周期；[FinancialExecutionWorkspace.kt](app/src/main/java/com/yansuu1/jizhang/ui/FinancialExecutionWorkspace.kt)、[FinancialExecutionModels.kt](app/src/main/java/com/yansuu1/jizhang/repo/FinancialExecutionModels.kt) |
 | B03.10 | 明细工具中的规划设置弹窗支持基点比例、必要开支基准、目标月数、周期时区与CAS/重放；分类映射以“跟随分类/必要/随心/待归类”表达，expectedTopologyToken CAS不变，修订/token/bps收进折叠诊断详情；[FinancialConfigSheet.kt](app/src/main/java/com/yansuu1/jizhang/ui/FinancialConfigSheet.kt)、[FinancialCategoryMappingSheet.kt](app/src/main/java/com/yansuu1/jizhang/ui/FinancialCategoryMappingSheet.kt) |
@@ -403,8 +413,8 @@
 | D020 | 平台稳定 wx-/ali- 订单 ID 去重；可能重复由服务端同平台账户的同本地日期/类型/金额推断，不自动阻止人工选择 |[portability-service.ts](../../packages/server/src/services/portability-service.ts)；[platform-bills.ts](../../packages/shared/src/platform-bills.ts)|
 | D021 | 平台自动创建或恢复命名为微信/支付宝的账户及必要分类；未知分类行为与本应用 CSV 不同。退款标志来自独立实际收入流水的来源交易类型/分类证据，与所选应用分类名称无关；原退款购买保留支出，平台导入不生成退款流水或建立退款关联 |[portability-service.ts](../../packages/server/src/services/portability-service.ts)、995–1074|
 | D022 | 平台忽略无效金额、中性/不计收支、失败/关闭等状态及部分充值提现还款、资金划转/理财；成功平台收入优先允许。符合其他条件的已退款/全额退款原支出仍保留毛额并附核对退款提示，不自动生成退款或关联；实际导入与设备展示仍分别核验 |[platform-bills.ts](../../packages/shared/src/platform-bills.ts)|
-| D023 | 备份列表自动读取，显示文件名、体积与创建时间；“立即备份”后重新读取列表；空状态/加载/错误提示存在 |[DataTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/DataTab.kt)；[portability-service.ts](../../packages/server/src/services/portability-service.ts)|
-| D024 | 备份是服务端 dataDir/backups 下整库 .db 快照、不是手机副本；VACUUM INTO 保持 WAL 一致，校验 integrity_check 和应用表数，API 手动备份保留 30 天 |[portability-service.ts](../../packages/server/src/services/portability-service.ts)；[cli-db.ts](../../packages/server/src/cli-db.ts)|
+| D023 | 备份列表自动读取，显示文件名、体积与创建时间；“立即备份”后重读；空/加载/错误状态存在。多用户后端按会话隔离为个人备份，普通用户仍可备份自己的账本 |[DataTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/DataTab.kt)；[portability-service.ts](../../packages/server/src/services/portability-service.ts)|
+| D024 | 多用户服务的API备份是当前账号私有账本 .db 快照，不包含其他账号/中央身份库，也不是手机副本；全站备份/恢复属于服务器运维，客户端不可用个人快照替换身份库 |[DataTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/DataTab.kt)；[portability-service.ts](../../packages/server/src/services/portability-service.ts)|
 | D025 | 恢复只有说明文字：服务器停服/备份当前库/核对快照/按部署文档恢复/健康与账本检查；无 APP 内下载数据库、删除备份、恢复数据库端点 |[DataTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/DataTab.kt)；[portability.ts](../../packages/server/src/routes/portability.ts)|
 | D026 | 工资、周期规则只能导出，没有对应导入；CSV 不是整库备份，账单 CSV 没有 refund_links 关联字段、工资 CSV 是记录及 allocations 快照、周期规则 CSV 不含账户列/完整历史 |[portability-service.ts](../../packages/server/src/services/portability-service.ts)；[portability.ts](../../packages/server/src/routes/portability.ts)|
 
@@ -540,6 +550,8 @@
 
 <a id="assistant"></a>
 ## 6. AI 助理、Provider、30 个工具和接口
+
+**2026-11-05 A041/A056/A060 所有权复核：** AI 连接、保存密钥和对话属于当前账号；客户端仍调用既有 `/ai/config` 等路径，不传用户选择器。新用户独立配置模型；登录账号变化重建主界面与配置草稿，服务端会话决定实际账本，管理员身份不授予读取他人 AI 配置的权限。原有配置字段、空密钥保留、模型拉取与测试语义不变。
 
 ### 6.1 Android 可见功能（A001–A037、A105–A106）
 
@@ -731,7 +743,7 @@
 
 | 表单 / 入口 | 全部可编辑字段 / 默认与选项 | 本地校验、动作及提交边界 |
 |---|---|---|
-| 登录 | 用户名、密码、密码可见切换 | 用户名trim，双方非空；提交禁重复；失败显示错误；无注册/找回 |
+| 登录/注册 | 登录：用户名、密码；注册：另加确认密码、邀请码；均可切换密码可见 | 用户名/邀请码trim，密码保留原文；注册校验见P042；忙时禁重复；错误可恢复；无找回密码 |
 | 服务器地址 | origin地址；恢复默认 | http(s)，无凭据、非根路径、query/fragment；保存才生效；换地址清会话；无连接测试 |
 | 外观 | 浅色/深色/系统；钛蓝/森林绿/黑白；减少动态开关 | 即时本地应用与持久化尝试，系统关闭动画会进一步限制 |
 | 预算周期 | 自然月null或1–28日 | 草稿改变才保存，约束来自服务器；周期日≠统计自然月 |
@@ -887,7 +899,7 @@
 
 | 分类 | 明确范围 |
 |---|---|
-| 无应用入口 | 注册/找回密码、多用户/共享账本、PIN/指纹锁、推送/Widget/后台自动记账、系统分享接收/URL深链、应用内更新/独立关于与帮助页、相机拍照 |
+| 无应用入口 | 找回密码、共享账本、PIN/指纹锁、推送/Widget/后台自动记账、系统分享接收/URL深链、应用内更新/独立关于与帮助页、相机拍照；邀请码注册/多用户已接入P042–P045 |
 | 无离线能力 | 没有Room账本缓存、HTTP响应缓存、断网写队列/同步；requireOnline仅旧注释，实际没有统一网络监控预先禁写 |
 | 非手机备份 | 无整库下载/客户端数据库恢复/删除备份/云盘自动备份；CLI恢复属服务器运维 |
 | 仅服务端过滤/详情 | 转账accountId过滤与单条GET；物品category精确过滤；周期occurrence历史；回收站不能完整分页 |
@@ -954,6 +966,9 @@
 | POST | `/api/v1/assistant/conversations/:conversationId/import-batches/:batchId/cancel` | 直接UI；显式取消融合导入批次 | [import-batches.ts](../../packages/server/src/routes/import-batches.ts) |
 | GET | `/api/v1/auth/me` | 直接UI；认证 | [auth.ts](../../packages/server/src/routes/auth.ts) |
 | POST | `/api/v1/auth/login` | 直接UI；认证 | [auth.ts](../../packages/server/src/routes/auth.ts) |
+| POST | `/api/v1/auth/register` | 直接UI；邀请码注册P042 | [RegistrationScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/RegistrationScreen.kt) |
+| GET/POST | `/api/v1/admin/invitations` | 直接UI；管理员邀请P043 | [InvitationRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/InvitationRepository.kt) |
+| DELETE | `/api/v1/admin/invitations/:id` | 直接UI；管理员撤销P043 | [InvitationManagementScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/InvitationManagementScreen.kt) |
 | POST | `/api/v1/auth/logout` | 直接UI；认证 | [auth.ts](../../packages/server/src/routes/auth.ts) |
 | POST | `/api/v1/auth/password` | 直接UI；认证 | [auth.ts](../../packages/server/src/routes/auth.ts) |
 | GET | `/api/v1/financial-planning/periods` | 直接UI；B03.09历史确认周期，每页10条，limit/offset分页，只读 | [financial-planning.ts](../../packages/server/src/routes/financial-planning.ts) |
@@ -1211,7 +1226,19 @@
 - 审计原始材料：[平台](../../.trellis/tasks/10-10-android-ui-redesign/research/function-inventory-platform.md)、[账务](../../.trellis/tasks/10-10-android-ui-redesign/research/function-inventory-ledger.md)、[操作](../../.trellis/tasks/10-10-android-ui-redesign/research/function-inventory-operations.md)、[AI](../../.trellis/tasks/10-10-android-ui-redesign/research/function-inventory-assistant.md)。用户功能正文已直接收录本文，研究链接用于追踪依据，不代替正文。
 
 <a id="maintenance"></a>
+### 11.4 多用户新增主 Kotlin 源码
+
+| 源码 | 当前职责与稳定ID |
+|---|---|
+| [AuthenticatedUser.kt](app/src/main/java/com/yansuu1/jizhang/net/AuthenticatedUser.kt) | 真实身份/过期/能力读取、认证错误文案；P012/P045 |
+| [RegistrationDraft.kt](app/src/main/java/com/yansuu1/jizhang/repo/RegistrationDraft.kt) | 注册字段校验与请求体；P042 |
+| [RegistrationScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/RegistrationScreen.kt) | 手机邀请码注册界面；P042 |
+| [InvitationRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/InvitationRepository.kt) | 邀请列表/创建/撤销和DTO；P043 |
+| [InvitationManagementScreen.kt](app/src/main/java/com/yansuu1/jizhang/ui/InvitationManagementScreen.kt) | 能力门控、明文一次复制、状态与撤销；P043/P045 |
+
 ## 12. 维护流程、记录模板和变更日志
+
+**2026-11-05 变更记录（多用户邀请码）：** 新增 P042–P045；认证响应保留兼容字段并增加不可变身份/权限，注册和登录不携带旧Cookie且拒绝重定向、先验证响应再接收会话；主壳按登录身份重建；财务与AI导入未决操作使用新的用户ID命名空间，旧记录留存不自动迁移。邀请码表单/列表/单次明文复制/撤销入口已写入源码。新增 `MultiuserAuthenticationTest`，验证注册校验、旧响应权限回退、Cookie失败隔离/成功接收/缺失拒绝、重定向阻断、同名不同ID隔离、邀请码状态；更新既有登录401测试使用真实POST方法。当前本机Gradle未进入构建（wrapper锁超时、SDK缺失）；CI和设备结果单独记录。
 
 ### 12.1 同批更新规则
 

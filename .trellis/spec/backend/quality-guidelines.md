@@ -49,6 +49,11 @@ A task is not done while any of those is red. "It compiles" is not the gate.
   `1998.9999999999998`.
 - **Tests drive the app with `app.inject()`**, never a real port, so tests cannot
   collide or leak a listener.
+- **Compare complete SQLite snapshots with `Buffer.equals`.** Use
+  `expect(actual.equals(expected)).toBe(true)` for whole database byte equality.
+  Deep assertions such as `expect(actual).toEqual(expected)` walk every byte and
+  can make otherwise fast file-backed tests hit their timeout; do not hide that
+  assertion overhead by increasing timeouts or weakening the content check.
 - **API cache and delivery regressions stay covered.** `Cache-Control: no-store`
   applies to API responses, including errors and 404s. `test/app.test.ts` asserts
   this and JSON 404 for root and retired Web paths even with stale assets present;

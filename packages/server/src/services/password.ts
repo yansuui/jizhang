@@ -23,6 +23,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
  * worse passwords.
  */
 export const MIN_PASSWORD_LENGTH = 8;
+export const MAX_PASSWORD_LENGTH = 128;
 
 /**
  * Argon2 options.
@@ -50,6 +51,11 @@ export function assertPasswordAcceptable(password: string): void {
       `Password must be at least ${MIN_PASSWORD_LENGTH} characters long.`,
     );
   }
+  if (password.length > MAX_PASSWORD_LENGTH) {
+    throw new PasswordPolicyError(
+      `Password must be at most ${MAX_PASSWORD_LENGTH} characters long.`,
+    );
+  }
 }
 
 /**
@@ -67,10 +73,7 @@ export async function hashPassword(password: string): Promise<string> {
  * Returns `false` (never throws) for a malformed stored hash: a corrupt row must
  * read as "wrong password", not crash the login route.
  */
-export async function verifyPassword(
-  storedHash: string,
-  password: string,
-): Promise<boolean> {
+export async function verifyPassword(storedHash: string, password: string): Promise<boolean> {
   if (typeof storedHash !== 'string' || storedHash === '') return false;
   if (typeof password !== 'string' || password === '') return false;
   try {

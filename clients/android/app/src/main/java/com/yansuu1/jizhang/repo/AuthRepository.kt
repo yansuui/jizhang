@@ -2,6 +2,8 @@ package com.yansuu1.jizhang.repo
 
 import com.yansuu1.jizhang.net.ApiClient
 import com.yansuu1.jizhang.net.AuthExpiredException
+import com.yansuu1.jizhang.net.AuthenticatedUser
+import com.yansuu1.jizhang.net.authenticationErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -16,7 +18,10 @@ import org.json.JSONObject
  * - `changePassword()` → `POST auth/password`.
  */
 class AuthRepository(private val api: ApiClient) {
-    var username: String? = null
+    @Volatile var user: AuthenticatedUser? = null
+        private set
+    val username: String? get() = user?.username
+    @Volatile var sessionKey: String = java.util.UUID.randomUUID().toString()
         private set
     var checked: Boolean = false
         private set
@@ -28,18 +33,19 @@ class AuthRepository(private val api: ApiClient) {
         try {
             val me = api.get("/api/v1/auth/me")
             if (api.isCurrent(identity)) {
-                username = me.optString("username").ifEmpty { null }
+                user = AuthenticatedUser.fromJson(me)
+                sessionKey = java.util.UUID.randomUUID().toString()
                 lastError = null
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: AuthExpiredException) {
             if (api.isCurrent(identity)) {
-                username = null
+                user = null
             }
         } catch (e: Exception) {
             if (api.isCurrent(identity)) {
-                username = null
+                user = null
                 lastError = e.message
             }
         } finally {
@@ -49,18 +55,28 @@ class AuthRepository(private val api: ApiClient) {
         }
     }
 
-    suspend fun login(name: String, password: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun login(name: String, password: String): Boolean = authenticate(
+        "/api/v1/auth/login", JSONObject().put("username", name.trim()).put("password", password),
+    )
+
+    suspend fun register(draft: RegistrationDraft): Boolean {
+        val body = try { draft.toBody() } catch (error: IllegalArgumentException) {
+            lastError = error.message
+            return false
+        }
+        return authenticate("/api/v1/auth/register", body)
+    }
+
+    private suspend fun authenticate(path: String, body: JSONObject): Boolean = withContext(Dispatchers.IO) {
         val identity = api.advanceSession()
         if (api.isCurrent(identity)) {
             lastError = null
         }
         try {
-            val me = api.post(
-                "/api/v1/auth/login",
-                JSONObject().put("username", name).put("password", password),
-            )
+            val me = api.post(path, body)
             if (api.isCurrent(identity)) {
-                username = me.optString("username").ifEmpty { null }
+                user = AuthenticatedUser.fromJson(me, requireStableId = path == "/api/v1/auth/register")
+                sessionKey = java.util.UUID.randomUUID().toString()
                 api.sessionExpired.value = false
                 true
             } else {
@@ -70,7 +86,7 @@ class AuthRepository(private val api: ApiClient) {
             throw e
         } catch (e: Exception) {
             if (api.isCurrent(identity)) {
-                lastError = e.message ?: "登录失败，请重试。"
+                lastError = authenticationErrorMessage(e)
             }
             false
         }
@@ -88,7 +104,8 @@ class AuthRepository(private val api: ApiClient) {
             if (api.isCurrent(identity)) {
                 api.advanceSession()
                 api.clearSession()
-                username = null
+                user = null
+                sessionKey = java.util.UUID.randomUUID().toString()
             }
         }
     }

@@ -136,15 +136,15 @@ interface ManualGoalPendingOperationStore {
 
 class OperationReplayManualGoalStore(private val store: OperationReplayStore) : ManualGoalPendingOperationStore {
     override suspend fun record(scope: FinancialScope, operation: PendingFinancialOperation) {
-        store.record(scope.serverBaseUrl, scope.username, operation)
+        store.record(scope.serverBaseUrl, scope.storageIdentity, operation)
     }
 
     override suspend fun remove(scope: FinancialScope, operationId: String) {
-        store.remove(scope.serverBaseUrl, scope.username, operationId)
+        store.remove(scope.serverBaseUrl, scope.storageIdentity, operationId)
     }
 
     override fun list(scope: FinancialScope): List<PendingFinancialOperation> =
-        store.list(scope.serverBaseUrl, scope.username)
+        store.list(scope.serverBaseUrl, scope.storageIdentity)
 }
 
 class ProductionManualGoalMutationGateway(

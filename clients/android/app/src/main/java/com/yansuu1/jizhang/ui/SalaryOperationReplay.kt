@@ -87,22 +87,22 @@ interface SalaryPendingOperationStore {
 
 class OperationReplaySalaryStore(private val store: OperationReplayStore) : SalaryPendingOperationStore {
     override suspend fun record(scope: FinancialScope, operation: PendingFinancialOperation) {
-        store.record(scope.serverBaseUrl, scope.username, operation)
+        store.record(scope.serverBaseUrl, scope.storageIdentity, operation)
     }
 
     override suspend fun remove(scope: FinancialScope, operationId: String) {
-        store.remove(scope.serverBaseUrl, scope.username, operationId)
+        store.remove(scope.serverBaseUrl, scope.storageIdentity, operationId)
     }
 
     override fun list(scope: FinancialScope): List<PendingFinancialOperation> =
-        store.list(scope.serverBaseUrl, scope.username)
+        store.list(scope.serverBaseUrl, scope.storageIdentity)
 }
 
 /**
  * Salary create replay state machine.
  *
  * Invariants enforced here rather than in Compose:
- * 1. scope is resolved to a real username/baseURL before any record;
+ * 1. scope resolves a verified immutable user ID/baseURL before any record (username only on legacy servers);
  * 2. the exact pending request is committed synchronously BEFORE send;
  * 3. unknown outcomes keep the pending row and retries reuse its operationId;
  * 4. a definitive 4xx clears the row; a committed success clears it best-effort
@@ -292,4 +292,4 @@ class SalaryReplayCoordinator(
 }
 
 internal fun FinancialScope.sameIdentity(other: FinancialScope): Boolean =
-    serverBaseUrl == other.serverBaseUrl && username == other.username
+    serverBaseUrl == other.serverBaseUrl && storageIdentity == other.storageIdentity

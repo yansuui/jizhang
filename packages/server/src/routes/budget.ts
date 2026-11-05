@@ -1,3 +1,4 @@
+import { createRouteServices, type TenantContextManager } from '../tenancy/context.js';
 /**
  * Budget, salary and template routes (T6 PRD R1/R5).
  *
@@ -56,6 +57,7 @@ function requireId(request: FastifyRequest): string {
 }
 
 export interface BudgetRoutesOptions {
+  readonly tenants?: TenantContextManager | undefined;
   readonly db: Db;
   readonly now?: (() => number) | undefined;
   readonly serverTimeZone?: string | undefined;
@@ -65,36 +67,42 @@ export async function registerBudgetRoutes(
   app: FastifyInstance,
   options: BudgetRoutesOptions,
 ): Promise<void> {
-  const { db } = options;
-  const salaries = new SalaryService(db, options);
-  const templates = new TemplateService(db, options);
-  const overviewService = new BudgetOverviewService(db, options);
-  const financialPlans = new FinancialPlanService(db, options);
+  const getServices = createRouteServices(app, options, (options, _lifecycle) => {
+    const { db } = options;
+    const salaries = new SalaryService(db, options);
+    const templates = new TemplateService(db, options);
+    const overviewService = new BudgetOverviewService(db, options);
+    const financialPlans = new FinancialPlanService(db, options);
 
-  /**
-   * Parses `?periodStart=`.
-   *
-   * Absent and `''` both mean "the current cycle", matching how the stats routes treat
-   * their optional window parameters. Anything present must be a finite integer.
-   *
-   * Validation happens here; whether the value names a REAL cycle is checked against
-   * `listCycleStarts` by the caller, because "not a number" and "a number naming no
-   * cycle" deserve the same 400 but for different reasons.
-   */
-  function parsePeriodStart(query: Record<string, unknown>): number | undefined {
-    const raw = query['periodStart'];
-    if (raw === undefined || raw === '') return undefined;
-    const value = Number(raw);
-    if (!Number.isFinite(value) || !Number.isInteger(value)) {
-      throw new ValidationError(
-        'periodStart must be an epoch-millisecond timestamp of a known budget cycle.',
-      );
+    /**
+     * Parses `?periodStart=`.
+     *
+     * Absent and `''` both mean "the current cycle", matching how the stats routes treat
+     * their optional window parameters. Anything present must be a finite integer.
+     *
+     * Validation happens here; whether the value names a REAL cycle is checked against
+     * `listCycleStarts` by the caller, because "not a number" and "a number naming no
+     * cycle" deserve the same 400 but for different reasons.
+     */
+    function parsePeriodStart(query: Record<string, unknown>): number | undefined {
+      const raw = query['periodStart'];
+      if (raw === undefined || raw === '') return undefined;
+      const value = Number(raw);
+      if (!Number.isFinite(value) || !Number.isInteger(value)) {
+        throw new ValidationError(
+          'periodStart must be an epoch-millisecond timestamp of a known budget cycle.',
+        );
+      }
+      return value;
     }
-    return value;
-  }
 
-  // ── budget overview ────────────────────────────────────────────────────────
+    // ── budget overview ────────────────────────────────────────────────────────
+
+    return { db, salaries, templates, overviewService, financialPlans, parsePeriodStart, options };
+  });
+
   app.get('/api/v1/budget/overview', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { parsePeriodStart, overviewService } = getServices(request);
     const requested = parsePeriodStart((request.query ?? {}) as Record<string, unknown>);
     return reply.send(overviewService.overview(requested));
   });
@@ -104,24 +112,29 @@ export async function registerBudgetRoutes(
   // answer byte-identically when no period is requested, so that every existing caller
   // and test keeps its exact contract.
   app.get('/api/v1/budget/periods', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { overviewService } = getServices(_request);
     return reply.send(overviewService.periods());
   });
 
   // ── salaries ───────────────────────────────────────────────────────────────
   app.get('/api/v1/salaries', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { salaries } = getServices(_request);
     return reply.send({ items: salaries.list() });
   });
 
   app.get('/api/v1/salaries/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { salaries } = getServices(request);
     return reply.send(salaries.getByIdOrThrow(requireId(request)));
   });
 
   app.post('/api/v1/salaries', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { salaries } = getServices(request);
     const created = salaries.create((request.body ?? {}) as Record<string, unknown>, { actorId: requireUserId(request) });
     return reply.status(201).send(created);
   });
 
   app.patch('/api/v1/salaries/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { salaries } = getServices(request);
     const updated = salaries.update(
       requireId(request),
       (request.body ?? {}) as Record<string, unknown>,
@@ -133,22 +146,26 @@ export async function registerBudgetRoutes(
   app.put(
     '/api/v1/salaries/:id/allocations',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { salaries } = getServices(request);
       const body = (request.body ?? {}) as Record<string, unknown>;
       return reply.send(salaries.replaceAllocations(requireId(request), body['allocations']));
     },
   );
 
   app.delete('/api/v1/salaries/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { salaries } = getServices(request);
     salaries.softDelete(requireId(request), (request.body ?? {}) as Record<string, unknown>, { actorId: requireUserId(request) });
     return reply.status(204).send();
   });
 
   // ── templates ──────────────────────────────────────────────────────────────
   app.get('/api/v1/templates', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { templates } = getServices(_request);
     return reply.send({ items: templates.list() });
   });
 
   app.post('/api/v1/templates', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { templates } = getServices(request);
     const body = (request.body ?? {}) as Record<string, unknown>;
     const created = templates.create(
       typeof body['name'] === 'string' ? body['name'] : '',
@@ -159,6 +176,7 @@ export async function registerBudgetRoutes(
   });
 
   app.patch('/api/v1/templates/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { templates } = getServices(request);
     const body = (request.body ?? {}) as Record<string, unknown>;
     const updated = templates.update(requireId(request), {
       ...(body['name'] === undefined ? {} : { name: String(body['name']) }),
@@ -168,6 +186,7 @@ export async function registerBudgetRoutes(
   });
 
   app.delete('/api/v1/templates/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { templates } = getServices(request);
     templates.softDelete(requireId(request));
     return reply.status(204).send();
   });
@@ -175,6 +194,7 @@ export async function registerBudgetRoutes(
   app.post(
     '/api/v1/templates/:id/default',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { templates } = getServices(request);
       return reply.send(templates.setDefault(requireId(request)));
     },
   );
@@ -182,12 +202,14 @@ export async function registerBudgetRoutes(
   app.post(
     '/api/v1/templates/:id/apply-current',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { salaries } = getServices(request);
       return reply.send(salaries.applyTemplateToCurrentCycle(requireId(request)));
     },
   );
 
   // ── settings ───────────────────────────────────────────────────────────────
   app.get('/api/v1/settings', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { salaries } = getServices(_request);
     const day = salaries.getCycleStartDay();
     return reply.send({
       cycleStartDay: day ?? null,
@@ -198,6 +220,7 @@ export async function registerBudgetRoutes(
   });
 
   app.put('/api/v1/settings', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { salaries } = getServices(request);
     const body = (request.body ?? {}) as Record<string, unknown>;
     const raw = body['cycleStartDay'];
 
@@ -219,6 +242,7 @@ export async function registerBudgetRoutes(
   // `FinancialPlanService`; nothing here re-derives money.
 
   app.get('/api/v1/financial-plan', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { financialPlans } = getServices(_request);
     // `null` is a real answer meaning "never saved", distinct from the 503 a corrupt
     // envelope produces. The client must not conflate the two (see contract.md).
     return reply.send({ plan: financialPlans.get() });
@@ -227,12 +251,14 @@ export async function registerBudgetRoutes(
   app.post(
     '/api/v1/financial-plan/preview',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { financialPlans } = getServices(request);
       // Explicit POST (a body is needed) but read-only: no settings row is touched.
       return reply.send({ analysis: financialPlans.preview(request.body) });
     },
   );
 
   app.put('/api/v1/financial-plan', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { financialPlans } = getServices(request);
     return reply.send({ plan: financialPlans.save(request.body) });
   });
 }

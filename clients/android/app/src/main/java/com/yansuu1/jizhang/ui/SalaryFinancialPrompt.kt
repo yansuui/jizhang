@@ -193,7 +193,7 @@ fun SalaryFinancialPrompt(
                     )
                     // Persist before the first send so an unknown result can be
                     // recovered by the workspace's operation scan.
-                    store.record(scopeInfo.serverBaseUrl, scopeInfo.username, pending)
+                    store.record(scopeInfo.serverBaseUrl, scopeInfo.storageIdentity, pending)
                     pendingConfirm = pending
                 }
                 repo.replayOperation(
@@ -202,7 +202,7 @@ fun SalaryFinancialPrompt(
                     org.json.JSONObject(pending.payloadJson),
                 )
                 runCatching {
-                    store.remove(scopeInfo.serverBaseUrl, scopeInfo.username, pending.operationId)
+                    store.remove(scopeInfo.serverBaseUrl, scopeInfo.storageIdentity, pending.operationId)
                 }
                 pendingConfirm = null
                 onMessage(if (existing) "理财周期已更新。" else "理财周期已创建。")
@@ -218,7 +218,7 @@ fun SalaryFinancialPrompt(
                         scopeInfo?.let { info ->
                             pending?.let { operation ->
                                 runCatching {
-                                    store.remove(info.serverBaseUrl, info.username, operation.operationId)
+                                    store.remove(info.serverBaseUrl, info.storageIdentity, operation.operationId)
                                 }
                             }
                         }

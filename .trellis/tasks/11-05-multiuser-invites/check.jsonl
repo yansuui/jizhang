@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Backend verification and meaningful route, migration and failure tests"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Native checks and separate reporting of source, CI and device evidence"}
+{"file":".trellis/spec/backend/backup-retention.md","reason":"Verify private ledger backups and separate full-system recovery"}
+{"file":".trellis/tasks/11-05-multiuser-invites/prd.md","reason":"Review invitation, account isolation and legacy-owner acceptance criteria"}
+{"file":".trellis/tasks/11-05-multiuser-invites/research/isolation-review.md","reason":"Review cross-file crash consistency, worker ownership, tenant lifecycle and rollback limits"}

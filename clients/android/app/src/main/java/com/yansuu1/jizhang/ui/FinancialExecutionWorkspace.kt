@@ -187,7 +187,7 @@ fun FinancialExecutionWorkspace(
                 if (e is AuthExpiredException) onAuthExpired()
                 return@launch
             }
-            val list = replayStore.list(authScope.serverBaseUrl, authScope.username).filter { op ->
+            val list = replayStore.list(authScope.serverBaseUrl, authScope.storageIdentity).filter { op ->
                 // 仅扫描并恢复本工作区理财周期与配置相关的操作，不抢占 salary 或 transaction editor 的并发未决
                 op.path.startsWith("/api/v1/financial-planning/periods") ||
                     op.path.startsWith("/api/v1/financial-planning/config")
@@ -201,7 +201,7 @@ fun FinancialExecutionWorkspace(
                     try {
                         val result = repo.getOperation(op.operationId)
                         // 服务端已存在已提交结果，安全从本地未决表移除
-                        replayStore.remove(authScope.serverBaseUrl, authScope.username, op.operationId)
+                        replayStore.remove(authScope.serverBaseUrl, authScope.storageIdentity, op.operationId)
                         pendingRecoveryMessage = "已自动核对并回收已确认操作：${op.operationId.take(8)}..."
                     } catch (e: ApiException) {
                         if (e.status == 404) {
@@ -215,7 +215,7 @@ fun FinancialExecutionWorkspace(
                         if (e is AuthExpiredException) throw e
                     }
                 }
-                pendingOperations = replayStore.list(authScope.serverBaseUrl, authScope.username).filter { op ->
+                pendingOperations = replayStore.list(authScope.serverBaseUrl, authScope.storageIdentity).filter { op ->
                     op.path.startsWith("/api/v1/financial-planning/periods") ||
                         op.path.startsWith("/api/v1/financial-planning/config")
                 }
@@ -473,7 +473,7 @@ fun FinancialExecutionWorkspace(
             )
             var committed = false
             try {
-                replayStore.record(authScope.serverBaseUrl, authScope.username, pendingOp)
+                replayStore.record(authScope.serverBaseUrl, authScope.storageIdentity, pendingOp)
                 if (isReconcile) {
                     repo.reconcilePeriod(execPeriod.id, request)
                 } else {
@@ -485,7 +485,7 @@ fun FinancialExecutionWorkspace(
 
                 var cleanupFailed = false
                 try {
-                    replayStore.remove(authScope.serverBaseUrl, authScope.username, opId)
+                    replayStore.remove(authScope.serverBaseUrl, authScope.storageIdentity, opId)
                 } catch (_: Exception) {
                     cleanupFailed = true
                 }

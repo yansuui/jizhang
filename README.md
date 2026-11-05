@@ -1,6 +1,6 @@
 # jizhang
 
-Single-user accounting with native Kotlin/Compose Android and SwiftUI iPhone clients, a Fastify API and SQLite. Android also targets HarmonyOS 4. The backend serves the API; this repository no longer contains the retired Web client.
+Invite-only accounting with private per-user ledgers, native Kotlin/Compose Android and SwiftUI iPhone clients, a Fastify API and SQLite. Android also targets HarmonyOS 4. The backend serves the API; this repository no longer contains the retired Web client.
 
 The existing server was previously recorded as running the older Web Docker image. Repository changes do **not** establish that production has been upgraded; server and device acceptance remain separate. See [DEPLOY.md](./DEPLOY.md) for delivery, existing-data migration and rollback.
 
@@ -17,6 +17,7 @@ The [iOS client](./clients/ios/README.md) prioritizes AI conversations and compa
 - AI conversations and confirmation before writes; encrypted provider credentials.
 - Personal items, photographs and optional private cutout inference.
 - Native navigation, system/light/dark appearance and color presets.
+- Invitation registration, original-account administration, and private ledger/AI configuration per user. See [multi-user migration and recovery](./docs/MULTIUSER.md).
 
 Money is integer cents; timestamps are epoch milliseconds. Server/shared owns all budget and aggregation rules; Android displays responses. `TZ=Asia/Shanghai` governs the server calendar. Transfers move money between accounts without counting as transaction income or expense. Refunds are income transactions and do not reduce ordinary gross spending. The four-purpose financial execution view is separate and nets only confirmed refund splits. See [USAGE.md](./USAGE.md) for user-facing accounting notes.
 
@@ -74,8 +75,8 @@ For a **new local/disposable instance**, initialize `.env` then:
 ```bash
 docker compose config --quiet
 docker compose build jizhang
+docker compose run --rm jizhang node packages/server/dist/cli.js set-password
 docker compose up -d --force-recreate jizhang
-docker compose exec -it jizhang node packages/server/dist/cli.js set-password
 curl -fsS http://127.0.0.1:8081/api/v1/health
 ```
 

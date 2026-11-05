@@ -1,3 +1,4 @@
+import { createRouteServices, type TenantContextManager } from '../tenancy/context.js';
 /**
  * Data portability routes (T15 PRD R1–R3).
  *
@@ -39,8 +40,11 @@ import { PortabilityService } from '../services/portability-service.js';
 import { ValidationError } from '../services/transaction-service.js';
 
 export interface PortabilityRoutesOptions {
+  readonly tenants?: TenantContextManager | undefined;
   readonly db: Db;
   readonly dataDir: string;
+  readonly dbFile?: string | undefined;
+  readonly actorId?: string | undefined;
   readonly now?: (() => number) | undefined;
 }
 
@@ -56,37 +60,55 @@ export async function registerPortabilityRoutes(
   app: FastifyInstance,
   options: PortabilityRoutesOptions,
 ): Promise<void> {
-  const service = new PortabilityService(options.db, { dataDir: options.dataDir });
+  const getServices = createRouteServices(app, options, (options, _lifecycle) => {
+    const service = new PortabilityService(options.db, { dataDir: options.dataDir, dbFile: options.dbFile, actorId: options.actorId });
 
-  // ── export ─────────────────────────────────────────────────────────────────
+    // ── export ─────────────────────────────────────────────────────────────────
+
+    return { service, options };
+  });
+
   app.get(
     '/api/v1/export/transactions.csv',
     async (_request: FastifyRequest, reply: FastifyReply) =>
-      sendCsv(reply, 'jizhang-transactions.csv', service.exportTransactionsCsv()),
+      {
+      const { service } = getServices(_request);
+      return sendCsv(reply, 'jizhang-transactions.csv', service.exportTransactionsCsv());
+    },
   );
 
   app.get(
     '/api/v1/export/salaries.csv',
     async (_request: FastifyRequest, reply: FastifyReply) =>
-      sendCsv(reply, 'jizhang-salaries.csv', service.exportSalariesCsv()),
+      {
+      const { service } = getServices(_request);
+      return sendCsv(reply, 'jizhang-salaries.csv', service.exportSalariesCsv());
+    },
   );
 
   app.get(
     '/api/v1/export/recurring.csv',
     async (_request: FastifyRequest, reply: FastifyReply) =>
-      sendCsv(reply, 'jizhang-recurring.csv', service.exportRecurringCsv()),
+      {
+      const { service } = getServices(_request);
+      return sendCsv(reply, 'jizhang-recurring.csv', service.exportRecurringCsv());
+    },
   );
 
   app.get(
     '/api/v1/export/transfers.csv',
     async (_request: FastifyRequest, reply: FastifyReply) =>
-      sendCsv(reply, 'jizhang-transfers.csv', service.exportTransfersCsv()),
+      {
+      const { service } = getServices(_request);
+      return sendCsv(reply, 'jizhang-transfers.csv', service.exportTransfersCsv());
+    },
   );
 
   // ── import ─────────────────────────────────────────────────────────────────
   app.post(
     '/api/v1/import/transactions',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       const body = request.body;
       if (typeof body !== 'string' || body.trim() === '') {
         throw new ValidationError(
@@ -100,6 +122,7 @@ export async function registerPortabilityRoutes(
   app.post(
     '/api/v1/import/transfers',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       const body = request.body;
       if (typeof body !== 'string' || body.trim() === '') {
         throw new ValidationError(
@@ -125,6 +148,7 @@ export async function registerPortabilityRoutes(
   app.post(
     '/api/v1/import/platform-bills',
     async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
       const query = request.query as { source?: string; dryRun?: string; fileName?: string };
       const body = request.body;
 
@@ -225,10 +249,12 @@ export async function registerPortabilityRoutes(
 
   // ── backups ────────────────────────────────────────────────────────────────
   app.get('/api/v1/backups', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(_request);
     return reply.send({ items: service.listBackups() });
   });
 
   app.post('/api/v1/backups', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(_request);
     return reply.status(201).send(service.createBackupNow());
   });
 }

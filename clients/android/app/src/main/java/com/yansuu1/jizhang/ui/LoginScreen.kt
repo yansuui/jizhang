@@ -44,7 +44,7 @@ import androidx.compose.material.icons.filled.VisibilityOff
 /**
  * Login screen (A2). Mirrors web `LoginView.vue`, plus the N1 server-URL field:
  * the server address is user-configured + remembered, never hardcoded (PRD R3).
- * Single account: no sign-up affordance (account comes from `set-password` CLI).
+ * Invitations create independent accounts; the original owner is provisioned by CLI.
  */
 @Composable
 fun LoginScreen(
@@ -61,6 +61,7 @@ fun LoginScreen(
     var checking by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var showServerSettings by remember { mutableStateOf(false) }
+    var showRegistration by remember { mutableStateOf(false) }
     var savingServer by remember { mutableStateOf(false) }
     var serverError by remember { mutableStateOf<String?>(null) }
 
@@ -94,6 +95,14 @@ fun LoginScreen(
             Spacer(Modifier.height(20.dp))
             CircularProgressIndicator()
         }
+        return
+    }
+
+    if (showRegistration) {
+        RegistrationScreen(
+            auth = auth, serverAddress = serverUrl,
+            onBack = { showRegistration = false }, onRegistered = onLoggedIn,
+        )
         return
     }
 
@@ -191,13 +200,14 @@ fun LoginScreen(
                     serverUrl.ifBlank { ApiClient.DEFAULT_BASE_URL },
                     style = MaterialTheme.typography.bodySmall,
                 )
-                TextButton(onClick = { showServerSettings = true }) { Text("修改服务地址") }
+                TextButton(onClick = { showServerSettings = true }, enabled = !loading) { Text("修改服务地址") }
             }
         }
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(
             value = username,
             onValueChange = { username = it },
+            enabled = !loading,
             label = { Text("用户名") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
@@ -206,6 +216,7 @@ fun LoginScreen(
         OutlinedTextField(
             value = password,
             onValueChange = { password = it },
+            enabled = !loading,
             label = { Text("密码") },
             singleLine = true,
             visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
@@ -228,6 +239,7 @@ fun LoginScreen(
         JzPrimaryButton(
             text = if (loading) "登录中…" else "登录",
             onClick = {
+                if (loading) return@JzPrimaryButton
                 scope.launch {
                     error = null
                     if (serverUrl.isBlank()) {
@@ -257,9 +269,12 @@ fun LoginScreen(
             },
             enabled = !loading,
         )
-        Spacer(Modifier.height(16.dp))
+        TextButton(onClick = { password = ""; error = null; showRegistration = true }, enabled = !loading) {
+            Text("邀请码注册")
+        }
+        Spacer(Modifier.height(8.dp))
         Text(
-            "首次使用请在服务器上运行 set-password 设置密码",
+            "已有账号直接登录；新用户请向管理员获取邀请码。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

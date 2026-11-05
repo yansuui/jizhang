@@ -1,3 +1,4 @@
+import { createRouteServices, type TenantContextManager } from '../tenancy/context.js';
 /**
  * Master-data routes: categories, accounts and the derived tag vocabulary.
  *
@@ -68,6 +69,7 @@ function requireDirection(body: Record<string, unknown>): -1 | 1 {
 }
 
 export interface MasterDataRoutesOptions {
+  readonly tenants?: TenantContextManager | undefined;
   readonly db: Db;
   readonly now?: (() => number) | undefined;
 }
@@ -76,22 +78,30 @@ export async function registerMasterDataRoutes(
   app: FastifyInstance,
   options: MasterDataRoutesOptions,
 ): Promise<void> {
-  const service = new MasterDataService(options.db, options);
-  const balances = new AccountBalanceService(options.db);
+  const getServices = createRouteServices(app, options, (options, _lifecycle) => {
+    const service = new MasterDataService(options.db, options);
+    const balances = new AccountBalanceService(options.db);
 
-  // ── categories ────────────────────────────────────────────────────────────
+    // ── categories ────────────────────────────────────────────────────────────
+
+    return { service, balances, options };
+  });
+
   app.get('/api/v1/categories', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const query = (request.query ?? {}) as Record<string, unknown>;
     const type = optionalType(query);
     return reply.send({ items: service.listCategories(type, optionalIncludeDeleted(query)) });
   });
 
   app.post('/api/v1/categories', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const created = service.createCategory((request.body ?? {}) as Record<string, unknown>);
     return reply.status(201).send(created);
   });
 
   app.patch('/api/v1/categories/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const updated = service.updateCategory(
       requireId(request),
       (request.body ?? {}) as Record<string, unknown>,
@@ -100,17 +110,20 @@ export async function registerMasterDataRoutes(
   });
 
   app.delete('/api/v1/categories/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     service.deleteCategory(requireId(request));
     return reply.status(204).send();
   });
 
   app.post('/api/v1/categories/:id/move', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const dir = requireDirection((request.body ?? {}) as Record<string, unknown>);
     return reply.send({ items: service.moveCategory(requireId(request), dir) });
   });
 
   // ── accounts ──────────────────────────────────────────────────────────────
   app.get('/api/v1/accounts', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const query = (request.query ?? {}) as Record<string, unknown>;
     return reply.send({ items: service.listAccounts(optionalIncludeDeleted(query)) });
   });
@@ -123,15 +136,18 @@ export async function registerMasterDataRoutes(
   // The path sits beside `PATCH`/`DELETE /accounts/:id`; there is no `GET /accounts/:id`, so
   // the static segment is unambiguous.
   app.get('/api/v1/accounts/balances', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { balances } = getServices(_request);
     return reply.send(balances.balances());
   });
 
   app.post('/api/v1/accounts', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const created = service.createAccount((request.body ?? {}) as Record<string, unknown>);
     return reply.status(201).send(created);
   });
 
   app.patch('/api/v1/accounts/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const updated = service.updateAccount(
       requireId(request),
       (request.body ?? {}) as Record<string, unknown>,
@@ -140,35 +156,45 @@ export async function registerMasterDataRoutes(
   });
 
   app.delete('/api/v1/accounts/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     service.deleteAccount(requireId(request));
     return reply.status(204).send();
   });
 
   app.post('/api/v1/accounts/:id/move', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const dir = requireDirection((request.body ?? {}) as Record<string, unknown>);
     return reply.send({ items: service.moveAccount(requireId(request), dir) });
   });
 
   // ── additive stable tag hierarchy ───────────────────────────────────────
-  app.get('/api/v1/tags/hierarchy', async (_request, reply) => reply.send({ items: service.listTagHierarchy() }));
+  app.get('/api/v1/tags/hierarchy', async (_request, reply) => {
+      const { service } = getServices(_request);
+      return reply.send({ items: service.listTagHierarchy() });
+    });
   app.post('/api/v1/tags/hierarchy', async (request, reply) => {
+      const { service } = getServices(request);
     const body = (request.body ?? {}) as Record<string, unknown>;
     return reply.status(201).send(service.createTag(body['name'], body['parentId']));
   });
   app.patch('/api/v1/tags/hierarchy/:id', async (request, reply) => {
+      const { service } = getServices(request);
     return reply.send(service.updateTag(requireId(request), (request.body ?? {}) as { name?: unknown; parentId?: unknown }));
   });
   app.delete('/api/v1/tags/hierarchy/:id', async (request, reply) => {
+      const { service } = getServices(request);
     service.deleteTagById(requireId(request));
     return reply.status(204).send();
   });
 
   // ── legacy flat tag API ──────────────────────────────────────────────────
   app.get('/api/v1/tags', async (_request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(_request);
     return reply.send({ items: service.listTags() });
   });
 
   app.patch('/api/v1/tags', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const body = (request.body ?? {}) as Record<string, unknown>;
     const from = body['from'];
     const to = body['to'];
@@ -180,6 +206,7 @@ export async function registerMasterDataRoutes(
   });
 
   app.delete('/api/v1/tags/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const name = (request.params as IdParams).id;
     if (typeof name !== 'string' || name.trim() === '') {
       throw new ValidationError('A tag name is required.');
@@ -190,12 +217,14 @@ export async function registerMasterDataRoutes(
 
   // ── impact preview: how many transactions reference a category/account ────
   app.get('/api/v1/categories/:id/usage', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const id = requireId(request);
     service.getCategoryOrThrow(id);
     return reply.send({ transactions: service.countTransactionsForCategory(id) });
   });
 
   app.get('/api/v1/accounts/:id/usage', async (request: FastifyRequest, reply: FastifyReply) => {
+      const { service } = getServices(request);
     const id = requireId(request);
     service.getAccountOrThrow(id);
     return reply.send({ transactions: service.countTransactionsForAccount(id) });
