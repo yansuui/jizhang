@@ -46,3 +46,7 @@ Remaining `username` uses are display/authentication, the verified DTO-to-scope 
 - Local Android attempt used JDK 17 and `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug`. It never reached configuration/tests: the Gradle wrapper reported a 120-second exclusive-access timeout on `gradle-8.7-bin.zip`. No Android SDK was found in inspected local locations. Root has prepared Ubuntu GitHub CI for the actual gates; this is not a pass claim.
 - No production server deployment, device installation, real-provider invocation or physical interaction was performed by this worker.
 - Backend API contract was confirmed directly with the identity worker. Additional revoke conflict `409 INVITATION_USED` is localized on both platforms.
+
+## Final CI evidence
+
+iOS run41959913496 passed 90 XCTest tests and arm64 IPA build at351bcff. Android job127029897515 in run41961877280 passed unit tests, assembleDebug and lintDebug at ebe9453. Earlier local toolchain limitations above do not describe the final CI result. Physical-device acceptance remains separate.

@@ -52,8 +52,26 @@ were fixed with compatibility regressions.
   verified locally. Unsigned IPA is ready for the user's existing Sideloadly.
   Physical installation remains deferred; no Apple credentials entered or uploaded.
 
-## Remaining CI evidence
+## Complete-source CI
 
-The complete final source will be pushed to run clean backend, Android and actual
-container jobs. Record run IDs and outcomes here before completing the task.
+Source commit `ebe94530a415ee7ea7891dd72de3aa47722275f1` is pushed to the original
+repository. Run: https://github.com/yansuui/jizhang/actions/runs/41961877280
+
+- Backend job `127029897752` passed all lint, typecheck, tests and build. Clean-run
+  totals: shared 405 tests in 13 files; server 1,217 tests in 62 files; **1,622 tests
+  across 75 files passed**. This includes the final migration and isolation cases.
+- Container job `127029897343` passed the actual production image build and the
+  complete isolated lifecycle drill, including runtime user `node`, administrator
+  and member login, invitation consumption/403, live backup lock rejection,
+  three-database snapshot/verification/restore, and both accounts logging into the
+  restored `DATA_DIR` in a real server process.
+- Android job `127029897515` passed `:app:testDebugUnitTest`, `:app:assembleDebug`
+  and `:app:lintDebug`; `Android-verification-1` contains the APK and reports.
+  The downloaded HTML report records 589 tests, zero failures and zero ignored;
+  lint records zero errors and 47 warnings. No Android CI source repair was
+  necessary. The complete workflow succeeded.
+- Android handoff: `artifacts/multiuser-android-41961877280/outputs/apk/debug/app-debug.apk`,
+  22,161,580 bytes, verified ZIP integrity and SHA256
+  `a3b480179f52df784f123b39ea28546d5c64c8eb0e33491c2db0fffc3e13fa74`.
+
 Production upgrade remains a separate operation using `docs/MULTIUSER.md`.

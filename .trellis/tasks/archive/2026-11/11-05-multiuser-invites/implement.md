@@ -1,6 +1,6 @@
 # Implementation and verification plan
 
-Status: user approved the final scope on 2026-11-05; implementation can start.
+Status: implementation and all automated gates completed; exact evidence is in `verification.md`.
 
 ## Ordered work
 

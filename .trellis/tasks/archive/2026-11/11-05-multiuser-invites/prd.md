@@ -4,7 +4,7 @@
 
 Add invitation-only registration and multiple accounts to the existing native-client accounting service. Preserve the original user's ledger and keep the iPhone configuration simple. User requested GPT delegation and continued development on 2026-11-05. User approved the concrete private-ledger proposal on 2026-11-05: ??? ???. Implementation is authorized.
 
-## Confirmed evidence
+## Baseline evidence (before implementation)
 
 - The current backend is intentionally single-user: login allows only `config.username`; `/auth/me` returns that configured user (`packages/server/src/routes/auth.ts:63,84`).
 - Services in every business route capture the same database at startup (`packages/server/src/app.ts`, `routes/assistant.ts`, `routes/ai.ts`). Ledger, assistant history and provider settings are not scoped by account.
@@ -30,13 +30,13 @@ Add invitation-only registration and multiple accounts to the existing native-cl
 
 ## Acceptance criteria
 
-- [ ] A1 (R1/R4/R8): One valid code can create exactly one account even under concurrent attempts; expired/revoked/replayed codes and malformed input leave no active partial account.
-- [ ] A2 (R2/R9): Upgrade a populated legacy fixture, verify owner totals/history/provider secret remain intact, restart twice and verify consistent restoration/rollback procedure.
-- [ ] A3 (R3/R7): Two-user API matrix proves isolation for lists, direct IDs, mutations, nested references, exports, files, SSE, cancellation and background recovery. Both users may use identical seeded IDs without cross-account effects.
-- [ ] A4 (R4/R6): Ordinary user receives 403 on invitation management; current-user identity and per-user session revocation are correct; administrator UI is gated by server capabilities.
-- [ ] A5 (R5/R6): Both clients register, log in, switch accounts and discard stale responses/caches; registration has recoverable errors and never persists passwords/invitation codes.
-- [ ] A6 (R8/R9): Rate/body limits, generic credential failures, no secret logging, failed provisioning recovery and shutdown cleanup are tested.
-- [ ] A7: Relevant backend/shared lint, types, tests and build pass; Android tests/build and iOS GitHub tests/device build pass. Native UI/device acceptance is recorded separately from fixture tests.
+- [x] A1 (R1/R4/R8): One valid code can create exactly one account even under concurrent attempts; expired/revoked/replayed codes and malformed input leave no active partial account.
+- [x] A2 (R2/R9): Upgrade a populated legacy fixture, verify owner totals/history/provider secret remain intact, restart twice and verify consistent restoration/rollback procedure.
+- [x] A3 (R3/R7): Two-user API matrix proves isolation for lists, direct IDs, mutations, nested references, exports, files, SSE, cancellation and background recovery. Both users may use identical seeded IDs without cross-account effects.
+- [x] A4 (R4/R6): Ordinary user receives 403 on invitation management; current-user identity and per-user session revocation are correct; administrator UI is gated by server capabilities.
+- [x] A5 (R5/R6): Both clients register, log in, switch accounts and discard stale responses/caches; registration has recoverable errors and never persists passwords/invitation codes.
+- [x] A6 (R8/R9): Rate/body limits, generic credential failures, no secret logging, failed provisioning recovery and shutdown cleanup are tested.
+- [x] A7: Relevant backend/shared lint, types, tests and build pass; Android tests/build and iOS GitHub tests/device build pass. Native UI/device acceptance is recorded separately from fixture tests.
 
 ## Out of scope
 
@@ -45,3 +45,7 @@ Shared family/team ledgers, billing/subscriptions, email/SMS delivery, third-par
 ## Approval
 
 The user approved independent private ledgers and AI configurations, original-account administration, single-use seven-day invitations, and compact iOS/Android registration. Shared ledgers are out of scope. Source changes and CI target original repository `yansuui/jizhang`.
+
+## Delivery acceptance
+
+All source and automated acceptance criteria passed. See `verification.md` for original-repository commits, 1,622 backend/shared tests, 90 iOS tests, Android build/test/lint, real-container recovery, and the verified IPA. Production deployment and physical device acceptance remain separate and were not performed.
