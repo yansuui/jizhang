@@ -55,7 +55,7 @@
 - [x] 账单详情为居中弹窗浮层，底部有编辑/记录退款/删除，关闭后保留列表状态。
 - [x] 每日合计只用服务端权威数据，范围不满足时隐藏并提示，绝不客户端累加。
 - [x] 服务端全量测试/typecheck/lint 通过。
-- [ ] iOS 在 GitHub Actions macOS 上编译 + XCTest 通过（本机 Windows 无法编译，尚未验证）。
+- [x] iOS 在 GitHub Actions macOS 上编译 + XCTest 通过：run 42013499694，129 tests / 0 failures，arm64 IPA 已产出并校验。
 - [ ] 真机安装与交互验收（未做）。
 
 ## 验证状态
@@ -66,11 +66,11 @@
 | 服务端 `tsc -p tsconfig.test.json --noEmit` | 通过 |
 | 服务端 `eslint src test --max-warnings 0` | 0 问题 |
 | `docs/migrations/022-template-to-tag.sql` | 真实 SQLite 执行 + 重复执行验证通过 |
-| iOS Swift 编译 / XCTest | **未验证**（Windows 无 Xcode）；工程文件已重新生成，需 GitHub Actions `ios.yml` 跑通 |
+| iOS Swift 编译 / XCTest | **通过**：run 42013499694，129 tests / 0 failures（含新增 2 个预览） |
 | 真机 / 生产部署 | 未做 |
 
 ## 后续
 
-- GitHub Actions iOS 构建（含 XCTest 与模拟器启动截图）必须跑通，才能把 iOS 部分从「源码级」提升为「已验证」。
+- ~~GitHub Actions iOS 构建必须跑通~~ 已完成：run 42013499694 通过（129 tests / 0 failures）。当前剩余风险是真机安装与真实 Provider 行为。
 - Android/Harmony 的模板入口仍可用但已弃用；待这些客户端不再引用 `/templates` 后，再考虑表重建式移除。
 - 历史整理现在需要客户端配合「轮询进度」交互；iOS 侧目前由模型在对话里完成轮询，若体验不佳可后续做专门的整理工作区页面。

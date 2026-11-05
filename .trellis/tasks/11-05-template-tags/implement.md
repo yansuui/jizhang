@@ -27,7 +27,8 @@
 | `pnpm build` | 通过 |
 | `pnpm test` | shared 405 + server 1244，全通过 |
 | `python3 scripts/generate_project.py` | 45 app + 11 test Swift 文件，工程已更新 |
-| iOS Swift 编译 / XCTest | **未执行**（Windows 无 Xcode） |
+| iOS Swift 编译 / XCTest | **通过** —— [run 42013499694](https://github.com/yansuui/jizhang/actions/runs/42013499694)，129 tests / 0 failures，arm64 打包成功 |
+| iOS IPA | `Jizhang-unsigned.ipa` 2,627,321 字节，SHA-256 `36feac9e012d5fb9a8019f4e56c9b6249ea65b28f618911c3bdf2ee6806958a0`，commit `b114d1f` |
 
 ## 过程中发现并修掉的真实缺陷
 
@@ -38,8 +39,22 @@
 - **iOS 首页仍走系统 sheet**：与"账单卡片要弹窗"不一致，改为与账单页共用居中浮层。
 - **两个迁移版本号断言写死**：`fund-budget-migration` 与 `ai-organization-progress` 里 `toEqual([21])` / `[17,18,19,20,21]`，改为从 `MIGRATIONS` 派生，避免以后每加一个迁移就要改测试。
 
-## 待办（需要 macOS 或真机）
+## CI 实测结果（2026-11-05）
 
-- GitHub Actions `ios.yml`：XCTest（含新增 2 个预览）+ arm64 打包 + 模拟器启动截图。
+- `Backend and Android verification` run 42013499686：**success**。
+- `iOS build and IPA` run 42013499694：**success**，12m48s。`Executed 129 tests, with 0 failures`；
+  新增的两个预览 `testCentredBillDetailOverlayPreview`、`testDaySummaryHeaderPreview` 均导出截图并已人工查看：
+  居中卡片布局与 Android 一致；每日合计在有数据时正常显示 `支出 ¥128.00 收入 ¥3,000.00 4 笔`，
+  缺数据时显示占位符 `—`，不可汇总时只显示日期（三种降级都符合设计）。
+- IPA 校验：`sha256sum -c` 通过，`build-metadata.json` 的 commit 与 `b114d1f` 一致。
+
+## 待办（需要真机）
+
 - 真机 Sideloadly 安装与交互验收：弹窗卡片动画、下滑关闭、删除确认、每日合计滚动表现、大字体。
+- 真实 Provider 下验证历史整理的后台分析 + 轮询体验。
 - Android/Harmony 的模板入口在服务端完全移除后才考虑下线；目前保留且已弃用。
+
+## 提交与推送状态
+
+- `b114d1f` feat: retire allocation templates into tags, fix history analysis and bills UX —— **已推送** origin/main，CI 全绿。
+- `9428d97` docs: record verified iOS delivery for template-to-tag change —— 本地已提交，**尚未推送**：推送到 github.com:443 连续三次失败（Connection reset / Could not connect），属网络问题而非代码问题。网络恢复后执行 `git push origin main` 即可（仅含文档更新）。
