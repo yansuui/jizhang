@@ -1,5 +1,7 @@
 /** Allowlisted assistant tools. Adapters call domain services directly, never sibling HTTP routes. */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { createBusinessTools, simulateAssistantWrite } from './assistant-business-tools.js';
+import { financialTransactionToken } from './financial-purpose-store.js';
 import {
   dateOnly,
   dayStart,
@@ -58,6 +60,7 @@ export interface AssistantToolServices {
 }
 
 export interface AssistantToolContext {
+  readonly actorId?: string | undefined;
   readonly db: Db;
   readonly now: () => number;
   readonly services: AssistantToolServices;
@@ -93,7 +96,7 @@ export interface AssistantToolDefinition {
   readonly inputSchema: AssistantJsonObject;
 }
 
-interface InternalTool {
+export interface InternalTool {
   readonly definition: AssistantToolDefinition;
   readonly parseArguments: (value: unknown) => AssistantJsonObject;
   readonly read?: (context: AssistantToolContext, args: AssistantJsonObject) => Promise<AssistantToolResult> | AssistantToolResult;
@@ -246,6 +249,7 @@ function preparedTransaction(record: Record<string, unknown>, service: Transacti
     'tags',
     'isRefund',
     'refundLinkedTxIds',
+    'fundPurpose',
   ]);
   const typeValue = record['type'];
   const type = typeValue === TYPE_EXPENSE || typeValue === 'expense' ? TYPE_EXPENSE : typeValue === TYPE_INCOME || typeValue === 'income' ? TYPE_INCOME : undefined;
@@ -266,10 +270,8 @@ function preparedTransaction(record: Record<string, unknown>, service: Transacti
     tags,
     isRefund,
     refundLinkedTxIds: linked,
+    ...(record['fundPurpose'] === undefined ? {} : { fundPurpose: record['fundPurpose'] }),
   });
-  // Purpose overrides are outside the assistant's Phase 1 write permissions.
-  // The service's prepared DTO now includes a nullable purpose for native callers;
-  // do not round-trip that internal field into this tool's allowlisted arguments.
   const args = json({
     type: input.type,
     amountCents: input.amountCents,
@@ -280,6 +282,7 @@ function preparedTransaction(record: Record<string, unknown>, service: Transacti
     tags: input.tags,
     isRefund: input.isRefund,
     refundLinkedTxIds: input.refundLinkedTxIds,
+    ...(record['fundPurpose'] === undefined ? {} : { fundPurpose: input.fundPurpose }),
   }, '交易参数');
   return { args, input };
 }
@@ -338,7 +341,7 @@ function boundedRows(result: { readonly rows: readonly Record<string, unknown>[]
 function createDefinitions(): AssistantToolDefinition[] {
   return [
     { name: 'transactions.recent', access: 'read', description: '查询最近的账单，可按类型或备注筛选。', inputSchema: { type: 'object', properties: { limit: { type: 'integer', maximum: 50 }, q: { type: 'string' }, type: { enum: [0, 1] } } } },
-    { name: 'accounts.balances', access: 'read', description: '查询服务端计算的账户余额。', inputSchema: { type: 'object', properties: {} } },
+    { name: 'accounts.balances', access: 'read', description: '分页查询服务端账户余额；totalBalanceCents始终是全部账户总额。', inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 100 }, offset: { type: 'integer', minimum: 0 } } } },
     { name: 'budget.overview', access: 'read', description: '查询预算周期、模块和结余池。', inputSchema: { type: 'object', properties: { periodStart: { type: 'integer' } } } },
     { name: 'stats.monthly', access: 'read', description: '查询服务端计算的月度收入和净支出趋势。', inputSchema: { type: 'object', properties: { months: { type: 'integer', minimum: 1, maximum: 12 } } } },
     { name: 'recurring.pending', access: 'read', description: '查询待确认的周期账单。', inputSchema: { type: 'object', properties: {} } },
@@ -346,14 +349,12 @@ function createDefinitions(): AssistantToolDefinition[] {
     { name: 'organization.preview', access: 'read', description: '预览可安全执行的分类和标签整理。', inputSchema: { type: 'object', properties: {} } },
     { name: 'backups.list', access: 'read', description: '列出可用备份文件名。', inputSchema: { type: 'object', properties: {} } },
     { name: 'backup.export-links', access: 'read', description: '返回数据导出链接。', inputSchema: { type: 'object', properties: {} } },
-    { name: 'transaction.create', access: 'write', description: '准备一笔需要用户确认的新账单。', inputSchema: { type: 'object', required: ['type', 'amountCents', 'categoryId', 'accountId', 'date'], properties: { type: { enum: ['expense', 'income'] }, amountCents: { type: 'integer' }, categoryId: { type: 'string' }, accountId: { type: 'string' }, date: { type: ['string', 'integer'] }, note: { type: 'string' }, tags: { type: 'array' } } } },
+    { name: 'transaction.create', access: 'write', description: '准备支出、普通收入或关联退款。退款使用 income、isRefund=true、原支出编号 refundLinkedTxIds。', inputSchema: { type: 'object', required: ['type', 'amountCents', 'categoryId', 'accountId', 'date'], properties: { type: { enum: ['expense', 'income'] }, amountCents: { type: 'integer' }, categoryId: { type: 'string' }, accountId: { type: 'string' }, date: { type: ['string', 'integer'] }, note: { type: 'string' }, tags: { type: 'array' }, isRefund: { type: 'boolean' }, refundLinkedTxIds: { type: 'array', items: { type: 'string' } }, fundPurpose: { enum: ['growth', 'reserve', 'essentials', 'joy', null] } } } },
     { name: 'transaction.update', access: 'write', description: '准备修改一笔现有账单。', inputSchema: { type: 'object', required: ['id', 'changes'], properties: { id: { type: 'string' }, changes: { type: 'object' } } } },
     { name: 'transaction.delete', access: 'write', description: '准备将一笔账单移入回收站。', inputSchema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } } },
     { name: 'transaction.restore', access: 'write', description: '准备从回收站恢复一笔账单。', inputSchema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } } },
     { name: 'transfer.create', access: 'write', description: '准备在两个账户之间创建转账。', inputSchema: { type: 'object', required: ['fromAccountId', 'toAccountId', 'amountCents', 'date'], properties: { fromAccountId: { type: 'string' }, toAccountId: { type: 'string' }, amountCents: { type: 'integer' }, date: { type: ['string', 'integer'] }, note: { type: 'string' } } } },
-    // `salary.create` / `budget.template.apply` are deliberately absent: fresh
-    // module-allocation salary writes are retired, so the assistant must not be able to
-    // recreate them (P07). Legacy entries remain readable through their own endpoints.
+    // The extension registers canonical fund salary.create, never retired module allocations.
     { name: 'category.create', access: 'write', description: '准备创建分类。', inputSchema: { type: 'object', required: ['name', 'type'], properties: { name: { type: 'string' }, type: { enum: [0, 1] }, icon: { type: 'string' }, color: { type: 'string' }, parentId: { type: ['string', 'null'] } } } },
     { name: 'category.update', access: 'write', description: '准备修改分类。', inputSchema: { type: 'object', required: ['id', 'changes'], properties: { id: { type: 'string' }, changes: { type: 'object' } } } },
     { name: 'category.delete', access: 'write', description: '准备软删除分类。', inputSchema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } } },
@@ -444,6 +445,10 @@ export class AssistantToolRegistry {
 
   private registerAll(): void {
     const definitions = new Map(createDefinitions().map((definition) => [definition.name, definition]));
+    for (const tool of createBusinessTools()) {
+      definitions.set(tool.definition.name, tool.definition);
+      this.tools.set(tool.definition.name, tool);
+    }
     for (const name of ASSISTANT_TOOL_NAMES) {
       if (!definitions.has(name)) {
         throw new Error(`Assistant tool definition is missing: ${name}`);
@@ -488,8 +493,15 @@ export class AssistantToolRegistry {
       },
     });
 
-    this.register(def('accounts.balances'), empty, {
-      read: (context) => toolResult('accounts.balances', '这是服务端计算的账户余额。', context.services.balances.balances()),
+    this.register(def('accounts.balances'), (value) => {
+      const record = argsRecord(value); onlyKnown(record, ['limit', 'offset']);
+      return { limit: integerArg(record, 'limit', 1, 100) ?? 100, offset: integerArg(record, 'offset', 0) ?? 0 };
+    }, {
+      read: (context, args) => {
+        const result = context.services.balances.balances();
+        const limit = args['limit'] as number; const offset = args['offset'] as number;
+        return toolResult('accounts.balances', '这是服务端计算的账户余额；总余额包含所有账户。', { ...result, items: result.items.slice(offset, offset + limit), total: result.items.length, offset, limit, hasMore: offset + limit < result.items.length });
+      },
     });
 
     this.register(def('budget.overview'), (value) => {
@@ -543,17 +555,24 @@ export class AssistantToolRegistry {
           '新增账单',
           `准备新增一笔${input.type === TYPE_INCOME ? '收入' : '支出'} ${input.amountCents} 分。`,
           { count: 1 },
-          { type: input.type, amountCents: input.amountCents, categoryId: input.categoryId, accountId: input.accountId, date: input.date, note: input.note, tags: input.tags },
-          { input: normalized },
+          { type: input.type, amountCents: input.amountCents, categoryId: input.categoryId,
+            categoryName: context.services.masterData.getCategoryOrThrow(input.categoryId).name,
+            accountId: input.accountId, accountName: context.services.masterData.getAccountOrThrow(input.accountId).name,
+            date: input.date, note: input.note, tags: input.tags, isRefund: input.isRefund, fundPurpose: input.fundPurpose },
+          { input: normalized, refundOriginals: input.refundLinkedTxIds.map((id) => context.services.transactions.getByIdOrThrow(id)) },
           normalized,
-          hashJson({ toolName: 'transaction.create', input: normalized }),
+          hashJson({ toolName: 'transaction.create', input: normalized,
+            category: context.services.masterData.getCategoryOrThrow(input.categoryId),
+            account: context.services.masterData.getAccountOrThrow(input.accountId),
+            originals: input.refundLinkedTxIds.map((id) => context.services.transactions.getByIdOrThrow(id)),
+          }),
           undefined,
           [],
         );
       },
       confirm: (context, action) => {
-        const { input } = preparedTransaction(argsRecord(action), context.services.transactions);
-        const transaction = context.services.transactions.create(input);
+        const { args } = preparedTransaction(argsRecord(action), context.services.transactions);
+        const transaction = context.services.transactions.create(args);
         return toolResult('transaction.create', '账单已写入。', { transaction });
       },
     });
@@ -563,7 +582,7 @@ export class AssistantToolRegistry {
       onlyKnown(record, ['id', 'changes']);
       const id = stringArg(record, 'id');
       const rawChanges = argsRecord(record['changes']);
-      onlyKnown(rawChanges, ['type', 'amountCents', 'amountYuan', 'amount', 'categoryId', 'accountId', 'date', 'note', 'tags', 'isRefund', 'refundLinkedTxIds']);
+      onlyKnown(rawChanges, ['type', 'amountCents', 'amountYuan', 'amount', 'categoryId', 'accountId', 'date', 'note', 'tags', 'isRefund', 'refundLinkedTxIds', 'fundPurpose', 'expectedFundPurposeRevision', 'expectedTransactionToken', 'operationId']);
       if (Object.keys(rawChanges).length === 0) throw new AssistantValidationError('changes 不能为空。');
       const changes: Record<string, unknown> = {};
       if (rawChanges['type'] !== undefined) {
@@ -584,14 +603,27 @@ export class AssistantToolRegistry {
       if (rawChanges['tags'] !== undefined) changes['tags'] = stringArrayArg(rawChanges, 'tags', true);
       if (rawChanges['isRefund'] !== undefined) changes['isRefund'] = booleanArg(rawChanges, 'isRefund');
       if (rawChanges['refundLinkedTxIds'] !== undefined) changes['refundLinkedTxIds'] = stringArrayArg(rawChanges, 'refundLinkedTxIds', true);
+      for (const key of ['fundPurpose', 'expectedFundPurposeRevision', 'expectedTransactionToken', 'operationId']) if (rawChanges[key] !== undefined) changes[key] = rawChanges[key];
       return json({ id, changes }, 'transaction.update');
     }, {
       prepare: (context, args) => {
         const id = stringArg(argsRecord(args), 'id');
         const changes = argsRecord(args['changes']);
         const before = context.services.transactions.getByIdOrThrow(id);
-        const after = context.services.transactions.prepareUpdate(id, changes);
-        return prepared('transaction.update', '修改账单', `准备修改账单 ${id}。`, { count: 1, ids: [id] }, after, { before, after }, args, hashJson({ before, deleted: 0 }));
+        const normalizedChanges = changes['fundPurpose'] === undefined ? changes : {
+          ...changes,
+          operationId: changes['operationId'] ?? randomUUID(),
+          expectedFundPurposeRevision: changes['expectedFundPurposeRevision'] ?? before.fundPurposeRevision,
+          expectedTransactionToken: changes['expectedTransactionToken'] ?? financialTransactionToken({ ...before, deleted: false }),
+        };
+        // Validate the complete domain write, including purpose CAS/replay and refund
+        // constraints. Persist the generated operation identity and snapshot tokens.
+        const after = simulateAssistantWrite(context, () => context.services.transactions.update(id, normalizedChanges));
+        return prepared('transaction.update', '修改账单', `准备修改账单 ${id}。`, { count: 1, ids: [id] }, {
+          ...after,
+          categoryName: context.services.masterData.getCategoryOrThrow(after.categoryId).name,
+          accountName: context.services.masterData.getAccountOrThrow(after.accountId).name,
+        }, { before, after }, json({ id, changes: normalizedChanges }, '账单修改参数'), hashJson({ before, deleted: 0 }));
       },
       confirm: (context, action) => {
         const record = argsRecord(action);
@@ -822,12 +854,17 @@ export class AssistantToolRegistry {
 
     this.register(def('organization.apply'), (value) => {
       const record = argsRecord(value);
-      onlyKnown(record, ['actionIds']);
-      return json({ actionIds: stringArrayArg(record, 'actionIds') ?? [] }, '整理参数');
+      onlyKnown(record, ['actionIds', 'previewHash']);
+      const actionIds = stringArrayArg(record, 'actionIds', true) ?? [];
+      if (actionIds.length === 0 || new Set(actionIds).size !== actionIds.length) throw new AssistantValidationError('必须明确选择不重复的整理动作。');
+      return json({ actionIds, ...(record['previewHash'] === undefined ? {} : { previewHash: stringArg(record, 'previewHash') }) }, '整理参数');
     }, {
       prepare: async (context, args) => {
-        const preview = await context.services.organization.preview();
-        const actionIds = (args['actionIds'] as string[]).length > 0 ? args['actionIds'] as string[] : preview.actions.filter((action) => action.status === 'ready').map((action) => action.actionId);
+        // Explain the initial review, but confirmation rebuilds only deterministic
+        // domain facts and must not launch a fresh provider request.
+        const preview = await context.services.organization.preview({ explain: args['previewHash'] === undefined });
+        if (args['previewHash'] !== undefined && args['previewHash'] !== preview.previewHash) throw new AssistantActionStaleError();
+        const actionIds = args['actionIds'] as string[];
         if (actionIds.length === 0) throw new AssistantValidationError('没有可确认的整理动作。');
         const selected = preview.actions.filter((action) => actionIds.includes(action.actionId));
         if (selected.length !== actionIds.length) throw new AssistantActionStaleError('整理动作已变化，请重新预览。');

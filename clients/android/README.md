@@ -1,5 +1,7 @@
 # 记账 Android App：当前功能目录
 
+**2026-11-05 助手业务工具局部源码复核：** 核对 A020/A021/A024、A072/A073/A077/A084/A087，新增 A107–A116 业务能力组，更新 §6.3/6.5、§9.3/10 的服务端工具及 Android 通用卡边界。工具沿用既有 v1 消息、确认卡、结果与 confirm/cancel 接口；本次没有新增 Android 页面或 HTTP 路由。Android 不按工具名限制通用卡确认，但复杂结果摘要、聊天中逐项选择和成功后的跨页面刷新仍有缺口，详见下文。这里只记录源码与契约核对；自动化门禁由本轮任务另行记录，不代表已接真实 Provider、真机安装或生产部署。其他章节审计日期和历史统计不变。
+
 **2026-11-05 多用户局部源码复核：** 仅复核认证/注册/邀请管理 P003–P013、P020/P031/P033、新增 P042–P045，以及 D023–D025 的个人备份边界和 A041/A056/A060 的账号所有权；其余章节审计日期不变。新增注册、身份解码、公开认证 Cookie、邀请码字段和稳定 ID 隔离的 JVM 测试源码。本机 Gradle 尝试因分发包独占锁等待超时而未进入测试，且未发现 Android SDK；本轮编译/测试/lint 以 GitHub CI 结果单独记录，**没有真机验收或部署证据**。
 
 > 源码核对日期：**2026-10-10**；导航/主题/首页/账单增补核对：**2026-10-10（本轮 UI 重构）**；多文件账单融合导入与边界修复核对：**2026-10-17**；**品牌、首页真实余额与记账交互优化核对：2026-10-22**；**AI 智能整理旧账 Android 接入核对：2026-10-22；超时断点继续及整理卡片账单详情专项核对：2026-10-23**；**C1核心导航与记账表单局部复核：2026-10-30**（仅P017–P020、L00/L01/L04相关条目、A001与主Kotlin目录；未推进全库未修改章节）；**核心财务修复轮复核：2026-11-01**（仅T01–T12 受影响条目：D006/D009/D014/D015、P017、A001/A005/A015/A022/A023/A025/A026/A028/A030/A031/A104、B03.08–B03.13、S01.02/S01.08/S01.10/S01.12、B02.12 及主 Kotlin 目录；未推进全库未修改章节）。维护对象是当前工作区（包含未提交的 UI 改动与边界修复），不是仅以 Git HEAD 或旧设计稿为基准。本文记录“目前有什么、怎样输入和操作、接口及限制是什么”，作为后续 UI 重做、功能验收和维护的事实基线。
@@ -45,7 +47,7 @@
 - [3. 平台、会话、外观和设置](#platform)
 - [4. 首页、账单、工资、预算、统计与主数据](#ledger)
 - [5. 数据文件、物品、转账、回收站和周期](#operations)
-- [6. AI 助理、Provider、30 个工具和接口](#assistant)
+- [6. AI 助理、Provider、工具和接口](#assistant)
 - [7. 表单字段与操作速查](#forms)
 - [8. 账务口径与数据边界](#accounting)
 - [9. 已知问题与显示缺口](#gaps)
@@ -549,7 +551,7 @@
 | POST | /recurring/occurrences/:id/ignore | occurrence | R015 |
 
 <a id="assistant"></a>
-## 6. AI 助理、Provider、30 个工具和接口
+## 6. AI 助理、Provider、工具和接口
 
 **2026-11-05 A041/A056/A060 所有权复核：** AI 连接、保存密钥和对话属于当前账号；客户端仍调用既有 `/ai/config` 等路径，不传用户选择器。新用户独立配置模型；登录账号变化重建主界面与配置草稿，服务端会话决定实际账本，管理员身份不授予读取他人 AI 配置的权限。原有配置字段、空密钥保留、模型拉取与测试语义不变。
 
@@ -578,11 +580,11 @@
 | A017 | 对话附件输入：传统对话消息发送一次附单个文件；账单导入入口支持多选1–5个账单文件作为融合批次发送；无相机、照片、音频、PDF或通用文档AI分析入口 |AssistantComposerDraft；[DocumentFiles.kt](app/src/main/java/com/yansuu1/jizhang/ui/DocumentFiles.kt)；[assistant.ts](../../packages/server/src/routes/assistant.ts)|
 | A018 | 消息区显示用户/助理/工具的内容，文本、progress、error、attachment、result、tool-card以及融合批次导入卡（ImportBatchCard，文本消息附带content.importBatch结构）；文本按普通 Text 显示 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)|
 | A019 | 无正文的历史 complete 进度不再占卡（结束不等于入账）；running/failed/未知状态紧凑提示，失败只按安全错误码显示一次说明，不渲染原始错误正文；附件显示文件名 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)|
-| A020 | 结果卡显示服务端 summary 和最多 6 个白名单摘要字段，递归对象最多深度 2；金额明确带 ¥，类型 0/1 展示支出/收入，日期按有效 ISO 或毫秒时间戳格式化；不渲染任意 JSON |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)|
-| A021 | 工具卡与导入卡：工具卡保留操作名/toolName/摘要/影响数/warnings，values与非导入preview可展开完整递归操作详情；单文件导入卡紧凑按钮打开历史全屏工作区；融合批次导入卡展示文件数、融合记录数与分析状态，按钮打开多文件融合导入工作区（AssistantBatchImportWorkspace） |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)、[AssistantBatchImportWorkspace.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantBatchImportWorkspace.kt)|
+| A020 | 结果卡显示服务端 summary 和最多 6 个白名单摘要字段，递归对象最多深度 2，不遍历数组；金额明确带 ¥，类型 0/1 展示支出/收入，日期按有效 ISO 或毫秒时间戳格式化。2026-11-05复核：新资金/目标/物品/统计/整理读工具可返回现有 result，但列表、比例、证据数组及 hasMore 等未有完整通用展示，不能视为已提供全部结果的核对页。 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)、[AssistantConversationHelper.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantConversationHelper.kt)|
+| A021 | 工具卡与导入卡：保留操作名/toolName/摘要/影响数/warnings，values与非导入preview可展开递归操作详情。2026-11-05复核：除platform-import.prepare专用分支外，Android没有封闭toolName白名单；新增业务工具可使用现有pending卡、二次确认和取消，详情仍是字段路径文本而非专用领域表单。单文件导入卡打开历史全屏工作区；融合批次导入卡展示文件数、融合记录数与分析状态并打开多文件工作区。 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)、[AssistantBatchImportWorkspace.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantBatchImportWorkspace.kt)|
 | A022 | 操作与批次状态：传统操作状态有 pending / confirmed / cancelled / expired；融合批次分析状态包含 idle / running / complete / failed，未知wire状态在Repository保留为unknown并提供GET查询，不映射成可重试failed；批次终态confirmed/cancelled/expired阻止变更；确认只有matched conversationId/batchId、status=confirmed及完整结果时才发成功回调 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)、[AssistantRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/AssistantRepository.kt)、[AssistantBatchImportWorkspace.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantBatchImportWorkspace.kt)|
 | A023 | 全屏二次核对与权威审核：单文件全屏核对收支合计/退款标签/现有分类/审核备注；融合批次采用两阶段核对，POST review返回服务端权威计算的收支合计（毛支出/毛收入/退款收入/净额）、文件分布、分类新建与复用计划（categoriesToCreate/categoriesToReuse）及已选行清单（`selectedRows`），支持展开逐行检查。每行完整渲染：服务端 `categoryType`（0支出/1收入）、分类名、拟新建徽章（`approvedNewCategoryName != null` 标注“拟新建”）、逐笔备注精准保留（服务端空字符串 `""` 明确保留为 `(空备注)`，不回退为草稿或占位符）；权威统计（`ReviewSummary.counts`）严格区分 `ruleIgnored`（规则忽略）与 `userExcluded`（用户主动排除，可空，为 null 时独立展示为“未提供”，绝不回退为 0），保留服务端原始财务金额不作前端重算；0选择禁止确认，返回不写账 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)、[AssistantBatchImportWorkspace.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantBatchImportWorkspace.kt)|
-| A024 | 提交载荷与指派覆盖：单文件导入传非空显式selectedIds（1–100）及行覆盖；融合批次导入传显式selectedItemIds（1–500）、分类指派（现有分类ID或建议ID）、备注覆盖（支持显式空串清空）、已批准新分类数组及冲突决策；全流程不因未知结果盲目重试，需刷新同批次核对状态 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)；[AssistantRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/AssistantRepository.kt)；[AssistantBatchModels.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantBatchModels.kt)|
+| A024 | 提交载荷与指派覆盖：单文件导入传非空显式selectedIds（1–100）及行覆盖；融合批次导入传显式selectedItemIds（1–500）、分类指派、备注覆盖和已批准新分类及冲突决策。普通业务工具二次确认只提交既有 actionId；其参数由服务端待确认草案冻结，不因新toolName要求Android重组财务payload。未知结果需刷新核对。2026-11-05复核：当前onDataChanged仅在确认成功的导入分支调用，普通业务工具确认后刷新聊天但不保证其他已打开业务页立即更新。 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)；[AssistantRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/AssistantRepository.kt)；[AssistantBatchModels.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantBatchModels.kt)|
 | A025 | 取消与防护：待确认操作与融合批次均可显式取消（POST cancel）；取消未确认批次不影响已入账账单；请求进行中加锁防重并发；离开工作区时自动取消分析轮询协程，不中断服务端分析进程；代次凭证与401作用域守卫防止跨会话/晚响应回写 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)、[AssistantBatchImportWorkspace.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantBatchImportWorkspace.kt)|
 | A026 | 全屏预览与分页：传统单文件最多前200行预览；多文件融合批次支持全局最多500条记录，手机端采用100条/页的有界分页展示，服务端支持limit/cursor游标；默认提供“待核对”综合筛选（事实冲突、疑似重复/旧账、规则异常、未分配/待批准分类优先排前），另支持全部/已选入/未选/暂不导入/疑似重复/事实冲突/规则排除筛选；“全部”按待核对优先、序号、ID稳定排序；空待核对提示快捷“查看全部 N 条”；行编辑展开“不同来源原备注”（消费 noteAlternatives）并支持采用（含空值写入 noteOverrides 且失效 review）；翻页与筛选完整保留勾选、分类指派与备注草稿 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)；[AssistantBatchImportWorkspace.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantBatchImportWorkspace.kt)；[AssistantImportState.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantImportState.kt)|
 | A027 | 选择、排除与硬锁定规则：初始默认勾选来自AI建议或有效未导入行；AI分析中或失败时不默认选入；明确区分“未选”与“用户排除”（点击“暂不导入”提供即时反馈并更新统计，支持“重新选入”）；硬锁定禁止选入条件为：非正金额（amountCents<=0）、已在账本（existing=true）、账本碰撞（ledger_collision）及批次内弱冲突（weak_collision）；规则忽略原因（如状态非成功等）的非零未入账行保持可选（isEligible=true），用户可自主选入 |[AssistantImportState.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantImportState.kt)；[AssistantBatchModels.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantBatchModels.kt)|
@@ -631,9 +633,9 @@
 | A061 | 服务端 AES-256-GCM 保存密钥，随机 12 字节 IV；环境密钥为 64 hex=32 字节；保存/使用密钥需要环境密钥，环境密钥不存数据库 |[ai-crypto.ts](../../packages/server/src/services/ai-crypto.ts)；[ai-config-service.ts](../../packages/server/src/services/ai-config-service.ts)|
 | A062 | server config summary 还有 configured/encryptionKeyConfigured/updatedAt；Android provider 页面未展示 encryptionKeyConfigured 与更新时间，只使用 hasSecret 及表单字段 |[ai-config-service.ts](../../packages/server/src/services/ai-config-service.ts)；[ProviderSettings.kt](app/src/main/java/com/yansuu1/jizhang/ui/ProviderSettings.kt)|
 
-### 6.3 助理工具 30 项（A063–A092）
+### 6.3 助理工具（保留 A063–A092，新增 A107–A116）
 
-所有工具由后端白名单控制（assistant-tool-registry.ts:319–350），通过 Android 对话**间接**请求。读工具自动读；写工具只能生成待确认卡，确认后执行。工具 catalog 在服务器存在，Android 没有工具目录 UI。模型能否正确选中每个工具尚未真实 Provider 验证。以下每项为独立功能，勿把“可聊天”概括掉。
+所有工具由服务端 `ASSISTANT_TOOL_NAMES` 与 registry 白名单控制，通过 Android 对话**间接**请求。读/分析工具不写账本；分析可调用 Provider 并保存任务状态，`spending.resume` 只应在用户明确要求继续失败任务时使用。写工具先生成待确认卡，显式确认后才执行。Android 没有工具目录 UI，模型选取和完整任务链仍需真实 Provider 验证。下表保留原稳定 ID；旧“30个工具”是历史统计，A107–A116按业务能力组列出新增工具，不据此改写全库功能/API总数。
 
 | ID | 工具 | 具体能力 / 限制 | 适配器源码行 |
 |---|---|---|---|
@@ -646,29 +648,46 @@
 | A069 | organization.preview | 预览安全分类/标签合并动作；语义交易重分类/分类建议仅建议；采样最多 200 笔 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)；[ai-organization-service.ts](../../packages/server/src/services/ai-organization-service.ts)|
 | A070 | backups.list | 备份文件名列表，适配器未截断列表 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A071 | backup.export-links | 返回 transactions/salaries/recurring/transfers 四类相对 CSV 导出地址 /api/v1/export/{what}.csv |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
-| A072 | transaction.create | 准备收入/支出、金额、日期、分类、账户、备注、tags、isRefund、refundLinkedTxIds 的新账单 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)；[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
-| A073 | transaction.update | 指定账单 ID + changes；保留服务器校验、准备变更前后指纹 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
+| A072 | transaction.create | 准备普通收入/支出、整数分金额、日期、分类、账户、备注、tags、isRefund、refundLinkedTxIds，以及四值fundPurpose；退款仍关联原支出并单独计入收入，确认前不入账。 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
+| A073 | transaction.update | 指定账单ID + changes；准备变更前后指纹。四用途变更由服务端冻结operationId、用途revision与transactionToken，确认仍经过原事务/CAS校验。 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A074 | transaction.delete | 将账单移入回收站 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A075 | transaction.restore | 从回收站恢复账单 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A076 | transfer.create | 创建指定转出/转入账户、金额、日期、备注的转账 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
-| A077 | salary.create | 新建工资并生成预算分配快照；账户、日期、金额、备注、可选模板/分配 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
+| A077 | salary.create | 2026-11-05重新接入canonical四用途收入：amountCents/date/accountId/可选note、expectedFundConfigRevision；服务端生成或冻结operationId并提交contractVersion=1，由服务器保存四用途分配快照。不能重复将同一笔钱记成普通收入；旧templateId/allocations载荷仍拒绝。 |[assistant-business-tools.ts](../../packages/server/src/services/assistant-business-tools.ts)、[salary-service.ts](../../packages/server/src/services/salary-service.ts)|
 | A078 | category.create | 创建分类，name/type/icon/color/sortOrder/parentId |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A079 | category.update | 修改指定分类 changes |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A080 | category.delete | 分类软删除 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A081 | account.create | 创建账户、type、initialBalanceCents |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A082 | account.update | 修改指定账户 changes |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A083 | account.delete | 账户软删除 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
-| A084 | budget.template.apply | 将指定模板应用到当前周期 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
+| A084 | budget.template.apply（已移除，2026-11-05复核） | 前序canonical资金迁移已退役新建旧分类预算分配；当前白名单无此工具，不恢复“将模板应用到当前周期”。保留稳定ID，模板本身CRUD见A114。 |[assistant-types.ts](../../packages/server/src/services/assistant-types.ts)、[salary-service.ts](../../packages/server/src/services/salary-service.ts)|
 | A085 | backup.create | 服务端创建数据库备份 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A086 | 平台账单确定性预览+配置Provider真实分析+人工审核；显式选择/分类ID/备注覆盖确认入账，原件摘要与当前账本/分类重验；事务/重复确认保护。 | 账单干跑预览；确认后按所选行/分类覆盖导入；原件摘要校验 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
-| A087 | organization.apply | 准备应用指定 actionIds 或默认 ready 动作，重新取 previewHash；确认审计写入 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
+| A087 | organization.apply | 必须显式提供非空且不重复的actionIds；重验冻结previewHash及确定性事实，确认不再次调用Provider；确认后才应用并写入审计，不再默认选择全部ready动作。 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A088 | organization.undo | 根据 operationId 条件撤销审计操作；有后续变更则拒绝 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)；[ai-organization-service.ts](../../packages/server/src/services/ai-organization-service.ts)|
 | A089 | recurring.confirm | 确认指定 occurrenceId |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A090 | recurring.ignore | 忽略指定 occurrenceId |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A091 | tag.rename | 指定 from/to 重命名标签，标签集合指纹防过期 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A092 | tag.delete | 指定 name 删除账单中的标签，指纹防过期 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 
-助理没有：创建/编辑周期规则、删除转账、编辑/删除工资、编辑预算分配、模板 CRUD、物品/照片/抠图、设置主题/周期日、更改密码、备份恢复工具；这些只能走各自客户端功能或服务端管理途径。工具访问与 UI 是否有专门页面需要分开记录。
+#### 2026-11-05 新增业务能力组（A107–A116）
+
+以下为**服务端工具实现 + Android既有通用确认入口的源码兼容性**，不是新增Android专用编辑器或真机验收。写工具共用预览→用户确认→既有服务事务；预览回滚领域写入，确认重验指纹/CAS及当前用户账本。金额为整数分；域内operationId在草案中冻结或由服务端生成。分页工具以limit（最多100）/offset或既有cursor读取，total/hasMore不可解释成“本页即全部”。证据统一为 [business adapters](../../packages/server/src/services/assistant-business-tools.ts)、[白名单类型](../../packages/server/src/services/assistant-types.ts)、[registry](../../packages/server/src/services/assistant-tool-registry.ts)；完整域覆盖见[本轮工具矩阵](../../.trellis/tasks/11-04-ios-assistant/research/assistant-business-matrix.md)。
+
+| ID | 读/分析工具 | 待确认写工具 | 输入、校验与业务边界 |
+|---|---|---|---|
+| A107 | `transactions.query`、`transaction.details`、`transactions.daily` | 原A072–A075 | 完整账单筛选含账户/日期/分类/标签及高级搜索；offset分页返回权威total；详情返回双向退款关系；daily要求from/to/timeZone，最多32天。普通支出仍为毛额，退款独立记入收入。 |
+| A108 | `master-data.read` | `master-data.move`、`tag.create`、`tag.update`、`tag.remove`；原分类/账户CRUD及tag.rename/delete保留 | kind选择分类/账户/标签层级或引用情况；分页取得真实ID。排序direction仅-1/1；标签name/parentId经现有服务校验。模型不能提供任意SQL或URL。 |
+| A109 | `transfers.query`、`trash.list` | `transfer.update`、`transfer.delete`、`trash.restore-all`、`trash.purge`、`trash.purge-all`；原transfer.create/single restore保留 | 转账按id或accountId分页，不计收支；回收站返回total/offset/limit/hasMore，永久删除在确认描述中明确不可撤销。全部恢复/清空是全库当前用户范围的操作，不是仅当前页。 |
+| A110 | `recurring.rules`（view=rules/occurrences/pending） | `recurring.create`、`recurring.update`、`recurring.toggle`、`recurring.delete`、`recurring.generate`；原confirm/ignore保留 | 规则含name/type/amountCents/categoryId/accountId/frequency/anchorDate/enabled；生成只产生待确认记录，不直接记账；后续confirm才写入一次收入或支出。字段校验沿用原服务，更新规则的引用校验差异仍见§9.2。 |
+| A111 | `funds.read`、`salaries.read` | `funds.configure`、`funds.review`、`salary.update`、`salary.delete`；canonical salary.create见A077 | funds view为summary/config/capabilities/issues；ratiosBps四项合计10000，配置带expectedRevision/timeZone且只影响未来分配；review带grantId（可选）、来源salaryId/expectedSourceToken；工资修改/删除带expectedGrantRevision，不借旧模板重建分配。 |
+| A112 | `plan.read`、`plan.preview`、`goals.read` | `plan.save`、`goals.opening`、`goals.create`、`goals.update`、`goals.delete` | 独立计划输入monthlyIncomeCents/essentialMonthlyCents/reserveBalanceCents，保存带revision；目标reserve/investment的期初和deposit/withdrawal进度使用expectedRevision/operationId，支持时间窗/cursor，始终与真实账单分开。 |
+| A113 | `items.read` | `item.create`、`item.update`、`item.sell`、`item.retire`、`item.delete` | 列表、概览、id详情和q/category/status/sort分页；物品名/购入日期/可空价格/状态/备注及购入、售出账单关联使用原域校验。物品登记或状态变化不会自动创建收入/支出；照片上传/删除和抠图任务不在该工具组内。 |
+| A114 | `templates.read`、`settings.read` | `template.create`、`template.update`、`template.default`、`template.delete`、`settings.cycle` | 模板name/modules(categoryId/ratio 0–1)/isDefault；周期起始日1–28或null。模板维护与退役的“写入旧分类预算分配”分开；不恢复A084。主题/密码/Provider密钥不是此设置接口。 |
+| A115 | `stats.query`、`planning.read`、`planning.preview` | `planning.configure`、`planning.mapping`、`planning.confirm`、`planning.reconcile`、`planning.purpose`、`planning.refund-splits` | 统计复用服务器时间窗/分类毛支出/退款收入/月趋势；旧执行计划按view读取来源/周期/修订/事实/用途/退款/操作。写入保留源hash、revision与服务端计算；单次规则/来源/拆分最多100项；已有规则超过100项时拒绝整组替换，不能静默丢弃其余规则。旧域已退役写入继续由服务端拒绝。 |
+| A116 | `spending.preview`、`spending.card`、`spending.status`、`spending.resume`、`spending.evidence` | `spending.apply`、`spending.undo` | startDate/endDate为YYYY-MM-DD，完整分析最多500笔；resume仅明确要求时继续失败任务，可能再次产生Provider调用。card建议分页最多100项并返回totalActions/offset/limit/hasMore；coverage为计数及idsOmitted，完整分类金额证据改用evidence分页。apply要求runId及1–100个明确、唯一、有效actionIds，允许非note的分类/标签/新分类及模板建议，禁止默认全选；note只参考。undo遇后续变更拒绝覆盖。Android A105–A106独立整理UI仍只选择分类/标签，其模板与新分类建议不自动应用；聊天没有新增逐项勾选/证据分页控件。 |
+
+当前仍不提供模型工具的能力包括照片/抠图上传、任意文件字节/融合导入人工审核替代、主题/密码/邀请码/Provider密钥管理、备份恢复和数据库运维；这些保留专用可信UI或运维入口。旧预算分配写入属于已退役能力。可由工具访问、Android通用卡可提交确认、存在专门移动页面是三种不同能力，不能互相替代。
 
 ### 6.4 服务端流程与约束（A093–A104）
 
@@ -691,6 +710,8 @@
 
 ### 6.5 API 覆盖矩阵
 
+2026-11-05工具扩展**没有新HTTP路由**：文本与流式调用继续使用下表既有messages/generations，所有新写工具仍经过`/assistant/actions/:id/confirm`或`cancel`；v1 card/result不改版。`GET /assistant/tools`包含新的服务端白名单，Android仍无目录请求/UI。业务域原HTTP端点并未因此自动增加Android原生页面。
+
 | API | Android 实际入口 | 可用程度 |
 |---|---|---|
 | GET /assistant/conversations/:conversationId/actions/:id/rows/:rowId/duplicates | 导入工作区疑似重复行→对比现有账单；A101–A103 | 源码接入/自动测试与构建；设备待验 |
@@ -705,9 +726,9 @@
 | GET /assistant/conversations/:id/generations/:genId/events | SSE 流式事件增量读取 | 已接入（有界流、断流核对） |
 | POST /assistant/conversations/:id/generations/:genId/cancel | 显式停止生成 | 已接入（停止按钮触发） |
 | DELETE /assistant/conversations/:id | 归档弹窗 | 已接入；无恢复 |
-| POST /assistant/actions/:id/confirm | 卡片二次确认 | 已接入 |
+| POST /assistant/actions/:id/confirm | 卡片二次确认；A021/A024及A107–A116通用业务草案 | 已接入通用提交，无工具名封闭白名单；复杂结果展示/跨页刷新缺口见§9.3 |
 | POST /assistant/actions/:id/analyse | 原件匹配后显式重试AI分析，生成新审核卡 | 源码接入，未设备/真实Provider验证 |
-| POST /assistant/actions/:id/cancel | 卡片取消 | 已接入 |
+| POST /assistant/actions/:id/cancel | 既有及新增业务草案卡片取消 | 已接入；仅pending允许操作，仍由服务端校验所有权/状态 |
 | POST /assistant/conversations/:conversationId/import-batches | 对话附件选 1–5 个账单文件发送，创建/重放融合批次；A015–A017, A104 | 源码接入/单元与契约测试通过；设备待验 |
 | GET /assistant/conversations/:conversationId/import-batches/:batchId | 打开批次工作区读取批次主状态、文件与统计；A021, A104 | 源码接入/单元与契约测试通过；设备待验 |
 | GET /assistant/conversations/:conversationId/import-batches/:batchId/rows | 工作区有界分页与筛选读取融合账单行；A026, A104 | 源码接入/单元与契约测试通过；设备待验 |
@@ -856,6 +877,8 @@
 
 ### 9.3 AI 助理和 Provider
 
+**2026-11-05新增工具局部复核：** 新toolName不会被Android通用卡/二次确认封闭白名单阻止；values/preview可展开字段路径，但result仍只显示最多6个已知摘要字段、不遍历数组。因此新资金/目标/物品/统计读结果、spending.card/evidence分页与逐项选择不是完整的Android聊天工作区；既有A105–A106独立整理只支持分类/标签选择，不自动获得聊天工具的模板/新分类应用能力。确认普通业务工具后只刷新对话，现有`onDataChanged`成功信号限定导入分支，其他已打开业务页可能需要手动重读。这些是当前源码缺口；本轮仅更新目录，未改Android代码或宣称设备验收通过。
+
 
 1. **导入日期错配已源码修复**：本轮统一读取服务端 `dateLabel`，新增decoder单元测试；实际文件/设备日期展示尚待验证。
 2. **结果/确认卡只有有限摘要**：safeSummaryFields 只允许列出的字段名、最多 6 项、深度 2；不遍历数组内容。monthly evaluation、旧 organization actions/recommendations、balances/items 等复杂数据通常看不到完整细节。完整月评仍无专用页；日期范围整理已有 A105/A106 专用工作区，但旧 `organization.preview` 通用卡仍不是该工作区。无 evidence 钻取，无导出链接点击/下载（`links` 字段未在白名单）。可请求工具不等于可完整核对结果。
@@ -906,7 +929,7 @@
 | 导入不支持 | 工资/周期规则CSV导入、任意Excel通用表格、退款关联CSV还原；平台source手动选择在UI未暴露 |
 | 物品没有 | 会计折旧参数、多照片、批量照片、独立物品回收站、终态独立编辑售价/结束日期/出售关联；抠图不会识别物品资料 |
 | AI无独立界面 | /ai/transaction-draft（无直接调用）、完整月评、整理运行历史/审计历史列表、工具目录catalog界面；智能整理旧账已有 A105/A106 专用工作区，但无历史运行列表、无跨页面撤销入口 |
-| AI无工具 | 周期规则CRUD、转账删除、工资编辑/删除、预算分配编辑、模板CRUD、物品/照片/抠图、周期日/主题/密码设置、备份恢复 |
+| AI工具与原生UI边界 | 周期规则、转账修改/删除、canonical工资、模板、物品及周期日已具服务端工具（A107–A116），通用确认可提交但不等于Android专用页面/完整结果展示；旧预算分配写入已退役。照片/抠图上传、主题/密码/邀请码/Provider凭据管理、备份恢复仍无模型工具。 |
 | AI交互没有 | 纯文本流式文字与停止已源码接入（设备未验），附件仍无流式/取消；归档恢复/单条消息删除/旧消息编辑/重命名、通用PDF/照片/音频多模态分析 |
 | 平台边界 | Android APK目标含鸿蒙4待实测；本文不等同HarmonyOS5/6原生端交付；仓库Web工程已退役，生产部署状态须单独验证 |
 
@@ -1267,6 +1290,8 @@
 | 日期/日志 | 源码核对日期与运行验证日期分别记录，描述变化 |
 
 ### 12.3 变更日志
+
+**2026-11-05 助手全业务工具目录补齐（局部源码核对）：** 在原稳定ID上更新A020/A021/A024、A072/A073/A077/A084/A087，追加A107–A116十个业务能力组；准确列出新工具和参数/CAS/分页/历史整理限制。A084保留ID并标退役；A077仅canonical四用途收入，不重启旧模板分配。复核Android generic card与Repository未封闭toolName、结果摘要不遍历数组、普通工具成功不发跨页刷新信号，分别记录兼容和缺口；没有新增Android代码、页面、route或工具目录UI。此前314/322功能与30工具、126/137API等数字全部保留为历史统计；本轮不重算全库。服务端/客户端CI结果由本轮任务单独记录，此记录不构成真实Provider、设备安装或生产部署证据。
 
 **2026-10-30 C2/C3局部实施：** C2默认本月计划与工资模板/用途精简，后续严格空状态解码与退款原因修复；C3服务端window、精确账户/分类、expenseCount、默认6月与历史锚点、毛支出文案、完整下钻与无需AI复盘，结余池/逐期明细归入高级预算。保留原ID并新增B02.12–13；主Kotlin目录按实际97个路径补齐（非全库行为重审）。shared385测试/build/lint、server1018测试/lint/typecheck/build通过；Android初次C3门禁49套505项/0失败，后续修复最终门禁见[任务状态](../../.trellis/tasks/10-29-core-simplify-statistics/implementation-status.md)。设备范围/返回/小屏/TalkBack待验；没有装机、生产部署或账务数据变更。
 

@@ -49,6 +49,17 @@ export const ASSISTANT_TOOL_NAMES = [
   'recurring.ignore',
   'tag.rename',
   'tag.delete',
+  'transactions.query', 'transaction.details', 'transactions.daily', 'master-data.read', 'master-data.move',
+  'tag.create', 'tag.update', 'tag.remove', 'transfers.query', 'transfer.update', 'transfer.delete',
+  'trash.list', 'trash.restore-all', 'trash.purge', 'trash.purge-all',
+  'recurring.rules', 'recurring.create', 'recurring.update', 'recurring.toggle', 'recurring.delete', 'recurring.generate',
+  'funds.read', 'funds.configure', 'funds.review', 'salaries.read', 'salary.create', 'salary.update', 'salary.delete',
+  'plan.read', 'plan.preview', 'plan.save', 'goals.read', 'goals.opening', 'goals.create', 'goals.update', 'goals.delete',
+  'items.read', 'item.create', 'item.update', 'item.sell', 'item.retire', 'item.delete',
+  'templates.read', 'template.create', 'template.update', 'template.default', 'template.delete', 'settings.read', 'settings.cycle',
+  'stats.query', 'planning.read', 'planning.configure', 'planning.mapping', 'planning.preview', 'planning.confirm',
+  'planning.reconcile', 'planning.purpose', 'planning.refund-splits',
+  'spending.preview', 'spending.card', 'spending.status', 'spending.evidence', 'spending.resume', 'spending.apply', 'spending.undo',
 ] as const;
 
 export type AssistantToolName = (typeof ASSISTANT_TOOL_NAMES)[number];
@@ -289,6 +300,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const FORBIDDEN_KEYS = /(?:base64|cookie|credential|password|prompt|providerbody|secret|token)/i;
+// These SHA-256 optimistic-concurrency facts are not credentials. Business tools
+// must round-trip them without weakening the provider/session secret boundary.
+const BUSINESS_HASH_KEYS = new Set(['previewToken', 'topologyToken', 'expectedTopologyToken', 'sourceToken', 'expectedSourceToken', 'transactionToken', 'expectedTransactionToken', 'refundToken', 'expectedRefundToken']);
 /*
  * Every string that enters a bounded assistant JSON value is truncated to this many UTF-16
  * units. The truncation must never cut a surrogate pair (`boundedProviderMessage`), because a
@@ -330,7 +344,7 @@ export function normalizeAssistantJson(value: unknown, path = '$', depth = 0): A
   const output: Record<string, AssistantJsonValue> = {};
   for (const [key, item] of entries) {
     if (item === undefined) continue;
-    if (FORBIDDEN_KEYS.test(key)) throw new AssistantValidationError('助手结果包含受保护字段。');
+    if (FORBIDDEN_KEYS.test(key) && !(BUSINESS_HASH_KEYS.has(key) && typeof item === 'string' && /^[a-f0-9]{64}$/i.test(item))) throw new AssistantValidationError('助手结果包含受保护字段。');
     output[key.slice(0, 80)] = normalizeAssistantJson(item, `${path}.${key}`, depth + 1);
   }
   return output;

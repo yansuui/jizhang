@@ -248,13 +248,17 @@ export class SalaryService {
     return found;
   }
 
-  list(limit = 200): SalaryDto[] {
+  list(limit = 200, offset = 0): SalaryDto[] {
     const rows = this.db
       .prepare(
-        'SELECT * FROM salary_records WHERE deleted = 0 ORDER BY date DESC, updated_at DESC LIMIT ?',
+        'SELECT * FROM salary_records WHERE deleted = 0 ORDER BY date DESC, updated_at DESC, id LIMIT ? OFFSET ?',
       )
-      .all(limit) as SalaryRow[];
+      .all(limit, offset) as SalaryRow[];
     return rows.map((row) => this.toDto(row));
+  }
+
+  count(): number {
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM salary_records WHERE deleted = 0').get() as { n: number }).n;
   }
 
   /**

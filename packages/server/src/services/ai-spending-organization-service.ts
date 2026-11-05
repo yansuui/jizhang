@@ -349,9 +349,15 @@ export interface AiSpendingOrganizationServiceOptions {
   readonly now?: () => number;
 }
 
+type SpendingWork = Map<string, { controller: AbortController; task: Promise<SpendingRunSummary> }>;
+
 export class AiSpendingOrganizationService {
   private readonly now: () => number;
-  private readonly active = new Map<string, { controller: AbortController; task: Promise<SpendingRunSummary> }>();
+  // Route and assistant contexts can use different scoped providers for the same private
+  // ledger. Share work ownership, and recover interrupted persisted runs only once.
+  private static readonly workByDb = new WeakMap<Db, SpendingWork>();
+  private static readonly closingWork = new WeakSet<SpendingWork>();
+  private readonly active: SpendingWork;
   private closing = false;
 
   constructor(
@@ -361,20 +367,41 @@ export class AiSpendingOrganizationService {
     options: AiSpendingOrganizationServiceOptions = {},
   ) {
     this.now = options.now ?? (() => Date.now());
-    this.purgeExpiredCheckpoints();
+    const existing = AiSpendingOrganizationService.workByDb.get(db);
+    this.active = existing ?? new Map();
+    this.closing = AiSpendingOrganizationService.closingWork.has(this.active);
+    if (existing === undefined) {
+      AiSpendingOrganizationService.workByDb.set(db, this.active);
+      this.purgeExpiredCheckpoints();
+    }
     // Runs from a previous process cannot safely resume an in-memory provider call.
     const interrupted = this.db.prepare("SELECT id FROM ai_analysis_runs WHERE status = 'running'").all() as { id: string }[];
     for (const { id } of interrupted) {
-      this.failRun(id, 'AI_ORGANIZATION_INTERRUPTED', { stage: 'interrupted', field: null, batch: 0 });
+      // A scoped provider can be constructed while another service owns a live
+      // run. Only a durable row with no in-process owner is interrupted work.
+      if (!this.active.has(id)) this.failRun(id, 'AI_ORGANIZATION_INTERRUPTED', { stage: 'interrupted', field: null, batch: 0 });
     }
   }
 
   get hasActiveWork(): boolean { return this.active.size > 0; }
 
+  static hasActiveFor(db: Db): boolean { return (this.workByDb.get(db)?.size ?? 0) > 0; }
+
+  static async shutdownFor(db: Db): Promise<void> {
+    const active = this.workByDb.get(db);
+    if (!active) return;
+    this.closingWork.add(active);
+    for (const entry of active.values()) entry.controller.abort();
+    await Promise.allSettled([...active.values()].map((entry) => entry.task));
+    // The original owner's DB handle survives an idle tenant eviction. Retire
+    // this service generation, not the connection identity: a later lease can
+    // construct a fresh generation only after this work has drained.
+    if (this.workByDb.get(db) === active) this.workByDb.delete(db);
+  }
+
   async close(): Promise<void> {
     this.closing = true;
-    for (const entry of this.active.values()) entry.controller.abort();
-    await Promise.allSettled([...this.active.values()].map((entry) => entry.task));
+    await AiSpendingOrganizationService.shutdownFor(this.db);
   }
 
   async startAnalysis(input: unknown): Promise<SpendingRunSummary> {
@@ -388,7 +415,7 @@ export class AiSpendingOrganizationService {
     if (startMs >= endMsExclusive) {
       throw new AiSpendingRunsInputError('startDate must be on or before endDate.');
     }
-    if (this.closing) throw new AiError(503, 'AI_ORGANIZATION_INTERRUPTED', '服务正在停止，请稍后重试。');
+    if (this.closing || AiSpendingOrganizationService.closingWork.has(this.active)) throw new AiError(503, 'AI_ORGANIZATION_INTERRUPTED', '服务正在停止，请稍后重试。');
     if (record['background'] !== undefined && typeof record['background'] !== 'boolean') {
       throw new AiSpendingRunsInputError('background 必须是布尔值。');
     }
@@ -486,7 +513,7 @@ export class AiSpendingOrganizationService {
       if (replay.run_id !== runId) throw new AiSpendingRunsInputError('继续请求编号已被其他任务使用。');
       return this.getRun(runId);
     }
-    if (this.closing) throw new AiError(503, 'AI_ORGANIZATION_INTERRUPTED', '服务正在停止，请稍后重试。');
+    if (this.closing || AiSpendingOrganizationService.closingWork.has(this.active)) throw new AiError(503, 'AI_ORGANIZATION_INTERRUPTED', '服务正在停止，请稍后重试。');
     if (this.active.size > 0) throw new AiError(409, 'AI_ORGANIZATION_BUSY', '已有整理任务正在分析，请继续查看原任务。');
     this.purgeExpiredCheckpoints();
     const row = this.runRow(runId);
@@ -509,6 +536,12 @@ export class AiSpendingOrganizationService {
     claim();
     this.scheduleRun(runId, eligible, JSON.parse(row.coverage_json) as unknown);
     return this.getRun(runId);
+  }
+
+  /** Assistant scopes await completion so cancellation/lifetime stay owned by their turn. */
+  async resumeAndWait(runId: string, input: unknown): Promise<SpendingRunSummary> {
+    const run = await this.resumeAnalysis(runId, input);
+    return this.active.get(runId)?.task ?? run;
   }
 
   private scheduleRun(runId: string, eligible: readonly EligibleRow[], coverage: unknown): Promise<SpendingRunSummary> {

@@ -32,6 +32,7 @@ Three properties shape everything below:
 | [Multi-user identity](./multiuser-identity.md) | Original-owner migration, private bindings, sessions and invite consumption | Source and fixture tests; production migration separate |
 | [Error Handling](./error-handling.md) | One error shape, 401 vs 403 vs 404, no leaks | Done |
 | [Assistant Streaming](./assistant-streaming.md) | Generation v1 SSE, clarification, lifecycle and cancellation | Done (source/tests; runtime pending) |
+| [Assistant Business Tools](./assistant-business.md) | Private-ledger adapters, explicit confirmation, complete query coverage, historical organization and rollback preview limits | Contracts; integration evidence in current iOS task |
 | [AI Provider Integration](./ai-provider.md) | Configurable provider HTTP, encrypted secrets, draft contract | Done |
 | [Merged Bill Import](./merged-bill-import.md) | Dedicated bounded multi-file batch routes, review, live-view and atomic confirmation | Source-backed; real export benchmark not established || [Personal Item Assets](./item-assets.md) | Item lifecycle API, isolated ledger links, bounded photo BLOBs, and private cutout jobs | Done |
 | [Independent Financial Plan](./financial-plan.md) | Four-purpose planning, manual reserve, exact-cents forecast and no-ledger-write boundary | Source/local automated verification complete; device/deployment pending |

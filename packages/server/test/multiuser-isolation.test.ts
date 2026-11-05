@@ -223,10 +223,29 @@ describe('private account route ownership', () => {
     const confirmed = await request(member, 'POST', `/api/v1/assistant/actions/${last.content.card.actionId}/confirm`, {});
     expect(confirmed.statusCode, confirmed.body).toBe(200);
     expect((await request(member, 'GET', `/api/v1/transactions/${id}`)).json()).toMatchObject({ note: 'assistant-member-write', fundPurpose: 'reserve' });
+    fetchImpl.mockImplementation(async () => Response.json({ choices: [{ message: { content: JSON.stringify({
+      message: 'Confirm allocated income', toolCall: { name: 'salary.create', arguments: {
+        amountCents: 56789, accountId: 'builtin-default-account', date: NOW - 1000, expectedFundConfigRevision: 0,
+      } },
+    }) } }] }));
+    const salaryPreview = await request(member, 'POST', `/api/v1/assistant/conversations/${conversation.id}/messages`, { text: 'allocate income' });
+    const salaryCard = salaryPreview.json().items.at(-1).content.card as { actionId: string };
+    expect(salaryCard, salaryPreview.body).toBeDefined();
+    expect((await request(member, 'GET', '/api/v1/salaries')).json().items).toHaveLength(0);
+    for (const action of ['confirm', 'cancel']) {
+      expect((await request(owner, 'POST', `/api/v1/assistant/actions/${salaryCard.actionId}/${action}`, {})).statusCode).toBe(404);
+    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await request(member, 'POST', `/api/v1/assistant/actions/${salaryCard.actionId}/confirm`, {});
+      expect(result.statusCode, result.body).toBe(200);
+    }
+    expect((await request(member, 'GET', '/api/v1/salaries')).json().items).toHaveLength(1);
+    expect((await request(owner, 'GET', '/api/v1/salaries')).json().items).toHaveLength(0);
     const ledger = identity.getLedger(memberId)!;
     const check = openDatabase({ ...config, ...ledger });
     expect(check.prepare('SELECT actor_id FROM financial_fund_purpose_events WHERE transaction_id = ?').get(id)).toEqual({ actor_id: memberId });
     expect(check.prepare('SELECT COUNT(*) AS n FROM users').get()).toEqual({ n: 0 });
+    expect(check.prepare('SELECT actor_id FROM financial_fund_grant_revisions').get()).toEqual({ actor_id: memberId });
     closeDatabase(check);
   });
 

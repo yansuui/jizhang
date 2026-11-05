@@ -6,6 +6,7 @@ import type { AppConfig } from '../config.js';
 import type { Db } from '../db/index.js';
 import { AssistantConversationService, createConversationWriteLock } from '../services/assistant-conversation-service.js';
 import { AssistantActionStaleError, AssistantError, AssistantValidationError, type AssistantAttachmentMetadata } from '../services/assistant-types.js';
+import { AiSpendingOrganizationService } from '../services/ai-spending-organization-service.js';
 import { AssistantGenerationService, parseCreateGenerationRequest } from '../services/assistant-generation-service.js';
 import { AssistantGenerationRunner } from '../services/assistant-generation-runner.js';
 import { AssistantStreamError, SSE_HEARTBEAT_MS, type AssistantStreamEvent } from '../services/assistant-stream-types.js';
@@ -296,12 +297,13 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
 
 
     lifecycle.onClose(async () => {
+      await AiSpendingOrganizationService.shutdownFor(options.db);
       await batchAnalysis.shutdown();
       await runner.shutdown();
     });
 
 
-    lifecycle.whileBusy(() => runner.hasActiveWork || batchAnalysis.hasActiveWork);
+    lifecycle.whileBusy(() => runner.hasActiveWork || batchAnalysis.hasActiveWork || AiSpendingOrganizationService.hasActiveFor(options.db));
 
     return { now, withConversationLock, conversations, orchestrator, confirmingActions, activeLock, beginLegacyTurn, endLegacyTurn, legacyTurnActiveError, generations, runner, aiConfigService, batchAnalysis, options };
   });
@@ -552,7 +554,11 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
         ...(noteOverrides === undefined ? {} : { noteOverrides }),
       });
     } catch (error) {
-      if (error instanceof AssistantActionStaleError) conversations.setPendingStatus(pending.id, 'expired', null);
+      if (error instanceof AssistantActionStaleError) {
+        const expired = conversations.setPendingStatus(pending.id, 'expired', null);
+        const card = conversations.messages(pending.conversationId).find((message) => message.content.card?.actionId === pending.id);
+        if (card) conversations.updateCardStatus(card.id, expired.status);
+      }
       throw error;
     }
     })();

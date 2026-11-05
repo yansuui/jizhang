@@ -1146,16 +1146,16 @@ export class TransactionService {
    * `ORDER BY date DESC, updated_at DESC` — in the trash you want the thing you just
    * deleted at the top, not the bill with the newest transaction date.
    */
-  listDeleted(limit = MAX_PAGE_SIZE): TransactionDto[] {
+  listDeleted(limit = MAX_PAGE_SIZE, offset = 0): TransactionDto[] {
     const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), MAX_PAGE_SIZE);
     const rows = this.db
       .prepare(
         `SELECT transactions.*, ${FUND_COLUMNS} FROM transactions
           WHERE deleted = 1
           ORDER BY updated_at DESC, id
-         LIMIT ?`,
+         LIMIT ? OFFSET ?`,
       )
-      .all(safeLimit) as TransactionRow[];
+      .all(safeLimit, Math.max(0, Math.trunc(offset))) as TransactionRow[];
     return rows.map((row) => toDto(row));
   }
 

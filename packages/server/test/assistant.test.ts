@@ -214,6 +214,8 @@ describe('assistant authenticated routes and confirmation contract', () => {
 
     const mismatch = await inject('POST', `/api/v1/assistant/actions/${card.actionId}/confirm`, { fileBase64: Buffer.from('different').toString('base64'), selectedIds });
     expect(mismatch.statusCode).toBe(409);
+    const expiredHistory = await inject('GET', `/api/v1/assistant/conversations/${conversation.id}/messages`);
+    expect(expiredHistory.json().items.find((item: { content: { card?: { actionId: string } } }) => item.content.card?.actionId === card.actionId).content.card.status).toBe('expired');
     expect((db.prepare('SELECT COUNT(*) AS count FROM transactions WHERE deleted = 0').get() as { count: number }).count).toBe(0);
 
     const refreshed = await inject('POST', `/api/v1/assistant/conversations/${conversation.id}/messages`, { text: '重新预览导入', attachment: file });
@@ -280,8 +282,8 @@ describe('assistant authenticated routes and confirmation contract', () => {
     expect((await confirmTool(transfer.actionId)).statusCode).toBe(200);
     expect((db.prepare('SELECT COUNT(*) AS count FROM transfers WHERE deleted = 0').get() as { count: number }).count).toBe(1);
 
-    // P07: `salary.create` and `budget.template.apply` are removed from the allowlist.
-    // A provider call for them is the ordinary unknown-tool path and must write nothing.
+    // Legacy module-allocation salary payloads remain forbidden. Canonical fund
+    // salary.create has a different validated version/revision contract.
     const templateId = (db.prepare('SELECT id FROM budget_templates WHERE is_default = 1').get() as { id: string }).id;
     for (const [name, args] of [
       ['salary.create', { amountCents: 100_000, accountId: 'builtin-default-account', date: '2026-09-20', templateId, note: 'salary' }],

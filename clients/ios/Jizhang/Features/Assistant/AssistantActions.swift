@@ -30,6 +30,9 @@ struct AssistantActionResponse: Decodable {
 
 /// Labels are shared by read results and confirmation previews. Unknown fields remain inspectable.
 enum AssistantPreviewFormat {
+    static let internalFields: Set<String> = ["fingerprint", "__fingerprint", "expectedRevision", "expectedFundConfigRevision",
+        "expectedFundPurposeRevision", "expectedTransactionToken", "transactionToken", "expectedTopologyToken",
+        "expectedRefundToken", "previewToken", "token", "contractVersion", "sourceToken", "expectedToken"]
     static let labels: [String: String] = [
         "amountCents": "金额", "incomeCents": "收入", "expenseCents": "支出", "balanceCents": "余额",
         "totalCents": "合计", "refundCents": "退款", "availableCents": "可用金额", "date": "日期",
@@ -50,7 +53,7 @@ enum AssistantPreviewFormat {
     static func scalar(_ value: JSONValue, key: String, context: String = "") -> String? {
         switch value {
         case .string(let value):
-            if key == "fundPurpose" || key == "purpose" { return LedgerPurpose(rawValue: value)?.title ?? value }
+            if ["fundPurpose", "purpose", "financialPurpose"].contains(key) { return LedgerPurpose(rawValue: value)?.title ?? value }
             return value.isEmpty ? "未填写" : value
         case .integer(let value):
             if key.hasSuffix("Cents") { return LedgerFormat.money(value) }
@@ -89,7 +92,7 @@ struct AssistantPreviewValues: View {
                     }
                 }
             } else if let object = value.objectValue {
-                ForEach(object.keys.sorted(), id: \.self) { key in
+                ForEach(object.keys.filter { !AssistantPreviewFormat.internalFields.contains($0) }.sorted(), id: \.self) { key in
                     if let child = object[key] {
                         if AssistantPreviewFormat.scalar(child, key: key, context: context) != nil {
                             nested(child, field: key)

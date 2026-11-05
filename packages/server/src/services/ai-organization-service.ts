@@ -912,10 +912,10 @@ export class AiOrganizationService {
     }
   }
 
-  async preview(): Promise<AiOrganizationPreview> {
+  async preview(options: { readonly explain?: boolean } = {}): Promise<AiOrganizationPreview> {
     const plans = this.analyze();
     const semantic = this.semanticFacts();
-    const explained = await this.explain(plans, semantic);
+    const explained = options.explain === false ? { plans, semanticAvailable: false, recommendations: [] } : await this.explain(plans, semantic);
     return {
       previewHash: this.previewHash(plans),
       generatedAt: this.now(),

@@ -1,5 +1,6 @@
 /** Bounded provider/tool loop for persisted assistant conversations. */
 import { BILL_ANALYSIS_SCHEMA, normalizeBillRecommendations, type BillRecommendation, type BillAnalysisRow, type BillAnalysisCategory } from './bill-import-analysis.js';
+import { assistantBusinessFingerprint, isBusinessTool } from './assistant-business-tools.js';
 import type { AppConfig } from '../config.js';
 import type { Db } from '../db/index.js';
 import { AccountBalanceService } from './account-balance-service.js';
@@ -89,6 +90,7 @@ export function buildAssistantContext(
   const provider = options.provider ?? new AiProviderService(options.fetchImpl);
   const masterData = new MasterDataService(options.db, { now });
   const context: AssistantToolContext = {
+    actorId: options.actorId,
     db: options.db,
     now,
     config,
@@ -300,9 +302,20 @@ export class AssistantOrchestrator {
       const editedPreview = await this.registry.prepare(toolContext, pending.toolName, editedArguments);
       argumentsForConfirm = jsonObject({ ...editedArguments, __fingerprint: editedPreview.fingerprint });
     } else {
-      const refreshed = await this.registry.prepare(toolContext, pending.toolName, pending.arguments);
+      // Reject an obsolete domain revision before attempting its validation preview:
+      // the user must receive one consistent expired-card state, not a pending card
+      // that can only keep failing the underlying service's revision check.
+      if (isBusinessTool(pending.toolName) && assistantBusinessFingerprint(this.db, pending.toolName, pending.arguments, this.now()) !== pending.fingerprint) throw new AssistantActionStaleError();
+      let refreshed;
+      try { refreshed = await this.registry.prepare(toolContext, pending.toolName, pending.arguments); }
+      catch (error) {
+        // These arguments were already domain-validated when the card was saved.
+        // A missing reference, expired run or changed revision now invalidates it.
+        if (error instanceof Error && 'statusCode' in error && [400, 404, 409, 410].includes(Number(error.statusCode))) throw new AssistantActionStaleError('关联数据或版本已变化，请重新预览。');
+        throw error;
+      }
       if (refreshed.fingerprint !== pending.fingerprint) throw new AssistantActionStaleError();
-      argumentsForConfirm = ['tag.rename', 'tag.delete'].includes(pending.toolName)
+      argumentsForConfirm = (isBusinessTool(pending.toolName) || ['tag.rename', 'tag.delete'].includes(pending.toolName))
         ? jsonObject({ ...pending.arguments, __fingerprint: pending.fingerprint })
         : pending.arguments;
     }
