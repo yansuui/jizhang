@@ -6,6 +6,8 @@ Deliver a native iPhone client for the existing accounting service, prioritizing
 
 The user accepted proceeding on 2026-11-04 and directed GitHub compilation followed by installation using the already-open local Sideloadly. This authorizes implementation, a personal GitHub build fork/branch, Actions execution, artifact download and local sideload preparation. Apple ID authentication remains local to Sideloadly.
 
+On 2026-11-05 the user explicitly directed all further code submissions to the original `yansuui/jizhang` repository instead of a fork. This supersedes the earlier build-fork route. Preserve historical artifact provenance, but use the original repository for subsequent source pushes and new builds.
+
 ## Confirmed background
 
 - The maintained client is Android Kotlin/Compose. There is no Swift/iOS project. The old 09-12-iphone-delivery task describes the retired Web client and explicitly excluded native iOS.

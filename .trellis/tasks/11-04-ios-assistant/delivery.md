@@ -28,3 +28,7 @@
 - Keep the task active for this deferred device acceptance; the IPA preparation phase is complete.
 
 GitHub reported an Actions performance degradation during this delivery, alongside intermittent Git/API failures. The final successful run and local artifact verification above are the delivery evidence.
+
+## Repository destination update — 2026-11-05
+
+The user requested direct submission to `yansuui/jizhang` instead of using a fork. `origin` already points to this original repository; the local branch's push destination and the IPA download helper now default to it. The build-4 evidence above remains tied to its original fork run and must not be relabelled as an upstream build. To retrieve that historical run with the helper, explicitly pass `-Repository yangguangxiaobai/jizhang`.
