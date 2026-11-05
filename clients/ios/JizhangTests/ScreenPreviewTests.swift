@@ -7,6 +7,38 @@ import XCTest
 /// They support visual review; they do not claim live-provider or physical-device acceptance.
 final class ScreenPreviewTests: XCTestCase {
     @MainActor
+    func testActionConfirmationAtCompactWidth() async throws {
+        let ready = expectation(description: "Action preview ready")
+        ready.fulfill()
+        let api = try APIClient(baseURL: ServerAddress.parse("https://example.com"), credentialStore: CoreMemoryCredentialStore())
+        defer { api.invalidate() }
+        let store = AssistantStore(api: api)
+        let card: JSONValue = .object(["version": .integer(1), "actionId": .string("preview-action"),
+            "toolName": .string("transaction.create"), "status": .string("pending"), "writes": .bool(true),
+            "summary": .string("记录今天的午餐支出 28 元"), "affected": .object(["count": .integer(1)]),
+            "values": .object(["amountCents": .integer(2800), "accountName": .string("日常账户"), "categoryName": .string("餐饮"), "date": .integer(1793808000000)]),
+            "preview": .object(["note": .string("午餐"), "fundPurpose": .string("essentials")]),
+            "warnings": .array([])])
+        try await capture("assistant-action-confirm-compact", ready: ready) {
+            AssistantActionReviewView(store: store, conversationID: "preview", review: AssistantActionReview(card: card))
+        }
+    }
+
+    @MainActor
+    func testHistoricalSuggestionsAtLargeText() async throws {
+        let ready = expectation(description: "Historical preview ready")
+        ready.fulfill()
+        let card: JSONValue = .object(["runId": .string("preview-run"), "status": .string("ready"), "expiresAt": .integer(4102444800000),
+            "actions": .array([.object(["actionId": .string("preview-category"), "kind": .string("category"),
+                "transactionDateLabel": .string("2026-11-05"), "transactionAmountCents": .integer(2800),
+                "afterCategoryName": .string("餐饮"), "reason": .string("备注为午餐，建议归入餐饮分类。")])]), "templateProposals": .array([])])
+        try await capture("assistant-history-review-large", ready: ready) {
+            ScrollView { AssistantSpendingReview(card: card, onSuggestion: { _ in }).padding() }
+                .environment(\.dynamicTypeSize, .xxxLarge)
+        }
+    }
+
+    @MainActor
     func testInvitationRegistrationAtCompactIPhoneWidth() async throws {
         let ready = expectation(description: "Registration form ready")
         ready.fulfill()

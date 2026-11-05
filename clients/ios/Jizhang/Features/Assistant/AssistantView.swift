@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct AssistantConversationGroup: Identifiable {
     let title: String
@@ -38,7 +39,7 @@ struct AssistantView: View {
                         .background(AppTheme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 15))
                     VStack(alignment: .leading, spacing: 5) {
                         Text("把账本里的事，聊明白").font(.headline)
-                        Text("查收支、看预算，让每一笔更清楚。")
+                        Text("记收支、关联退款、管理资金，也能整理历史账单。")
                             .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }.padding(.vertical, 8)
@@ -167,6 +168,9 @@ private struct AssistantChatView: View {
     @State private var atBottom = true
     @State private var dragging = false
     @State private var hasNewContent = false
+    @State private var actionReview: AssistantActionReview?
+    @State private var pickingFile = false
+    @State private var fileError: String?
     private var state: AssistantThread { store.thread(conversation.id) }
 
     var body: some View {
@@ -180,12 +184,17 @@ private struct AssistantChatView: View {
             }
             if let notice = state.notice {
                 AssistantNotice(message: notice,
-                    buttonTitle: state.pendingSubmission != nil && !state.isGenerating ? "核对并重试" : (state.reconnectNeeded ? "继续接收" : "刷新对话")) {
+                    buttonTitle: (state.pendingSubmission != nil || state.pendingFileSubmission != nil) && !state.isGenerating ? "核对并重试" : (state.reconnectNeeded ? "继续接收" : "刷新对话")) {
                     Task {
-                        if state.pendingSubmission != nil && !state.isGenerating { await store.retrySubmission(in: conversation.id) }
+                        if state.pendingFileSubmission != nil { await store.retryFile(in: conversation.id) }
+                        else if state.pendingSubmission != nil && !state.isGenerating { await store.retrySubmission(in: conversation.id) }
                         else { await store.reconnect(in: conversation.id) }
                     }
                 }.disabled(state.sending || state.stopping).padding(.horizontal, 16).padding(.vertical, 8)
+            }
+            if let notice = state.actionNotice {
+                Text(notice).font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 8)
             }
             timeline
         }
@@ -197,7 +206,11 @@ private struct AssistantChatView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("刷新对话", systemImage: "arrow.clockwise") { Task { await store.open(conversation.id) } }
-                        .disabled(state.sending || state.stopping)
+                        .disabled(state.sending || state.stopping || state.actingID != nil)
+                    Button("整理历史账单", systemImage: "wand.and.stars") {
+                        store.setDraft("请先询问我要整理的日期范围，再预览历史账单的分类和标签建议；先不要修改，等我选择并确认。", for: conversation.id)
+                        composerFocused = true
+                    }.disabled(state.composerLocked)
                     NavigationLink { ProviderSettingsView(api: store.api) } label: { Label("AI 配置", systemImage: "slider.horizontal.3") }
                 } label: { Image(systemName: "ellipsis.circle") }
                 .accessibilityLabel("对话操作")
@@ -205,6 +218,18 @@ private struct AssistantChatView: View {
         }
         .task(id: conversation.id) { await store.open(conversation.id) }
         .onDisappear { store.leave(conversation.id) }
+        .sheet(item: $actionReview) { review in
+            NavigationStack { AssistantActionReviewView(store: store, conversationID: conversation.id, review: review) }
+        }
+        .fileImporter(isPresented: $pickingFile, allowedContentTypes: [.commaSeparatedText, UTType(filenameExtension: "xlsx") ?? .data]) { result in
+            do {
+                let file = try AssistantBillFile.read(result.get())
+                Task { await store.sendFile(file, in: conversation.id) }
+            } catch { fileError = error.localizedDescription }
+        }
+        .alert("账单文件", isPresented: Binding(get: { fileError != nil }, set: { if !$0 { fileError = nil } })) {
+            Button("知道了", role: .cancel) { fileError = nil }
+        } message: { Text(fileError ?? "") }
     }
 
     private var timeline: some View {
@@ -218,7 +243,12 @@ private struct AssistantChatView: View {
                             welcome
                         }
                         ForEach(state.messages) { message in
-                            AssistantMessageBubble(message: message, mayAnswer: store.canAnswer(message, in: conversation.id)) { option in
+                            AssistantMessageBubble(message: message, mayAnswer: store.canAnswer(message, in: conversation.id),
+                                mayConfirm: message.content.card.map { store.canAct(on: $0, in: conversation.id) } ?? false,
+                                mayCancel: message.content.card.map { store.canAct(on: $0, in: conversation.id, confirm: false) } ?? false,
+                                onReview: { card in actionReview = AssistantActionReview(card: card) },
+                                onCancel: { card in Task { await store.performAction(card, in: conversation.id, confirm: false) } },
+                                onSuggestion: { text in store.useSuggestion(text, in: conversation.id); composerFocused = true }) { option in
                                 Task { await store.answer(option, message: message, in: conversation.id) }
                             }.id(message.id)
                         }
@@ -278,7 +308,7 @@ private struct AssistantChatView: View {
                 Text("从你的账本出发，一起看看收支和计划。")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
-            ForEach(["这个月主要花在哪些地方？", "帮我看看当前的预算情况", "最近有哪些需要留意的支出？"], id: \.self) { question in
+            ForEach(["帮我记一笔今天的午餐支出，28 元", "记录一笔收入，请先帮我选择账户和分类", "整理这个月的历史账单，先给我分类和标签建议", "帮我检查四用途资金和待分配收入"], id: \.self) { question in
                 Button {
                     store.setDraft(question, for: conversation.id); composerFocused = true
                 } label: {
@@ -296,6 +326,10 @@ private struct AssistantChatView: View {
     private var composer: some View {
         VStack(spacing: 6) {
             HStack(alignment: .bottom, spacing: 10) {
+                Button { pickingFile = true } label: {
+                    Image(systemName: "paperclip").font(.system(size: 20))
+                        .frame(width: 36, height: 46)
+                }.disabled(state.composerLocked).accessibilityLabel("附加微信或支付宝账单")
                 TextField("说说你的问题…", text: Binding(get: { state.draft }, set: { store.setDraft($0, for: conversation.id) }), axis: .vertical)
                     .font(.body).lineLimit(1...5).padding(.horizontal, 15).padding(.vertical, 12)
                     .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 22))
@@ -355,6 +389,11 @@ struct AssistantNotice: View {
 private struct AssistantMessageBubble: View {
     let message: AssistantMessage
     let mayAnswer: Bool
+    let mayConfirm: Bool
+    let mayCancel: Bool
+    let onReview: (JSONValue) -> Void
+    let onCancel: (JSONValue) -> Void
+    let onSuggestion: (String) -> Void
     let onOption: (AssistantClarification.Option) -> Void
     private var user: Bool { message.role == "user" }
 
@@ -370,6 +409,11 @@ private struct AssistantMessageBubble: View {
                 if let card = message.content.card { actionCard(card) }
                 if let result = message.content.result, let summary = result["summary"].stringValue, !summary.isEmpty {
                     Label(summary, systemImage: "doc.text.magnifyingglass").font(.subheadline).textSelection(.enabled)
+                    if result["data"]["actions"].arrayValue != nil, result["data"]["runId"].stringValue != nil {
+                        AssistantSpendingReview(card: result["data"], onSuggestion: onSuggestion)
+                    } else if result["data"].objectValue?.isEmpty == false {
+                        DisclosureGroup("查看明细") { AssistantPreviewValues(value: result["data"], context: result["toolName"].stringValue ?? "").padding(.top, 8) }
+                    }
                 }
                 if let attachment = message.content.attachment {
                     Label(attachment["fileName"].stringValue ?? "附件", systemImage: "doc")
@@ -377,8 +421,9 @@ private struct AssistantMessageBubble: View {
                 }
                 if message.content.importBatch != nil {
                     Label("账单导入记录", systemImage: "tray.and.arrow.down").font(.subheadline.weight(.medium))
-                    Text("此版本可查看记录，导入审核请在原客户端完成。")
+                    Text("这是一份多文件合并导入记录。可查看下方状态；上传单个账单可在本机逐条审核导入。")
                         .font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("查看导入记录") { AssistantPreviewValues(value: message.content.importBatch ?? .null) }
                 }
                 if let clarification = message.content.clarification, clarification.isValid {
                     Text(clarification.question).font(.headline)
@@ -423,8 +468,11 @@ private struct AssistantMessageBubble: View {
                 Label(warning, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary)
             }
             if pending {
-                Text("尚未修改账本。此版本支持查看草案，执行请在原客户端确认。")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text("尚未修改账本，请核对后确认。").font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    Button("查看并确认") { onReview(card) }.buttonStyle(.borderedProminent).disabled(!mayConfirm)
+                    Button("取消草案", role: .cancel) { onCancel(card) }.buttonStyle(.bordered).disabled(!mayCancel)
+                }.font(.subheadline)
             }
         }.padding(13).background(AppTheme.accent.opacity(0.05), in: RoundedRectangle(cornerRadius: 14))
     }

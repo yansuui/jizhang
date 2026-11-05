@@ -2,6 +2,223 @@ import XCTest
 import Combine
 @testable import Jizhang
 
+extension AssistantStateTests {
+    private static func actionHistory(_ conversation: String, status: String = "pending") -> [String: Any] {
+        ["items": [["id": "card-1", "conversationId": conversation, "role": "assistant", "kind": "tool-card",
+                    "content": ["version": 1, "card": ["version": 1, "actionId": "action-1", "toolName": "transaction.create",
+                        "summary": "记录午餐 28 元", "status": status, "writes": true, "fingerprint": "fingerprint-1",
+                        "affected": ["count": 1], "values": ["amountCents": 2800], "preview": [:], "warnings": []]], "createdAt": 1_000]]]
+    }
+
+    @MainActor
+    func testActionDoubleTapWritesOnceAndRefreshesLedger() async throws {
+        let started = expectation(description: "confirm waiting")
+        let lock = NSLock()
+        var pending: AssistantTestURLProtocol?
+        var posts = 0
+        var confirmed = false
+        AssistantTestURLProtocol.configure { transport in
+            let path = transport.request.url?.path ?? ""
+            if path.hasSuffix("/action-1/confirm") {
+                lock.withLock { posts += 1; pending = transport }
+                started.fulfill()
+            } else if path.hasSuffix("/a/messages") {
+                let status = lock.withLock { confirmed ? "confirmed" : "pending" }
+                transport.respond(Self.actionHistory("a", status: status))
+            } else { transport.respond(["items": []]) }
+        }
+        let api = try makeClient(); defer { api.invalidate() }
+        let store = AssistantStore(api: api)
+        await store.open("a")
+        let card = try XCTUnwrap(store.thread("a").messages.first?.content.card)
+        let first = Task { await store.performAction(card, in: "a", confirm: true) }
+        await fulfillment(of: [started], timeout: 3)
+        await store.performAction(card, in: "a", confirm: true)
+        XCTAssertEqual(lock.withLock { posts }, 1)
+        XCTAssertEqual(api.ledgerRevision, 0)
+        let request = lock.withLock { confirmed = true; return pending }
+        request?.respond(["action": ["id": "action-1", "conversationId": "a", "status": "confirmed"]])
+        await first.value
+        XCTAssertEqual(api.ledgerRevision, 1)
+        XCTAssertNil(store.thread("a").actingID)
+        XCTAssertEqual(store.thread("a").messages.first?.content.card?["status"].stringValue, "confirmed")
+        XCTAssertFalse(store.canAct(on: card, in: "a"))
+    }
+
+    @MainActor
+    func testLostConfirmationReconcilesWithoutSecondWrite() async throws {
+        let lock = NSLock()
+        var confirmed = false
+        var posts = 0
+        AssistantTestURLProtocol.configure { transport in
+            let path = transport.request.url?.path ?? ""
+            if path.hasSuffix("/action-1/confirm") {
+                lock.withLock { confirmed = true; posts += 1 }
+                transport.fail(URLError(.networkConnectionLost))
+            } else if path.hasSuffix("/a/messages") {
+                transport.respond(Self.actionHistory("a", status: lock.withLock { confirmed ? "confirmed" : "pending" }))
+            } else { transport.respond(["items": []]) }
+        }
+        let api = try makeClient(); defer { api.invalidate() }
+        let store = AssistantStore(api: api)
+        await store.open("a")
+        let card = try XCTUnwrap(store.thread("a").messages.first?.content.card)
+        await store.performAction(card, in: "a", confirm: true)
+        XCTAssertEqual(lock.withLock { posts }, 1)
+        XCTAssertEqual(api.ledgerRevision, 1)
+        XCTAssertNil(store.thread("a").uncertainActionID)
+        XCTAssertFalse(store.canAct(on: card, in: "a"))
+    }
+
+    @MainActor
+    func testLateActionOnlyChangesOriginConversation() async throws {
+        let started = expectation(description: "confirm waiting")
+        let lock = NSLock()
+        var pending: AssistantTestURLProtocol?
+        AssistantTestURLProtocol.configure { transport in
+            let path = transport.request.url?.path ?? ""
+            if path.hasSuffix("/confirm") { lock.withLock { pending = transport }; started.fulfill() }
+            else if path.hasSuffix("/a/messages") { transport.respond(Self.actionHistory("a")) }
+            else if path.hasSuffix("/b/messages") { transport.respond(Self.history("b", text: "only-B")) }
+            else { transport.respond(["items": []]) }
+        }
+        let api = try makeClient(); defer { api.invalidate() }
+        let store = AssistantStore(api: api)
+        await store.open("a")
+        let card = try XCTUnwrap(store.thread("a").messages.first?.content.card)
+        let write = Task { await store.performAction(card, in: "a", confirm: true) }
+        await fulfillment(of: [started], timeout: 3)
+        await store.open("b")
+        lock.withLock { pending }?.respond(["action": ["id": "action-1", "conversationId": "a", "status": "confirmed"]])
+        await write.value
+        XCTAssertEqual(store.selectedID, "b")
+        XCTAssertEqual(store.thread("b").messages.map { $0.content.text }, ["only-B"])
+        XCTAssertEqual(store.thread("a").messages.first?.content.card?["status"].stringValue, "confirmed")
+        XCTAssertEqual(api.ledgerRevision, 1)
+    }
+
+    func testHistoricalSelectionRejectsUnshownNoteAndExpiredChanges() throws {
+        let card: JSONValue = .object(["runId": .string("run"), "status": .string("ready"), "expiresAt": .integer(5_000),
+            "actions": .array([.object(["actionId": .string("category"), "kind": .string("category")]),
+                               .object(["actionId": .string("note"), "kind": .string("note")])])])
+        let now = Date(timeIntervalSince1970: 1)
+        XCTAssertNotNil(AssistantSpendingSelection.prompt(card: card, selected: ["category"], now: now))
+        XCTAssertNil(AssistantSpendingSelection.prompt(card: card, selected: ["note"], now: now))
+        XCTAssertNil(AssistantSpendingSelection.prompt(card: card, selected: ["invented"], now: now))
+        XCTAssertNil(AssistantSpendingSelection.prompt(card: card, selected: [], now: now))
+        XCTAssertNil(AssistantSpendingSelection.prompt(card: card, selected: ["category"], now: Date(timeIntervalSince1970: 6)))
+        XCTAssertEqual(AssistantPreviewFormat.scalar(.integer(9_007_199_254_740_991), key: "amountCents"), "¥90,071,992,547,409.91")
+        XCTAssertEqual(AssistantPreviewFormat.scalar(.integer(0), key: "type", context: "account.create"), "现金")
+        XCTAssertEqual(AssistantPreviewFormat.scalar(.integer(0), key: "type", context: "transaction.create"), "支出")
+        XCTAssertEqual(AssistantImportSelection.limitedNote(String(repeating: "🙂", count: 101)).utf16.count, 200)
+    }
+
+    func testImportSelectionRequiresOriginalFileAndExplicitEligibleRows() throws {
+        let file = AssistantBillFile(name: "bills.csv", data: Data("synthetic-bill".utf8))
+        let card: JSONValue = .object(["attachment": .object(["sha256": .string(file.digest), "sizeBytes": .integer(Int64(file.data.count))]),
+            "preview": .object(["rows": .array([
+                .object(["id": .string("eligible"), "amountCents": .integer(2800), "type": .integer(0)]),
+                .object(["id": .string("duplicate"), "amountCents": .integer(2800), "alreadyExists": .bool(true)]),
+                .object(["id": .string("ignored"), "amountCents": .integer(2800), "ignored": .bool(true)])])])])
+        var selection = AssistantImportSelection()
+        XCTAssertNil(selection.body(card: card, file: file))
+        selection.selected = ["eligible"]
+        XCTAssertNotNil(selection.body(card: card, file: file))
+        XCTAssertNil(selection.body(card: card, file: nil))
+        XCTAssertNil(selection.body(card: card, file: AssistantBillFile(name: "bills.csv", data: Data("different".utf8))))
+        for invalid in ["duplicate", "ignored", "invented"] {
+            selection.selected = [invalid]
+            XCTAssertNil(selection.body(card: card, file: file))
+        }
+    }
+
+    @MainActor
+    func testImportAmbiguousRetryKeepsOriginalSelectionAndFileBody() async throws {
+        let lock = NSLock()
+        var posts: [[String: Any]] = []
+        var confirmed = false
+        AssistantTestURLProtocol.configure { transport in
+            let path = transport.request.url?.path ?? ""
+            if path.hasSuffix("/confirm") {
+                let count = lock.withLock { posts.append(transport.body()); return posts.count }
+                if count == 1 { transport.fail(URLError(.networkConnectionLost)) }
+                else {
+                    lock.withLock { confirmed = true }
+                    transport.respond(["action": ["id": "action-1", "conversationId": "a", "status": "confirmed"]])
+                }
+            } else if path.hasSuffix("/messages") { transport.respond(Self.actionHistory("a", status: lock.withLock { confirmed ? "confirmed" : "pending" })) }
+            else { transport.respond(["items": []]) }
+        }
+        let api = try makeClient(); defer { api.invalidate() }
+        let store = AssistantStore(api: api)
+        await store.open("a")
+        let card = try XCTUnwrap(store.thread("a").messages.first?.content.card)
+        let body: JSONValue = .object(["selectedIds": .array([.string("row-1")]), "fileBase64": .string("ZmlsZQ==")])
+        await store.performAction(card, in: "a", confirm: true, body: body)
+        XCTAssertFalse(store.canAct(on: card, in: "a", confirm: false))
+        await store.performAction(card, in: "a", confirm: true, body: .object(["selectedIds": .array([.string("different")])]))
+        let payloads = lock.withLock { posts }
+        XCTAssertEqual(payloads.count, 2)
+        XCTAssertEqual(payloads[0]["selectedIds"] as? [String], ["row-1"])
+        XCTAssertEqual(payloads[1]["selectedIds"] as? [String], ["row-1"])
+        XCTAssertEqual(payloads[1]["fileBase64"] as? String, "ZmlsZQ==")
+        XCTAssertEqual(api.ledgerRevision, 1)
+    }
+
+    @MainActor
+    func testDefiniteActionRejectionUnlocksEditsWithoutLedgerChange() async throws {
+        AssistantTestURLProtocol.configure { transport in
+            let path = transport.request.url?.path ?? ""
+            if path.hasSuffix("/confirm") { transport.respond(["error": ["code": "VALIDATION_ERROR", "message": "分类无效"]], status: 400) }
+            else if path.hasSuffix("/messages") { transport.respond(Self.actionHistory("a")) }
+            else { transport.respond(["items": []]) }
+        }
+        let api = try makeClient(); defer { api.invalidate() }
+        let store = AssistantStore(api: api)
+        await store.open("a")
+        let card = try XCTUnwrap(store.thread("a").messages.first?.content.card)
+        await store.performAction(card, in: "a", confirm: true)
+        XCTAssertNil(store.confirmationBodies["action-1"])
+        XCTAssertNil(store.thread("a").uncertainActionID)
+        XCTAssertFalse(store.thread("a").composerLocked)
+        XCTAssertTrue(store.canAct(on: card, in: "a", confirm: false))
+        XCTAssertEqual(api.ledgerRevision, 0)
+    }
+
+    @MainActor
+    func testRejectedFileUploadDoesNotLockComposer() async throws {
+        AssistantTestURLProtocol.configure { transport in
+            if transport.request.httpMethod == "POST" { transport.respond(["error": ["code": "VALIDATION_ERROR", "message": "无效账单"]], status: 422) }
+            else { transport.respond(["items": []]) }
+        }
+        let api = try makeClient(); defer { api.invalidate() }
+        let store = AssistantStore(api: api)
+        await store.open("a")
+        await store.sendFile(AssistantBillFile(name: "bills.csv", data: Data("fixture".utf8)), in: "a")
+        XCTAssertNil(store.thread("a").pendingFileSubmission)
+        XCTAssertFalse(store.thread("a").composerLocked)
+        XCTAssertEqual(api.ledgerRevision, 0)
+    }
+
+    @MainActor
+    func testLostCancellationCanOnlyRetryCancellation() async throws {
+        AssistantTestURLProtocol.configure { transport in
+            let path = transport.request.url?.path ?? ""
+            if path.hasSuffix("/cancel") { transport.fail(URLError(.networkConnectionLost)) }
+            else if path.hasSuffix("/messages") { transport.respond(Self.actionHistory("a")) }
+            else { transport.respond(["items": []]) }
+        }
+        let api = try makeClient(); defer { api.invalidate() }
+        let store = AssistantStore(api: api)
+        await store.open("a")
+        let card = try XCTUnwrap(store.thread("a").messages.first?.content.card)
+        await store.performAction(card, in: "a", confirm: false)
+        XCTAssertFalse(store.canAct(on: card, in: "a", confirm: true))
+        XCTAssertTrue(store.canAct(on: card, in: "a", confirm: false))
+        XCTAssertEqual(api.ledgerRevision, 0)
+    }
+}
+
 private struct AssistantTestCredentialStore: SessionCredentialStore {
     func load(server: String) throws -> SessionCookie? { nil }
     func save(_ cookie: SessionCookie?, server: String) throws {}

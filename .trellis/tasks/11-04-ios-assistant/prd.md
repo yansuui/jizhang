@@ -2,6 +2,14 @@
 
 ## Goal and status
 
+**Current continuation:** the user's six-item request on 2026-11-05 authorizes
+bill sheets, linked refunds, expense/income entry, account/date filters, existing
+four-purpose allocation editing and full business-tool assistant execution.
+The user confirmed existing four-purpose allocation (not custom plan categories).
+[`functional-parity.md`](functional-parity.md) is the authoritative current scope;
+it supersedes the first-delivery read-only and preview-only restrictions below.
+All further work stays directly on original-repository `main`, per user instruction.
+
 Deliver a native iPhone client for the existing accounting service, prioritizing readable AI conversations and short provider setup. The user requested iOS, conversation-list improvements, simpler configuration and presentation of the remaining features on 2026-11-04.
 
 The user accepted proceeding on 2026-11-04 and directed GitHub compilation followed by installation using the already-open local Sideloadly. This authorizes implementation, a personal GitHub build fork/branch, Actions execution, artifact download and local sideload preparation. Apple ID authentication remains local to Sideloadly.

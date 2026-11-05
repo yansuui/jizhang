@@ -6,11 +6,12 @@ private struct LedgerRecentData {
 }
 
 @MainActor struct HomeView: View {
-    let api: APIClient
+    @ObservedObject var api: APIClient
     @StateObject private var balances = LedgerResource<LedgerBalances>()
     @StateObject private var month = LedgerResource<LedgerTrend>()
     @StateObject private var recent = LedgerResource<LedgerRecentData>()
     @State private var balanceHidden = false
+    @State private var selectedBill: LedgerBillSelection?
 
     var body: some View {
         ScrollView {
@@ -34,9 +35,12 @@ private struct LedgerRecentData {
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle("记账")
-        .task { await loadBalances() }
-        .task { await loadMonth() }
-        .task { await loadRecent() }
+        .task(id: api.ledgerRevision) { await loadBalances() }
+        .task(id: api.ledgerRevision) { await loadMonth() }
+        .task(id: api.ledgerRevision) { await loadRecent() }
+        .sheet(item: $selectedBill) { selection in
+            LedgerBillDetailSheet(api: api, transactionID: selection.id, metadata: recent.value?.metadata ?? .empty)
+        }
         .refreshable {
             await loadBalances()
             await loadMonth()
@@ -142,9 +146,7 @@ private struct LedgerRecentData {
                     LedgerEmptyView(title: "还没有账单", message: "已有账单会同步显示在这里。", symbol: "list.bullet.rectangle")
                 } else {
                     ForEach(value.items) { transaction in
-                        NavigationLink {
-                            LedgerBillDetailView(api: api, transactionID: transaction.id, metadata: value.metadata)
-                        } label: {
+                        Button { selectedBill = LedgerBillSelection(id: transaction.id) } label: {
                             LedgerTransactionRow(transaction: transaction, metadata: value.metadata)
                         }.buttonStyle(.plain)
                         if transaction.id != value.items.last?.id { Divider() }

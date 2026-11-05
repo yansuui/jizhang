@@ -34,6 +34,7 @@ enum APIRequestBuilder {
 @MainActor
 final class APIClient: ObservableObject {
     let identity = UUID()
+    @Published private(set) var ledgerRevision = 0
     let baseURL: URL
     var onUnauthorized: (() -> Void)?
 
@@ -43,6 +44,12 @@ final class APIClient: ObservableObject {
     private let maximumJSONResponseBytes: Int
     private var cookie: SessionCookie?
     private var invalidated = false
+
+    /// Successful mutations invalidate views only within this authenticated session.
+    func notifyLedgerChanged() {
+        guard !invalidated else { return }
+        ledgerRevision &+= 1
+    }
 
     init(baseURL: URL, credentialStore: SessionCredentialStore = KeychainSessionStore(),
          restoreSession: Bool = true, configuration: URLSessionConfiguration = .ephemeral,

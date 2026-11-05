@@ -2,7 +2,7 @@
 
 ## 1. Scope / trigger
 
-Applies to `clients/ios`, its Xcode project and `.github/workflows/ios.yml`. The initial iOS scope is functional AI text chat/provider setup with read-only presentation of other accounting domains. It is not evidence of complete Android feature parity. See `clients/ios/README.md` for supported and deferred behavior.
+Applies to `clients/ios`, its Xcode project and `.github/workflows/ios.yml`. The approved continuation includes bill/refund editing, account/date filters, four-purpose allocation editing and explicit AI action execution. See `clients/ios/README.md` for supported and deferred behavior; native multi-file import and physical-device acceptance remain separate.
 
 ## 2. Signatures
 
@@ -30,6 +30,12 @@ missing capability grants admin access. Plaintext invitation codes exist only in
 the creation view and are cleared when leaving; never persist passwords or codes.
 
 Amounts are Int64 cents and timestamps epoch milliseconds. Views render authoritative server totals/windows. The current four-purpose fund surface is cumulative; do not silently revive legacy monthly-reset arithmetic. Read-only views and generated action previews must not call accounting confirmation/mutation endpoints.
+
+Financial editors use the existing server operation ID and revision/token contracts. Freeze the submitted payload after an ambiguous response and reconcile/retry that same identity; reopening a sheet within the session must not silently create a duplicate. Ratio edits change current defaults without rebalancing confirmed historical allocations. Refunds are linked income and do not rewrite gross expense. Bill detail uses an expandable sheet on every bill entry point.
+
+Assistant confirmation/cancellation is scoped to its original conversation and persisted action ID. A late A response can update A and invalidate ledger data, but cannot replace B's messages. Validate action identity/status before publishing success. Historical suggestions require explicit selected action IDs; note-only recommendations cannot be included in apply. Import confirmation requires matching original SHA-256/size, 1–100 explicitly selected eligible rows and the frozen retry body. Never turn uncertain confirmation into a new action.
+
+Use the API client's per-session `ledgerRevision` publisher after actual successful writes. Reading or cancelling a pending draft does not change ledger state. Invalidated clients cannot broadcast updates into new sessions.
 
 Generation events follow the existing backend protocol, including UTF-16 offsets, monotonically increasing sequence, stable provisional/final message identity and snapshot reconciliation. Leaving a view unsubscribes; Stop explicitly cancels server generation. Network loss does not authorize a new inference POST.
 

@@ -9,6 +9,7 @@ import SwiftUI
     @Published private(set) var hasLoaded = false
     @Published private(set) var error: String?
     private var generation = 0
+    private var owner: UUID?
     private var loadedQuery: LedgerBillQuery?
     private var revision: String?
     private let pageSize = 50
@@ -28,7 +29,8 @@ import SwiftUI
     func reload(api: APIClient, query: LedgerBillQuery) async {
         generation += 1
         let ticket = generation
-        if loadedQuery != query { items = []; total = 0; hasLoaded = false }
+        if loadedQuery != query || owner != api.identity { items = []; total = 0; hasLoaded = false }
+        owner = api.identity
         loadedQuery = query
         loading = true
         loadingMore = false
@@ -51,7 +53,7 @@ import SwiftUI
     }
 
     func next(api: APIClient) async {
-        guard let query = loadedQuery, !loading, !loadingMore, items.count < total else { return }
+        guard owner == api.identity, let query = loadedQuery, !loading, !loadingMore, items.count < total else { return }
         let ticket = generation
         let offset = items.count
         loadingMore = true
@@ -93,9 +95,11 @@ struct LedgerTransactionPage: Decodable {
 }
 
 @MainActor struct BillsView: View {
-    let api: APIClient
+    @ObservedObject var api: APIClient
     @State private var query: LedgerBillQuery
     @StateObject private var store = LedgerBillsStore()
+    @State private var selectedBill: LedgerBillSelection?
+    @State private var showingDates = false
 
     init(api: APIClient, initialQuery: LedgerBillQuery = LedgerBillQuery()) {
         self.api = api
@@ -109,26 +113,6 @@ struct LedgerTransactionPage: Decodable {
 
     var body: some View {
         List {
-            Section {
-                Picker("收支类型", selection: Binding(get: { query.type ?? -1 }, set: { query.type = $0 == -1 ? nil : $0 })) {
-                    Text("全部").tag(-1)
-                    Text("支出").tag(0)
-                    Text("收入").tag(1)
-                }.pickerStyle(.segmented)
-                if query.accountId != nil || query.categoryId != nil || query.tag != nil {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            if let id = query.accountId { Text("账户：" + store.metadata.accountName(id)) }
-                            if let id = query.categoryId { Text("分类：" + store.metadata.categoryName(id)) }
-                            if let tag = query.tag { Text("标签：" + tag) }
-                        }.font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("清除筛选") { query.accountId = nil; query.categoryId = nil; query.tag = nil }
-                            .font(.caption)
-                    }
-                }
-            }.listRowBackground(Color.clear).listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-
             if store.loading && !store.hasLoaded {
                 LedgerLoadingView(title: "正在读取账单…").listRowBackground(Color.clear)
             }
@@ -144,11 +128,9 @@ struct LedgerTransactionPage: Decodable {
             ForEach(grouped, id: \.0) { day, transactions in
                 Section(day) {
                     ForEach(transactions) { transaction in
-                        NavigationLink {
-                            LedgerBillDetailView(api: api, transactionID: transaction.id, metadata: store.metadata)
-                        } label: {
+                        Button { selectedBill = LedgerBillSelection(id: transaction.id) } label: {
                             LedgerTransactionRow(transaction: transaction, metadata: store.metadata)
-                        }
+                        }.buttonStyle(.plain)
                     }
                 }
             }
@@ -172,19 +154,14 @@ struct LedgerTransactionPage: Decodable {
         }
         .navigationTitle("账单")
         .searchable(text: $query.text, prompt: "搜索备注、分类或标签")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button("全部账户") { query.accountId = nil }
-                    ForEach(store.metadata.accounts) { account in
-                        Button(account.name) { query.accountId = account.id }
-                    }
-                } label: {
-                    Image(systemName: query.accountId == nil ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
-                }.accessibilityLabel("按账户筛选")
-            }
+        .safeAreaInset(edge: .top, spacing: 0) { filterControls }
+        .sheet(item: $selectedBill) { selection in
+            LedgerBillDetailSheet(api: api, transactionID: selection.id, metadata: store.metadata)
         }
-        .task(id: query) {
+        .sheet(isPresented: $showingDates) {
+            LedgerBillDateFilter(query: $query)
+        }
+        .task(id: LedgerBillsReadKey(query: query, revision: api.ledgerRevision)) {
             store.prepare(query: query)
             if !query.text.isEmpty {
                 do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
@@ -193,26 +170,111 @@ struct LedgerTransactionPage: Decodable {
         }
         .refreshable { await store.reload(api: api, query: query) }
     }
+
+    private var filterControls: some View {
+        VStack(spacing: 10) {
+            Picker("收支类型", selection: Binding(get: { query.type ?? -1 }, set: { query.type = $0 == -1 ? nil : $0 })) {
+                Text("全部").tag(-1)
+                Text("支出").tag(0)
+                Text("收入").tag(1)
+            }.pickerStyle(.segmented)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) { accountFilter; dateFilter }
+                VStack(alignment: .leading, spacing: 4) { accountFilter; dateFilter }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            if query.categoryId != nil || query.tag != nil {
+                HStack {
+                    VStack(alignment: .leading) {
+                        if let id = query.categoryId { Text("分类：" + store.metadata.categoryName(id)) }
+                        if let tag = query.tag { Text("标签：" + tag) }
+                    }.font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("清除分类/标签") { query.categoryId = nil; query.tag = nil }.font(.caption)
+                }
+            }
+        }.padding(.horizontal, 20).padding(.vertical, 10).background(.bar)
+    }
+
+    private var accountFilter: some View {
+        Menu {
+            Button("全部账户") { query.accountId = nil }
+            ForEach(store.metadata.accounts) { account in
+                Button(account.name) { query.accountId = account.id }
+            }
+        } label: {
+            Label(query.accountId.map { store.metadata.accountName($0) } ?? "全部账户", systemImage: "creditcard")
+                .font(.subheadline).lineLimit(1).frame(minHeight: 44)
+        }.accessibilityLabel("切换账户")
+    }
+
+    private var dateFilter: some View {
+        Menu {
+            Button("全部日期") { query.from = nil; query.to = nil }
+            Button("本月") { selectMonth(Date()) }
+            Button("上月") {
+                if let date = LedgerBillDates.calendar.date(byAdding: .month, value: -1, to: Date()) { selectMonth(date) }
+            }
+            Button("选择月份或日期范围…") { showingDates = true }
+        } label: {
+            Label(LedgerBillDates.title(query: query), systemImage: "calendar")
+                .font(.subheadline).lineLimit(1).frame(minHeight: 44)
+        }
+    }
+
+    private func selectMonth(_ date: Date) {
+        let bounds = LedgerBillDates.month(containing: date)
+        query.from = bounds.from
+        query.to = bounds.to
+    }
 }
 
-@MainActor struct LedgerBillDetailView: View {
+private struct LedgerBillsReadKey: Hashable { let query: LedgerBillQuery; let revision: Int }
+struct LedgerBillSelection: Identifiable { let id: String }
+
+@MainActor struct LedgerBillDetailSheet: View {
     let api: APIClient
     let transactionID: String
     let metadata: LedgerMetadata
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            LedgerBillDetailView(api: api, transactionID: transactionID, metadata: metadata)
+                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("关闭") { dismiss() } } }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+}
+
+@MainActor struct LedgerBillDetailView: View {
+    @ObservedObject var api: APIClient
+    let transactionID: String
+    let metadata: LedgerMetadata
     @StateObject private var resource = LedgerResource<LedgerTransaction>()
+    @State private var trail: [String] = []
+    @State private var editSelection: LedgerBillEditSelection?
+    private var currentID: String { trail.last ?? transactionID }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
                 if let value = resource.value {
+                    HStack(spacing: 16) {
+                        Button { editSelection = LedgerBillEditSelection(transaction: value, refund: false) } label: {
+                            Label("编辑", systemImage: "square.and.pencil").frame(maxWidth: .infinity, minHeight: 44)
+                        }.buttonStyle(.bordered)
+                        if value.type == .expense && !value.isRefund {
+                            Button { editSelection = LedgerBillEditSelection(transaction: value, refund: true) } label: {
+                                Label("记录退款", systemImage: "arrow.uturn.backward").frame(maxWidth: .infinity, minHeight: 44)
+                            }.buttonStyle(.borderedProminent)
+                        }
+                    }
                     LedgerBillDetailContent(transaction: value, metadata: metadata)
                     if let details = value.refundDetails, !details.isEmpty {
                         LedgerCard {
                             LedgerSectionHeading(title: "关联退款")
                             ForEach(details) { detail in
-                                NavigationLink {
-                                    LedgerBillDetailView(api: api, transactionID: detail.id, metadata: metadata)
-                                } label: {
+                                Button { openLinked(detail.id) } label: {
                                     HStack {
                                         Text(LedgerFormat.date(detail.date)).font(.subheadline)
                                         Spacer()
@@ -227,9 +289,7 @@ struct LedgerTransactionPage: Decodable {
                         LedgerCard {
                             LedgerSectionHeading(title: "原始支出")
                             ForEach(Array(originalIDs.enumerated()), id: \.element) { index, id in
-                                NavigationLink("查看原始账单 \(index + 1)") {
-                                    LedgerBillDetailView(api: api, transactionID: id, metadata: metadata)
-                                }
+                                Button("查看原始账单 \(index + 1)") { openLinked(id) }.frame(minHeight: 44)
                             }
                         }
                     }
@@ -241,13 +301,35 @@ struct LedgerTransactionPage: Decodable {
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .navigationTitle("账单详情").navigationBarTitleDisplayMode(.inline)
-        .task(id: transactionID) { await load() }
+        .toolbar {
+            if !trail.isEmpty {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { resource.clear(); trail.removeLast() } label: { Label("返回", systemImage: "chevron.left") }
+                }
+            }
+        }
+        .sheet(item: $editSelection) { selection in
+            LedgerTransactionEditor(api: api, transaction: selection.refund ? nil : selection.transaction,
+                                    refundOf: selection.refund ? selection.transaction : nil) {
+                editSelection = nil
+            }
+        }
+        .task(id: "\(currentID):\(api.ledgerRevision)") { await load() }
         .refreshable { await load() }
     }
 
     private func load() async {
-        await resource.load { try await api.request("/transactions/" + LedgerURL.segment(transactionID)) }
+        let id = currentID
+        await resource.load { try await api.request("/transactions/" + LedgerURL.segment(id)) }
     }
+
+    private func openLinked(_ id: String) { resource.clear(); trail.append(id) }
+}
+
+private struct LedgerBillEditSelection: Identifiable {
+    let transaction: LedgerTransaction
+    let refund: Bool
+    var id: String { transaction.id + (refund ? ":refund" : ":edit") }
 }
 
 struct LedgerBillDetailContent: View {

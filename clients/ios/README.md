@@ -1,6 +1,6 @@
 # Jizhang for iPhone
 
-Native SwiftUI client for iOS 17 and later. It uses the same authenticated Fastify API as Android. The first delivery prioritizes AI conversation presentation and compact provider configuration; the other accounting domains are read-only.
+Native SwiftUI client for iOS 17 and later. It uses the same authenticated Fastify API as Android, including invitation registration and isolated user ledgers. The current delivery adds bill entry/refunds, account/date filtering, four-purpose allocation editing and confirmed AI business actions.
 
 ## Build and install from Windows
 
@@ -41,7 +41,7 @@ bash scripts/ci-build.sh
 
 The generated project contains app and XCTest targets. The script selects a simulator compatible with the selected Xcode SDK rather than assuming a particular device UUID. Native build output stays in the ignored `build/` directory.
 
-## First-delivery feature inventory
+## Feature inventory
 
 | Area | Intended behavior | Boundary |
 |---|---|---|
@@ -49,10 +49,14 @@ The generated project contains app and XCTest targets. The script selects a simu
 | Invitations | Administrator-only My entry: create, copy once, list status/expiry and revoke | Single use, seven-day validity; server capability required; codes/passwords are never persisted in preferences |
 | Navigation | Home, Bills, Plan, Assistant, My | iPhone native navigation, safe areas and system appearance |
 | Conversations | Full-width history, title search/date groups, creation, selection, archive | Stable server IDs, no narrow fixed-width cards |
-| Chat | Text generation, real streaming where supported, Stop, clarification, history and reconnect | Pending accounting actions are readable previews, not executable ledger writes in this delivery |
+| Chat | Text generation, streaming, Stop, clarification, history, reconnect, detailed business results and confirmation/cancellation | Every financial write requires explicit confirmation of its persisted action; lost responses reconcile/retry the same action ID |
 | AI configuration | Address/key/model, searchable model picker/manual entry, explicit save/test | Advanced fields folded; blank key preserves saved credential; no automatic inference |
-| Accounting screens | Server-backed home, bills/details, current funds/plans, stats and My domain lists | Read-only; no duplicated accounting calculations |
-| Data tools | Availability information for import/backup/organization | Execution deferred; no simulated successful operations |
+| Bills | Visible entry on Home/Bills/Plan, expense/income editing, compact detail sheet, linked refunds, account and month/date-range filters | Server totals; original expense stays gross while refund is separate linked income; mutations use existing operation identity/revision contracts |
+| Four-purpose plan | Add allocated income, change current ratios, review income allocations and legacy sources | Four fixed purposes, exact 10000-bps totals, frozen historical allocations, server CAS and idempotency |
+| Other accounting screens | Server-backed stats, accounts, categories, goals, recurring and items | Existing display surfaces retained; additional mutations available through validated AI tools |
+| Historical organization | Preview bill category/tag/template suggestions, select specific actions, prepare/confirm, undo through conversation | No automatic all-selection; note suggestions are reference only; paginated suggestions remain inspectable |
+| File import | Attach a single WeChat XLSX or Alipay CSV, review rows/categories/notes, select 1–100 rows and confirm | Original-file SHA-256/size required; 5 MB limit; merged multi-file workspace remains available in Android |
+| Backups/admin | Existing read results and trusted UI | No model access to account secrets, unrestricted filesystem operations or offline restore |
 
 The current plan surface follows the backend's continuous four-purpose fund contracts. Cumulative balances are not presented as a monthly reset. Ordinary income/expense views retain their server-defined refund treatment.
 
@@ -69,6 +73,9 @@ The current plan surface follows the backend's continuous four-purpose fund cont
 - Same-draft retries keep their request ID. A disconnect reconciles the same generation; it does not automatically create another model request.
 - Drafts, messages and in-flight work belong to a server/session/conversation identity. Changing server or expiring a session cannot publish into a newer one.
 - Generated previews do not confirm ledger changes. A reply being complete does not mean money was recorded.
+- `APIClient.ledgerRevision` invalidates ledger surfaces after successful writes within one API identity. Obsolete sessions cannot broadcast into another account.
+- Ambiguous bill/plan/assistant writes retain the same operation/action identity and payload while the current session remains alive. Closing and reopening a sheet must recover that pending operation. Cold-start persistence of manual draft state is not implemented.
+- Uploaded bill bytes and selected confirmation payloads remain in memory only for the active assistant store. Reopening an old import card can reattach its original file; mismatched hashes or sizes cannot confirm it.
 
 ## Verification record
 

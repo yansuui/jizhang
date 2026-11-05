@@ -1,9 +1,18 @@
 import SwiftUI
 
 @MainActor struct PlanView: View {
-    let api: APIClient
+    @ObservedObject var api: APIClient
     @StateObject private var summary = LedgerResource<LedgerFundSummary>()
     @StateObject private var configuration = LedgerResource<LedgerFundConfiguration>()
+    @StateObject private var incomeEditor = PlanEditorState()
+    @StateObject private var ratioEditor = PlanEditorState()
+    @StateObject private var history = PlanHistoryStore()
+    @State private var activeSheet: EditorSheet?
+
+    private enum EditorSheet: String, Identifiable {
+        case income, ratios, history
+        var id: String { rawValue }
+    }
 
     var body: some View {
         ScrollView {
@@ -13,6 +22,17 @@ import SwiftUI
                         .font(.subheadline).foregroundStyle(.secondary)
                     Label("余额持续结转，不按月清零", systemImage: "arrow.triangle.2.circlepath")
                         .font(.caption.weight(.medium)).foregroundStyle(AppTheme.accent)
+                }
+                LedgerCard {
+                    Button { activeSheet = .income } label: {
+                        Label("新增收入分配", systemImage: "plus.circle.fill")
+                            .font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+                    }.accessibilityIdentifier("plan.addIncome")
+                    Divider()
+                    Button { activeSheet = .history } label: {
+                        Label("收入分配记录与核对", systemImage: "list.bullet.clipboard")
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+                    }.accessibilityIdentifier("plan.history")
                 }
                 if let value = summary.value {
                     if !value.coverage.complete { coverageNotice(value.coverage) }
@@ -34,6 +54,8 @@ import SwiftUI
                 if let value = configuration.value {
                     LedgerCard {
                         LedgerSectionHeading(title: "收入分配比例", subtitle: "当前设置用于之后的收入分配")
+                        Button("修改分配比例", systemImage: "slider.horizontal.3") { activeSheet = .ratios }
+                            .accessibilityIdentifier("plan.editRatios")
                         ForEach(LedgerPurpose.allCases) { purpose in
                             HStack {
                                 Label(purpose.title, systemImage: purpose.symbol).font(.subheadline)
@@ -68,6 +90,16 @@ import SwiftUI
         .task { await loadSummary() }
         .task { await loadConfiguration() }
         .refreshable { await loadSummary(); await loadConfiguration() }
+        .onChange(of: api.ledgerRevision) { _, _ in
+            Task { await loadSummary(); await loadConfiguration() }
+        }
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .income: PlanIncomeEditor(api: api, state: incomeEditor)
+            case .ratios: PlanRatioEditor(api: api, state: ratioEditor)
+            case .history: PlanHistoryView(api: api, history: history)
+            }
+        }
     }
 
     private func fundCard(_ purpose: LedgerPurpose, summary: LedgerFundSummary) -> some View {

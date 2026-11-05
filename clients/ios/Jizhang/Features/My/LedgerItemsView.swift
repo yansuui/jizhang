@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 @MainActor struct LedgerItemsView: View {
     let api: APIClient
@@ -51,6 +52,9 @@ import SwiftUI
         }.navigationTitle("物品").navigationBarTitleDisplayMode(.inline)
             .task { await loadSummary() }.task { await loadList() }
             .refreshable { await loadSummary(); await loadList() }
+            .onReceive(api.$ledgerRevision.dropFirst()) { _ in
+                Task { await loadSummary(); await loadList() }
+            }
     }
     private func loadSummary() async { await summary.load { try await api.request("/items/summary") } }
     private func loadList() async { await store.reload(api: api, path: "/items", paginated: true, needsMetadata: true) }
@@ -61,6 +65,7 @@ import SwiftUI
     let itemID: String
     let metadata: LedgerMetadata
     @StateObject private var resource = LedgerResource<LedgerItem>()
+    @State private var selectedBill: LedgerBillSelection?
     var body: some View {
         List {
             if let item = resource.value {
@@ -89,10 +94,10 @@ import SwiftUI
                 if item.purchaseTransactionId != nil || item.saleTransactionId != nil {
                     Section("关联账单") {
                         if let id = item.purchaseTransactionId {
-                            NavigationLink("查看购入账单") { LedgerBillDetailView(api: api, transactionID: id, metadata: metadata) }
+                            Button("查看购入账单") { selectedBill = LedgerBillSelection(id: id) }
                         }
                         if let id = item.saleTransactionId {
-                            NavigationLink("查看售出账单") { LedgerBillDetailView(api: api, transactionID: id, metadata: metadata) }
+                            Button("查看售出账单") { selectedBill = LedgerBillSelection(id: id) }
                         }
                     }
                 }
@@ -105,6 +110,10 @@ import SwiftUI
             }
         }.navigationTitle("物品详情").navigationBarTitleDisplayMode(.inline)
             .task { await load() }.refreshable { await load() }
+            .onReceive(api.$ledgerRevision.dropFirst()) { _ in Task { await load() } }
+            .sheet(item: $selectedBill) { bill in
+                LedgerBillDetailSheet(api: api, transactionID: bill.id, metadata: metadata)
+            }
     }
     private func load() async { await resource.load { try await api.request("/items/" + LedgerURL.segment(itemID)) } }
 }

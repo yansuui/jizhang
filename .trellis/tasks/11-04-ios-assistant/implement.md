@@ -1,5 +1,12 @@
 # Implementation and verification plan
 
+## Current user-directed continuation
+
+Implement the six outcomes and worker boundaries in `functional-parity.md`.
+The prior read-only phase below has shipped; the latest user instruction expands
+it to actual financial edits and assistant confirmations on `main`. Reuse the
+existing domain contracts, preserve multi-user isolation, and verify on GitHub.
+
 ## Gate
 
 - [x] Inspect repository, earlier iPhone work, Android AI screens and APIs.

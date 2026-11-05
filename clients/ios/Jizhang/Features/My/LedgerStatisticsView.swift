@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import Combine
 
 private struct LedgerStatisticsData {
     let window: LedgerStatsWindow
@@ -45,6 +46,9 @@ private struct LedgerStatisticsData {
         }
         .task { await loadTrend() }
         .refreshable { await loadCategories(); await loadTrend() }
+        .onReceive(api.$ledgerRevision.dropFirst()) { _ in
+            Task { await loadCategories(); await loadTrend() }
+        }
     }
 
     private func summaryCard(_ value: LedgerStatisticsData) -> some View {

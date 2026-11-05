@@ -174,6 +174,9 @@ struct LedgerBillQuery: Equatable, Hashable {
     var accountId: String? = nil
     var categoryId: String? = nil
     var tag: String? = nil
+    // Inclusive start / exclusive end, matching the server's date predicates.
+    var from: Int64? = nil
+    var to: Int64? = nil
 
     func path(offset: Int = 0, limit: Int = 50) -> String {
         var values: [(String, String)] = [("limit", String(limit)), ("offset", String(offset))]
@@ -183,6 +186,8 @@ struct LedgerBillQuery: Equatable, Hashable {
         if let accountId { values.append(("accountId", accountId)) }
         if let categoryId { values.append(("categoryId", categoryId)) }
         if let tag { values.append(("tag", tag)) }
+        if let from { values.append(("from", String(from))) }
+        if let to { values.append(("to", String(to))) }
         return LedgerURL.path("/transactions", values)
     }
 }

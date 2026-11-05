@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 @MainActor struct MyView: View {
     let api: APIClient
@@ -134,28 +135,31 @@ import SwiftUI
             }
         }.navigationTitle("账户").navigationBarTitleDisplayMode(.inline)
             .task { await load() }.refreshable { await load() }
+            .onReceive(api.$ledgerRevision.dropFirst()) { _ in Task { await load() } }
     }
 
     private func accountDetail(_ account: LedgerAccountBalance) -> some View {
-        List {
-            Section {
-                LedgerFieldRow(title: "账户类型", value: LedgerFormat.accountType(account.type))
-                LedgerFieldRow(title: "当前余额", value: LedgerFormat.money(account.balanceCents))
-            }
-            Section("余额构成") {
-                LedgerFieldRow(title: "初始余额", value: LedgerFormat.money(account.initialBalanceCents))
-                LedgerFieldRow(title: "账单收入（含退款）", value: LedgerFormat.money(account.incomeCents))
-                LedgerFieldRow(title: "工资收入", value: LedgerFormat.money(account.salaryCents))
-                LedgerFieldRow(title: "账单支出", value: LedgerFormat.money(account.expenseCents))
-                LedgerFieldRow(title: "转入", value: LedgerFormat.money(account.transferInCents))
-                LedgerFieldRow(title: "转出", value: LedgerFormat.money(account.transferOutCents))
-            }
-            Section {
-                NavigationLink("查看账户账单") { BillsView(api: api, initialQuery: LedgerBillQuery(accountId: account.id)) }
-                Text("转账仅改变账户余额，不计为收入或支出。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-        }.navigationTitle(account.name).navigationBarTitleDisplayMode(.inline)
+        LedgerLiveDetail(api: api, initial: account, metadata: .empty, source: .list("/accounts/balances"), needsMetadata: false) { account, _ in
+            List {
+                Section {
+                    LedgerFieldRow(title: "账户类型", value: LedgerFormat.accountType(account.type))
+                    LedgerFieldRow(title: "当前余额", value: LedgerFormat.money(account.balanceCents))
+                }
+                Section("余额构成") {
+                    LedgerFieldRow(title: "初始余额", value: LedgerFormat.money(account.initialBalanceCents))
+                    LedgerFieldRow(title: "账单收入（含退款）", value: LedgerFormat.money(account.incomeCents))
+                    LedgerFieldRow(title: "工资收入", value: LedgerFormat.money(account.salaryCents))
+                    LedgerFieldRow(title: "账单支出", value: LedgerFormat.money(account.expenseCents))
+                    LedgerFieldRow(title: "转入", value: LedgerFormat.money(account.transferInCents))
+                    LedgerFieldRow(title: "转出", value: LedgerFormat.money(account.transferOutCents))
+                }
+                Section {
+                    NavigationLink("查看账户账单") { BillsView(api: api, initialQuery: LedgerBillQuery(accountId: account.id)) }
+                    Text("转账仅改变账户余额，不计为收入或支出。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }.navigationTitle(account.name).navigationBarTitleDisplayMode(.inline)
+        }
     }
     private func load() async { await resource.load { try await api.request("/accounts/balances") } }
 }

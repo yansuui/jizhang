@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 @MainActor struct LedgerCategoriesView: View {
     let api: APIClient
@@ -44,12 +45,13 @@ import SwiftUI
     let salaryID: String
     let metadata: LedgerMetadata
     @StateObject private var resource = LedgerResource<LedgerSalaryDetail>()
+    @StateObject private var refreshedMetadata = LedgerResource<LedgerMetadata>()
     var body: some View {
         List {
             if let salary = resource.value {
                 Section("工资记录") {
                     LedgerFieldRow(title: "金额", value: LedgerFormat.money(salary.amountCents))
-                    LedgerFieldRow(title: "账户", value: metadata.accountName(salary.accountId))
+                    LedgerFieldRow(title: "账户", value: (refreshedMetadata.value ?? metadata).accountName(salary.accountId))
                     LedgerFieldRow(title: "日期", value: LedgerFormat.date(salary.date, time: true))
                     if !salary.note.isEmpty { LedgerFieldRow(title: "备注", value: salary.note) }
                 }
@@ -69,7 +71,7 @@ import SwiftUI
                 if !salary.allocations.isEmpty {
                     Section("旧分类分配记录") {
                         ForEach(salary.allocations) { allocation in
-                            LedgerFieldRow(title: metadata.categoryName(allocation.categoryId), value: LedgerFormat.money(allocation.amountCents))
+                            LedgerFieldRow(title: (refreshedMetadata.value ?? metadata).categoryName(allocation.categoryId), value: LedgerFormat.money(allocation.amountCents))
                         }
                     }
                 }
@@ -77,8 +79,19 @@ import SwiftUI
             if let error = resource.error {
                 LedgerErrorView(message: error, showingPrevious: resource.value != nil) { Task { await load() } }
             }
+            if let error = refreshedMetadata.error {
+                LedgerErrorView(message: "账户和分类资料：" + error, showingPrevious: true) {
+                    Task { await refreshedMetadata.load { try await LedgerMetadata.load(api: api) } }
+                }
+            }
         }.navigationTitle("工资详情").navigationBarTitleDisplayMode(.inline)
             .task { await load() }.refreshable { await load() }
+            .onReceive(api.$ledgerRevision.dropFirst()) { _ in
+                Task {
+                    await load()
+                    await refreshedMetadata.load { try await LedgerMetadata.load(api: api) }
+                }
+            }
     }
     private func load() async { await resource.load { try await api.request("/salaries/" + LedgerURL.segment(salaryID)) } }
 }
@@ -88,17 +101,19 @@ import SwiftUI
     var body: some View {
         LedgerReadList(api: api, title: "分配模板", path: "/templates", footer: "这里是旧分类分配模板。四用途资金的当前比例请在“计划”中查看。") { (template: LedgerTemplate, metadata) in
             NavigationLink {
-                List {
-                    Section {
-                        LedgerFieldRow(title: "名称", value: template.name)
-                        LedgerFieldRow(title: "默认模板", value: template.isDefault ? "是" : "否")
-                    }
-                    Section("分类比例") {
-                        ForEach(template.modules) { module in
-                            LedgerFieldRow(title: metadata.categoryName(module.categoryId), value: module.ratio.formatted(.percent.precision(.fractionLength(0...2))))
+                LedgerLiveDetail(api: api, initial: template, metadata: metadata, source: .list("/templates")) { template, metadata in
+                    List {
+                        Section {
+                            LedgerFieldRow(title: "名称", value: template.name)
+                            LedgerFieldRow(title: "默认模板", value: template.isDefault ? "是" : "否")
                         }
-                    }
-                }.navigationTitle(template.name).navigationBarTitleDisplayMode(.inline)
+                        Section("分类比例") {
+                            ForEach(template.modules) { module in
+                                LedgerFieldRow(title: metadata.categoryName(module.categoryId), value: module.ratio.formatted(.percent.precision(.fractionLength(0...2))))
+                            }
+                        }
+                    }.navigationTitle(template.name).navigationBarTitleDisplayMode(.inline)
+                }
             } label: {
                 LedgerCatalogRow(title: template.name, subtitle: "\(template.modules.count) 个分类" + (template.isDefault ? " · 默认模板" : ""), symbol: "square.stack.3d.up")
             }
@@ -111,25 +126,27 @@ import SwiftUI
     var body: some View {
         LedgerReadList(api: api, title: "周期账单", path: "/recurring/rules", footer: "展示已有规则及服务端计算的到期时间。本页不会生成或确认账单。") { (rule: LedgerRecurringRule, metadata) in
             NavigationLink {
-                List {
-                    Section {
-                        LedgerFieldRow(title: "名称", value: rule.name)
-                        LedgerFieldRow(title: "状态", value: rule.enabled ? "已启用" : "已停用")
-                        LedgerFieldRow(title: "收支类型", value: rule.type.title)
-                        LedgerFieldRow(title: "金额", value: LedgerFormat.money(rule.amountCents))
-                        LedgerFieldRow(title: "分类", value: metadata.categoryName(rule.categoryId))
-                        LedgerFieldRow(title: "账户", value: metadata.accountName(rule.accountId))
-                    }
-                    Section("周期") {
-                        LedgerFieldRow(title: "频率", value: rule.frequency.title)
-                        LedgerFieldRow(title: "起始日期", value: LedgerFormat.date(rule.anchorDate))
-                        LedgerFieldRow(title: "下次到期", value: LedgerFormat.date(rule.nextDueDate))
-                        if rule.hasOlderDue {
-                            Text("还有更早的到期记录待处理，请在现有客户端查看。")
-                                .font(.footnote).foregroundStyle(.orange)
+                LedgerLiveDetail(api: api, initial: rule, metadata: metadata, source: .list("/recurring/rules")) { rule, metadata in
+                    List {
+                        Section {
+                            LedgerFieldRow(title: "名称", value: rule.name)
+                            LedgerFieldRow(title: "状态", value: rule.enabled ? "已启用" : "已停用")
+                            LedgerFieldRow(title: "收支类型", value: rule.type.title)
+                            LedgerFieldRow(title: "金额", value: LedgerFormat.money(rule.amountCents))
+                            LedgerFieldRow(title: "分类", value: metadata.categoryName(rule.categoryId))
+                            LedgerFieldRow(title: "账户", value: metadata.accountName(rule.accountId))
                         }
-                    }
-                }.navigationTitle(rule.name).navigationBarTitleDisplayMode(.inline)
+                        Section("周期") {
+                            LedgerFieldRow(title: "频率", value: rule.frequency.title)
+                            LedgerFieldRow(title: "起始日期", value: LedgerFormat.date(rule.anchorDate))
+                            LedgerFieldRow(title: "下次到期", value: LedgerFormat.date(rule.nextDueDate))
+                            if rule.hasOlderDue {
+                                Text("还有更早的到期记录待处理，请在现有客户端查看。")
+                                    .font(.footnote).foregroundStyle(.orange)
+                            }
+                        }
+                    }.navigationTitle(rule.name).navigationBarTitleDisplayMode(.inline)
+                }
             } label: {
                 LedgerCatalogRow(title: rule.name, subtitle: rule.frequency.title + " · " + (rule.enabled ? LedgerFormat.date(rule.nextDueDate) + " 到期" : "已停用"), symbol: "repeat", detail: LedgerFormat.money(rule.amountCents))
             }
@@ -142,17 +159,19 @@ import SwiftUI
     var body: some View {
         LedgerReadList(api: api, title: "待确认账单", path: "/recurring/pending", footer: "这些记录尚未记入账本。当前可查看明细，确认、忽略与补生成请使用现有客户端。") { (pending: LedgerPendingOccurrence, metadata) in
             NavigationLink {
-                List {
-                    Section {
-                        LedgerFieldRow(title: "收支类型", value: pending.type.title)
-                        LedgerFieldRow(title: "金额", value: LedgerFormat.money(pending.amountCents))
-                        LedgerFieldRow(title: "计划日期", value: LedgerFormat.date(pending.plannedDate))
-                        LedgerFieldRow(title: "分类", value: metadata.categoryName(pending.categoryId))
-                        LedgerFieldRow(title: "账户", value: metadata.accountName(pending.accountId))
-                        LedgerFieldRow(title: "备注", value: pending.note.isEmpty ? "无" : pending.note)
-                    }
-                    Section { Text("待确认记录不会自动加入账户余额或收支统计。").font(.footnote).foregroundStyle(.secondary) }
-                }.navigationTitle("待确认明细").navigationBarTitleDisplayMode(.inline)
+                LedgerLiveDetail(api: api, initial: pending, metadata: metadata, source: .list("/recurring/pending")) { pending, metadata in
+                    List {
+                        Section {
+                            LedgerFieldRow(title: "收支类型", value: pending.type.title)
+                            LedgerFieldRow(title: "金额", value: LedgerFormat.money(pending.amountCents))
+                            LedgerFieldRow(title: "计划日期", value: LedgerFormat.date(pending.plannedDate))
+                            LedgerFieldRow(title: "分类", value: metadata.categoryName(pending.categoryId))
+                            LedgerFieldRow(title: "账户", value: metadata.accountName(pending.accountId))
+                            LedgerFieldRow(title: "备注", value: pending.note.isEmpty ? "无" : pending.note)
+                        }
+                        Section { Text("待确认记录不会自动加入账户余额或收支统计。").font(.footnote).foregroundStyle(.secondary) }
+                    }.navigationTitle("待确认明细").navigationBarTitleDisplayMode(.inline)
+                }
             } label: {
                 LedgerCatalogRow(title: pending.note.isEmpty ? metadata.categoryName(pending.categoryId) : pending.note,
                                  subtitle: LedgerFormat.date(pending.plannedDate) + " · " + pending.type.title,
@@ -167,15 +186,17 @@ import SwiftUI
     var body: some View {
         LedgerReadList(api: api, title: "账户转账", path: "/transfers", paginated: true, footer: "转账改变两个账户的余额，不计入收入或支出。") { (transfer: LedgerTransfer, metadata) in
             NavigationLink {
-                List {
-                    Section {
-                        LedgerFieldRow(title: "转出账户", value: metadata.accountName(transfer.fromAccountId))
-                        LedgerFieldRow(title: "转入账户", value: metadata.accountName(transfer.toAccountId))
-                        LedgerFieldRow(title: "金额", value: LedgerFormat.money(transfer.amountCents))
-                        LedgerFieldRow(title: "日期", value: LedgerFormat.date(transfer.date, time: true))
-                        LedgerFieldRow(title: "备注", value: transfer.note.isEmpty ? "无" : transfer.note)
-                    }
-                }.navigationTitle("转账详情").navigationBarTitleDisplayMode(.inline)
+                LedgerLiveDetail(api: api, initial: transfer, metadata: metadata, source: .item("/transfers/" + LedgerURL.segment(transfer.id))) { transfer, metadata in
+                    List {
+                        Section {
+                            LedgerFieldRow(title: "转出账户", value: metadata.accountName(transfer.fromAccountId))
+                            LedgerFieldRow(title: "转入账户", value: metadata.accountName(transfer.toAccountId))
+                            LedgerFieldRow(title: "金额", value: LedgerFormat.money(transfer.amountCents))
+                            LedgerFieldRow(title: "日期", value: LedgerFormat.date(transfer.date, time: true))
+                            LedgerFieldRow(title: "备注", value: transfer.note.isEmpty ? "无" : transfer.note)
+                        }
+                    }.navigationTitle("转账详情").navigationBarTitleDisplayMode(.inline)
+                }
             } label: {
                 LedgerCatalogRow(title: metadata.accountName(transfer.fromAccountId) + " → " + metadata.accountName(transfer.toAccountId),
                                  subtitle: LedgerFormat.date(transfer.date), symbol: "arrow.left.arrow.right", detail: LedgerFormat.money(transfer.amountCents))
@@ -189,13 +210,15 @@ import SwiftUI
     var body: some View {
         LedgerReadList(api: api, title: "回收站", path: "/trash", footer: "已删除账单不参与当前统计。恢复与永久删除暂未在 iOS 开放。") { (transaction: LedgerTransaction, metadata) in
             NavigationLink {
-                ScrollView {
-                    VStack(spacing: 18) {
-                        Label("已删除的账单记录", systemImage: "trash").font(.subheadline).foregroundStyle(.secondary)
-                        LedgerBillDetailContent(transaction: transaction, metadata: metadata)
-                    }.padding(20)
-                }.background(Color(uiColor: .systemGroupedBackground))
-                    .navigationTitle("回收站详情").navigationBarTitleDisplayMode(.inline)
+                LedgerLiveDetail(api: api, initial: transaction, metadata: metadata, source: .list("/trash")) { transaction, metadata in
+                    ScrollView {
+                        VStack(spacing: 18) {
+                            Label("已删除的账单记录", systemImage: "trash").font(.subheadline).foregroundStyle(.secondary)
+                            LedgerBillDetailContent(transaction: transaction, metadata: metadata)
+                        }.padding(20)
+                    }.background(Color(uiColor: .systemGroupedBackground))
+                        .navigationTitle("回收站详情").navigationBarTitleDisplayMode(.inline)
+                }
             } label: { LedgerTransactionRow(transaction: transaction, metadata: metadata) }
         }
     }

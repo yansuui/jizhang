@@ -21,10 +21,15 @@ struct AssistantThread {
     var reconnectNeeded = false
     var notice: String?
     var readTicket = UUID()
+    var actingID: String?
+    var uncertainActionID: String?
+    var uncertainActionConfirm: Bool?
+    var actionNotice: String?
+    var pendingFileSubmission: AssistantFileSubmission?
 
     var messages: [AssistantMessage] { generation?.merged(with: history) ?? history.filter(\.isVisible) }
     var isGenerating: Bool { generation.map { !$0.status.isTerminal } ?? false }
-    var composerLocked: Bool { loading || sending || stopping || isGenerating || pendingSubmission != nil }
+    var composerLocked: Bool { loading || sending || stopping || isGenerating || pendingSubmission != nil || pendingFileSubmission != nil || actingID != nil }
     var statusLabel: String? {
         if sending { return "正在发送" }
         if stopping { return "正在停止" }
@@ -36,7 +41,7 @@ struct AssistantThread {
         case .completed:
             switch generation.outcome {
             case .awaitingChoice: return "等待你的选择"
-            case .pendingConfirmation: return "草案已生成，尚未执行"
+            case .pendingConfirmation: return messages.contains { $0.content.card?["status"].stringValue == "pending" } ? "草案已生成，尚未执行" : nil
             default: return nil
             }
         case .cancelled: return "已停止回复"
@@ -57,6 +62,8 @@ final class AssistantStore: ObservableObject {
     @Published private(set) var archivingID: String?
     @Published private(set) var listError: String?
     @Published private(set) var providerEnabled: Bool?
+    @Published private(set) var confirmationBodies: [String: JSONValue] = [:]
+    private var billFiles: [String: AssistantBillFile] = [:]
     private var listTicket = UUID()
     private var selectionTicket = UUID()
     private var visibleConversationID: String?
@@ -121,7 +128,7 @@ final class AssistantStore: ObservableObject {
     }
 
     func archive(_ conversation: AssistantConversation) async {
-        guard archivingID == nil, !thread(conversation.id).sending else { return }
+        guard archivingID == nil, !thread(conversation.id).sending, thread(conversation.id).actingID == nil else { return }
         archivingID = conversation.id
         listError = nil
         listTicket = UUID()
@@ -155,7 +162,7 @@ final class AssistantStore: ObservableObject {
         let read = UUID()
         update(id) {
             $0.loading = true
-            if $0.pendingSubmission == nil { $0.notice = nil }
+            if $0.pendingSubmission == nil && $0.pendingFileSubmission == nil { $0.notice = nil }
             $0.readTicket = read; $0.reconnectNeeded = false
         }
         defer {
@@ -166,7 +173,7 @@ final class AssistantStore: ObservableObject {
             try Task.checkCancellation()
             guard accepts(id, selection), threads[id]?.readTicket == read else { return }
             try validateHistory(history.items, conversation: id)
-            update(id) { $0.history = history.items; $0.loaded = true }
+            applyHistory(history.items, in: id)
             let latest: AssistantItems<AssistantGenerationSnapshot> = try await api.request(AssistantPath.conversation(id) + "/generations?limit=1")
             try Task.checkCancellation()
             guard accepts(id, selection), threads[id]?.readTicket == read else { return }
@@ -297,6 +304,108 @@ final class AssistantStore: ObservableObject {
 
     func reconnect(in id: String) async { await open(id) }
 
+    func canAct(on card: JSONValue, in id: String, confirm: Bool = true) -> Bool {
+        let state = thread(id)
+        guard visibleConversationID == id, !state.composerLocked, state.loaded,
+              let actionID = card["actionId"].stringValue, !actionID.isEmpty,
+              card["version"].intValue == 1, card["writes"].boolValue == true,
+              card["status"].stringValue == "pending",
+              !((card["fingerprint"].stringValue ?? "").isEmpty),
+              state.messages.contains(where: { $0.content.card == card }) else { return false }
+        return state.uncertainActionID == nil || (state.uncertainActionID == actionID && state.uncertainActionConfirm == confirm)
+    }
+
+    /// The persisted action ID is the server's idempotency identity, including after a lost response.
+    func performAction(_ card: JSONValue, in id: String, confirm: Bool, body: JSONValue = .object([:])) async {
+        guard canAct(on: card, in: id, confirm: confirm), let actionID = card["actionId"].stringValue else { return }
+        let body = confirm ? (confirmationBodies[actionID] ?? body) : body
+        if confirm { confirmationBodies[actionID] = body }
+        update(id) { $0.actingID = actionID; $0.actionNotice = nil; $0.readTicket = UUID() }
+        defer { if threads[id]?.actingID == actionID { update(id) { $0.actingID = nil } } }
+        do {
+            let response: AssistantActionResponse = try await api.request(
+                "/assistant/actions/\(AssistantPath.segment(actionID))/\(confirm ? "confirm" : "cancel")",
+                method: "POST", body: body)
+            try response.validate(actionID: actionID, conversationID: id, confirming: confirm)
+            guard threads[id]?.actingID == actionID else { return }
+            update(id) {
+                $0.readTicket = UUID()
+                $0.history = AssistantActionResponse.updating($0.messages, actionID: actionID, status: response.action.status)
+                $0.uncertainActionID = nil
+                $0.uncertainActionConfirm = nil
+                $0.actionNotice = response.action.status == "confirmed" ? "已执行，账本已更新。" : "已取消，账本没有改动。"
+            }
+            if response.action.status == "confirmed" { api.notifyLedgerChanged() }
+            if visibleConversationID == id { await refreshHistory(id, selection: selectionTicket) }
+        } catch {
+            guard threads[id]?.actingID == actionID else { return }
+            if let apiError = error as? APIError, (400..<500).contains(apiError.status), apiError.status != 408 {
+                confirmationBodies.removeValue(forKey: actionID)
+                update(id) {
+                    $0.uncertainActionID = nil
+                    $0.uncertainActionConfirm = nil
+                    $0.actionNotice = apiError.localizedDescription
+                }
+            } else {
+                update(id) {
+                    $0.uncertainActionID = actionID
+                    $0.uncertainActionConfirm = confirm
+                    $0.actionNotice = confirm ? "暂未核实操作结果。请刷新查看；如仍待确认，可重试同一草案，不会重复记账。" : "取消结果待核对。请刷新查看，或重试取消这份草案。"
+                }
+            }
+            if visibleConversationID == id { await refreshHistory(id, selection: selectionTicket) }
+        }
+    }
+
+    func useSuggestion(_ text: String, in id: String) {
+        guard !thread(id).composerLocked else { return }
+        setDraft(text, for: id)
+    }
+
+    func cachedFile(for card: JSONValue) -> AssistantBillFile? {
+        card["attachment"]["sha256"].stringValue.flatMap { billFiles[$0] }
+    }
+
+    func retainFile(_ file: AssistantBillFile, for card: JSONValue) throws {
+        guard file.matches(card["attachment"]) else { throw AssistantFileError.differentFile }
+        billFiles[file.digest] = file
+    }
+
+    func sendFile(_ file: AssistantBillFile, in id: String) async {
+        guard !thread(id).composerLocked else { return }
+        billFiles[file.digest] = file
+        let text = thread(id).draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.utf16.count <= 2_000 else { update(id) { $0.notice = "消息不能超过 2,000 个字符。" }; return }
+        let submission = AssistantFileSubmission(file: file, text: text.isEmpty ? "请预览这份账单，等我选择并确认后再导入。" : text)
+        update(id) { $0.pendingFileSubmission = submission }
+        await retryFile(in: id)
+    }
+
+    func retryFile(in id: String) async {
+        guard let submission = thread(id).pendingFileSubmission, !thread(id).sending, !thread(id).isGenerating else { return }
+        update(id) { $0.sending = true; $0.notice = nil; $0.readTicket = UUID() }
+        defer { if threads[id] != nil { update(id) { $0.sending = false } } }
+        do {
+            let response: AssistantItems<AssistantMessage> = try await api.request(AssistantPath.conversation(id) + "/messages", method: "POST", body: submission.body)
+            try validateHistory(response.items, conversation: id)
+            guard threads[id]?.pendingFileSubmission?.requestID == submission.requestID else { return }
+            update(id) {
+                $0.readTicket = UUID(); $0.history = response.items; $0.loaded = true; $0.generation = nil
+                $0.pendingFileSubmission = nil; $0.draft = ""; $0.draftRequestID = UUID().uuidString
+                if response.items.last?.content.progress?.state == "running" || response.items.last?.kind == "attachment" {
+                    $0.notice = "文件已接收，预览可能仍在处理中。稍后刷新对话查看结果。"
+                }
+            }
+        } catch {
+            guard threads[id]?.pendingFileSubmission?.requestID == submission.requestID else { return }
+            if let apiError = error as? APIError, (400..<500).contains(apiError.status), apiError.status != 408 {
+                update(id) { $0.pendingFileSubmission = nil; $0.notice = apiError.localizedDescription }
+            } else {
+                update(id) { $0.notice = "账单文件的预览状态尚未核实。可重试同一次上传，文件不会自动导入。" }
+            }
+        }
+    }
+
     private func accepts(_ id: String, _ selection: UUID) -> Bool {
         visibleConversationID == id && selectedID == id && selectionTicket == selection
     }
@@ -327,11 +436,25 @@ final class AssistantStore: ObservableObject {
             let response: AssistantItems<AssistantMessage> = try await api.request(AssistantPath.conversation(id) + "/messages")
             guard accepts(id, selection), threads[id]?.readTicket == read, !Task.isCancelled else { return }
             try validateHistory(response.items, conversation: id)
-            update(id) { $0.history = response.items; $0.loaded = true }
+            applyHistory(response.items, in: id)
         } catch {
             guard accepts(id, selection), threads[id]?.readTicket == read, !Task.isCancelled else { return }
             update(id) { $0.notice = "回复已保留，历史同步失败，请刷新核对。" }
         }
+    }
+
+    private func applyHistory(_ messages: [AssistantMessage], in id: String) {
+        let uncertainID = thread(id).uncertainActionID
+        let resolved = messages.compactMap(\.content.card).first { uncertainID != nil && $0["actionId"].stringValue == uncertainID && $0["status"].stringValue != "pending" }
+        update(id) {
+            $0.history = messages; $0.loaded = true
+            if let resolved {
+                $0.uncertainActionID = nil
+                $0.uncertainActionConfirm = nil
+                $0.actionNotice = resolved["status"].stringValue == "confirmed" ? "已核实：操作已执行，账本已更新。" : "草案已关闭，请查看最新记录。"
+            }
+        }
+        if resolved?["status"].stringValue == "confirmed" { api.notifyLedgerChanged() }
     }
 
     private func listen(_ id: String, selection: UUID) {
