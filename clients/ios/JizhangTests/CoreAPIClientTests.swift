@@ -97,6 +97,46 @@ final class CoreAPIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testRejectedPublicRegistrationDoesNotExpireSavedAccount() async throws {
+        let store = CoreMemoryCredentialStore()
+        try store.save(Self.cookie(), server: "https://example.com")
+        let client = try makeClient(store: store)
+        defer { client.invalidate() }
+        var callbacks = 0
+        client.onUnauthorized = { callbacks += 1 }
+        CoreMockURLProtocol.setHandler { request in
+            XCTAssertEqual(request.url?.path, "/api/v1/auth/register")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-Requested-With"), "fetch")
+            return try Self.response(request, status: 401, json: #"{"error":{"code":"INVALID_INVITATION"}}"#)
+        }
+        do {
+            let _: AuthenticatedUser = try await client.request("/auth/register", method: "POST")
+            XCTFail("Expected rejection")
+        } catch let error as APIError { XCTAssertEqual(error.code, "INVALID_INVITATION") }
+        XCTAssertEqual(callbacks, 0)
+        XCTAssertTrue(client.hasSession)
+        XCTAssertEqual(try store.load(server: "https://example.com")?.value, "fixture")
+    }
+
+    @MainActor
+    func testRegistrationMustReturnStableIdentityBeforeSavingCookie() async throws {
+        let store = CoreMemoryCredentialStore()
+        let client = try makeClient(store: store, restoreSession: false)
+        defer { client.invalidate() }
+        CoreMockURLProtocol.setHandler { request in
+            try Self.response(request, status: 201, headers: ["Set-Cookie": "jizhang_session=unaccepted; Path=/; Max-Age=3600; Secure"],
+                              json: #"{"username":"fixture","expiresAt":4102444800000}"#)
+        }
+        do {
+            let _: AuthenticatedUser = try await client.request("/auth/register", method: "POST")
+            XCTFail("Registration cannot activate a legacy identity envelope")
+        } catch let error as APIError { XCTAssertEqual(error.code, "INVALID_RESPONSE") }
+        XCTAssertFalse(client.hasSession)
+        XCTAssertNil(try store.load(server: "https://example.com"))
+    }
+
+    @MainActor
     func testWrongOriginResponseIsRejectedBeforeCookiePersistence() async throws {
         let store = CoreMemoryCredentialStore()
         let client = try makeClient(store: store)
@@ -188,14 +228,14 @@ final class CoreAPIClientTests: XCTestCase {
     }
 }
 
-private final class CoreMemoryCredentialStore: SessionCredentialStore {
+final class CoreMemoryCredentialStore: SessionCredentialStore {
     private var items: [String: SessionCookie] = [:]
     private(set) var loadCount = 0
     func load(server: String) throws -> SessionCookie? { loadCount += 1; return items[server] }
     func save(_ cookie: SessionCookie?, server: String) throws { items[server] = cookie }
 }
 
-private final class CoreMockURLProtocol: URLProtocol {
+final class CoreMockURLProtocol: URLProtocol {
     typealias Handler = (URLRequest) throws -> (HTTPURLResponse, Data)
     private static let lock = NSLock()
     private static var handler: Handler?

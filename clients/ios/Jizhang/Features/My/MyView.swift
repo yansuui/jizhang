@@ -2,6 +2,7 @@ import SwiftUI
 
 @MainActor struct MyView: View {
     let api: APIClient
+    let user: AuthenticatedUser
     let onLogout: () -> Void
     @State private var confirmingLogout = false
 
@@ -11,7 +12,10 @@ import SwiftUI
                 HStack(spacing: 16) {
                     LedgerSymbol(name: "person.crop.circle.fill")
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("我的账本").font(.title3.weight(.semibold))
+                        Text(user.username).font(.title3.weight(.semibold))
+                        if user.canManageInvitations {
+                            Text("管理员").font(.caption).foregroundStyle(AppTheme.accent)
+                        }
                         Text(api.baseURL.host ?? "已连接记账服务")
                             .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     }
@@ -20,6 +24,13 @@ import SwiftUI
             Section("AI 助手") {
                 NavigationLink { ProviderSettingsView(api: api) } label: {
                     menuRow("助手配置", subtitle: "服务地址、密钥与模型", symbol: "sparkles")
+                }
+            }
+            if user.canManageInvitations {
+                Section("账号管理") {
+                    NavigationLink { InvitationManagementView(api: api, user: user) } label: {
+                        menuRow("邀请码管理", subtitle: "邀请新用户，账本各自独立", symbol: "person.badge.plus")
+                    }
                 }
             }
             Section("账本资料") {

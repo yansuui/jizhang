@@ -16,8 +16,8 @@ struct JizhangApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if let api = session.api {
-                    MainTabView(api: api, onLogout: { Task { await session.signOut() } })
+                if let api = session.api, let user = session.user {
+                    MainTabView(api: api, user: user, onLogout: { Task { await session.signOut() } })
                         .id(api.identity)
                         .disabled(session.isBusy)
                         .overlay {
@@ -40,6 +40,7 @@ struct JizhangApp: App {
 @MainActor
 private struct MainTabView: View {
     let api: APIClient
+    let user: AuthenticatedUser
     let onLogout: () -> Void
 
     var body: some View {
@@ -52,7 +53,7 @@ private struct MainTabView: View {
                 .tabItem { Label("计划", systemImage: "chart.pie") }
             NavigationStack { AssistantView(api: api) }
                 .tabItem { Label("AI 助手", systemImage: "sparkles") }
-            NavigationStack { MyView(api: api, onLogout: onLogout) }
+            NavigationStack { MyView(api: api, user: user, onLogout: onLogout) }
                 .tabItem { Label("我的", systemImage: "person.crop.circle") }
         }
     }

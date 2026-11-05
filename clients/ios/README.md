@@ -45,7 +45,8 @@ The generated project contains app and XCTest targets. The script selects a simu
 
 | Area | Intended behavior | Boundary |
 |---|---|---|
-| Login/session | Configurable HTTPS server, login, verified session restoration, logout | Cookie credentials in server-scoped Keychain storage; server switch isolates requests |
+| Login/session | Configurable HTTPS server, login, invite-only registration, verified session restoration, logout | A successful registration requires a stable account ID and session cookie; server/account changes replace request and screen ownership |
+| Invitations | Administrator-only My entry: create, copy once, list status/expiry and revoke | Single use, seven-day validity; server capability required; codes/passwords are never persisted in preferences |
 | Navigation | Home, Bills, Plan, Assistant, My | iPhone native navigation, safe areas and system appearance |
 | Conversations | Full-width history, title search/date groups, creation, selection, archive | Stable server IDs, no narrow fixed-width cards |
 | Chat | Text generation, real streaming where supported, Stop, clarification, history and reconnect | Pending accounting actions are readable previews, not executable ledger writes in this delivery |
@@ -58,6 +59,10 @@ The current plan surface follows the backend's continuous four-purpose fund cont
 ## Contracts
 
 - API paths remain under `/api/v1`; mutations require `X-Requested-With: fetch`.
+- Authentication consumes additive `id`, `role` and `capabilities` fields. Old servers can still log in; missing permissions hide invitation administration. Registration uses `/auth/register` and never sends a previous account cookie. Public login/registration failures cannot clear another saved account's session.
+- Registration validates a 3–64 character ASCII username (letters/digits/`_.-`), an 8–128 UTF-16-unit password plus matching confirmation, and an invitation code. Only username/code outer whitespace is trimmed. The server remains authoritative; successful registration automatically enters the account after validating its cookie.
+- Invitations use `/admin/invitations`; one-time plaintext is only held while its screen is open. Copy is local to the device and expires from the clipboard after at most ten minutes. Unknown/missing permissions never imply administrator access. A rejected admin request removes sensitive invitation presentation.
+- Accounts have separate ledger data, conversations and provider configuration on the multi-user backend. The iOS shell and feature stores are recreated for each activated API identity; credentials represent one active account per server, not a multi-account vault.
 - Session cookie is `jizhang_session`. A restored username does not establish authentication; `/auth/me` must succeed.
 - Money uses integer cents and timestamps use epoch milliseconds. Server results own balances, totals and financial windows.
 - AI secrets remain encrypted server-side. Model discovery uses saved configuration; the phone never receives an existing plaintext key.
@@ -70,5 +75,7 @@ The current plan surface follows the backend's continuous four-purpose fund cont
 Native compilation, XCTest, simulator launch and device installation are recorded separately in the task delivery evidence. A Windows source review alone is not a build. Live-provider behavior also requires a configured backend and explicit interaction.
 
 Initial implementation and verification are tracked in [the iOS task](../../.trellis/tasks/11-04-ios-assistant/implement.md). No production API deployment is included in this client delivery.
+
+Multi-user source and mocked-network coverage are tracked in [the multi-user task](../../.trellis/tasks/11-05-multiuser-invites/implement.md). The added tests cover registration validation, additive identity/capability decoding, cookie-free registration, failed registration preserving saved credentials, required session cookies, account replacement, invitation create/revoke/403, duplicate submission and late results after leaving. Simulator preview tests include registration at compact width and invitation management with large text. These are test sources until the macOS CI run passes; physical registration/invitation interaction and device installation remain separate acceptance checks.
 
 The app icon reuses the existing Android brand artwork, converted to the iOS asset-catalog size; no new brand is introduced.

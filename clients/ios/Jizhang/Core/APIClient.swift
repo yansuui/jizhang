@@ -79,11 +79,13 @@ final class APIClient: ObservableObject {
     func request<Response: Decodable>(_ path: String, method: String = "GET", body: JSONValue? = nil) async throws -> Response {
         do {
             try requireCurrent()
-            let request = try APIRequestBuilder.make(baseURL: baseURL, path: path, method: method, body: body, cookie: cookie)
+            let publicAuthentication = method.uppercased() == "POST" && ["/auth/login", "/auth/register"].contains(path)
+            let request = try APIRequestBuilder.make(baseURL: baseURL, path: path, method: method, body: body,
+                                                     cookie: publicAuthentication ? nil : cookie)
             let (data, response) = try await session.data(for: request)
             try requireCurrent()
             let http = try checkedResponse(response)
-            try checkStatus(http.statusCode, data: data)
+            try checkStatus(http.statusCode, data: data, expiresSession: !publicAuthentication)
             guard data.count <= maximumJSONResponseBytes else { throw APIError.invalidResponse }
             if !data.isEmpty {
                 let type = http.value(forHTTPHeaderField: "Content-Type")?.lowercased().components(separatedBy: ";").first?.trimmingCharacters(in: .whitespaces) ?? ""
@@ -92,6 +94,10 @@ final class APIClient: ObservableObject {
                 }
             }
             let decoded = try JSONDecoder().decode(Response.self, from: data.isEmpty ? Data("null".utf8) : data)
+            if publicAuthentication, let user = decoded as? AuthenticatedUser {
+                guard user.expiresAt > Int64(Date().timeIntervalSince1970 * 1_000),
+                      path != "/auth/register" || user.id != nil else { throw APIError.invalidResponse }
+            }
             try captureCookie(http)
             return decoded
         } catch {
@@ -164,10 +170,10 @@ final class APIClient: ObservableObject {
         return http
     }
 
-    private func checkStatus(_ status: Int, data: Data) throws {
+    private func checkStatus(_ status: Int, data: Data, expiresSession: Bool = true) throws {
         guard (200..<300).contains(status) else {
             let error = APIError.response(status: status, data: data)
-            if status == 401 {
+            if status == 401 && expiresSession {
                 cookie = nil
                 try? credentialStore.save(nil, server: baseURL.absoluteString)
                 let callback = onUnauthorized
@@ -208,9 +214,4 @@ private final class APINoRedirectDelegate: NSObject, URLSessionTaskDelegate {
 
 struct EmptyResponse: Decodable {
     init(from decoder: Decoder) throws {}
-}
-
-struct AuthenticatedUser: Decodable, Equatable {
-    let username: String
-    let expiresAt: Int64
 }

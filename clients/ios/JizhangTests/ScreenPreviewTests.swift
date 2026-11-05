@@ -7,6 +7,38 @@ import XCTest
 /// They support visual review; they do not claim live-provider or physical-device acceptance.
 final class ScreenPreviewTests: XCTestCase {
     @MainActor
+    func testInvitationRegistrationAtCompactIPhoneWidth() async throws {
+        let ready = expectation(description: "Registration form ready")
+        ready.fulfill()
+        let session = AppSession(credentialStore: CoreMemoryCredentialStore())
+        try await capture("invite-registration-compact", ready: ready) {
+            RegistrationView(session: session, serverAddress: "https://example.com")
+        }
+    }
+
+    @MainActor
+    func testAdminInvitationsWithLargeText() async throws {
+        let ready = expectation(description: "Invitation list loaded")
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CoreMockURLProtocol.self]
+        let api = try APIClient(baseURL: ServerAddress.parse("https://example.com"),
+                                credentialStore: CoreMemoryCredentialStore(), configuration: configuration)
+        defer { api.invalidate(); CoreMockURLProtocol.setHandler(nil) }
+        let user = try JSONDecoder().decode(AuthenticatedUser.self, from: Data(#"{"id":"preview-owner","username":"我的账号","role":"admin","capabilities":["manageInvitations"],"expiresAt":4102444800000}"#.utf8))
+        CoreMockURLProtocol.setHandler { request in
+            let response = try XCTUnwrap(HTTPURLResponse(url: XCTUnwrap(request.url), statusCode: 200,
+                httpVersion: nil, headerFields: ["Content-Type": "application/json"]))
+            let json = #"{"invitations":[{"id":"preview-invite","createdAt":1793750400000,"expiresAt":4102444800000,"status":"active","usedAt":null}]}"#
+            ready.fulfill()
+            return (response, Data(json.utf8))
+        }
+        try await capture("invitation-management-large", ready: ready) {
+            InvitationManagementView(api: api, user: user)
+                .environment(\.dynamicTypeSize, .xxxLarge)
+        }
+    }
+
+    @MainActor
     func testConversationListAtCompactIPhoneWidth() async throws {
         let ready = expectation(description: "History and provider summary loaded")
         ready.expectedFulfillmentCount = 2

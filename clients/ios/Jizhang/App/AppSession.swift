@@ -9,16 +9,20 @@ final class AppSession: ObservableObject {
     @Published private(set) var canRetryRestore = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var username = ""
+    @Published private(set) var user: AuthenticatedUser?
 
     private let preferences: UserDefaults
     private let credentialStore: SessionCredentialStore
+    private let configuration: () -> URLSessionConfiguration
     private var operation = UUID()
     private var candidate: APIClient?
     private var attemptedRestore = false
 
-    init(preferences: UserDefaults = .standard, credentialStore: SessionCredentialStore = KeychainSessionStore()) {
+    init(preferences: UserDefaults = .standard, credentialStore: SessionCredentialStore = KeychainSessionStore(),
+         configuration: @escaping () -> URLSessionConfiguration = { .ephemeral }) {
         self.preferences = preferences
         self.credentialStore = credentialStore
+        self.configuration = configuration
     }
 
     var savedServerAddress: String {
@@ -36,7 +40,7 @@ final class AppSession: ObservableObject {
         defer { finish(ticket) }
         do {
             let address = try ServerAddress.parse(savedServerAddress)
-            let client = try APIClient(baseURL: address, credentialStore: credentialStore)
+            let client = try APIClient(baseURL: address, credentialStore: credentialStore, configuration: configuration())
             candidate = client
             guard client.hasSession else {
                 client.invalidate()
@@ -63,17 +67,33 @@ final class AppSession: ObservableObject {
             errorMessage = "请输入账号和密码。"
             return
         }
+        await authenticate(serverAddress: serverAddress, path: "/auth/login", body: .object([
+            "username": .string(trimmedUsername), "password": .string(password)
+        ]))
+    }
+
+    func register(serverAddress: String, draft: RegistrationDraft) async {
+        guard !isBusy else { return }
+        do {
+            let body = try draft.payload()
+            await authenticate(serverAddress: serverAddress, path: "/auth/register", body: body)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    func clearError() { if !isBusy { errorMessage = nil } }
+
+    private func authenticate(serverAddress: String, path: String, body: JSONValue) async {
         let ticket = begin(restoring: false)
         defer { finish(ticket) }
         do {
             let address = try ServerAddress.parse(serverAddress)
-            // Login never sends a restored cookie with freshly entered account credentials.
-            let client = try APIClient(baseURL: address, credentialStore: credentialStore, restoreSession: false)
+            // Login and registration never send a previous account's cookie.
+            let client = try APIClient(baseURL: address, credentialStore: credentialStore, restoreSession: false,
+                                       configuration: configuration())
             candidate = client
-            let user: AuthenticatedUser = try await client.request("/auth/login", method: "POST", body: .object([
-                "username": .string(trimmedUsername), "password": .string(password)
-            ]))
+            let user: AuthenticatedUser = try await client.request(path, method: "POST", body: body)
             guard operation == ticket, !Task.isCancelled else { client.invalidate(); return }
+            guard path != "/auth/register" || user.id != nil else { throw APIError.invalidResponse }
             try activate(client, user: user)
         } catch is CancellationError {
         } catch {
@@ -110,6 +130,7 @@ final class AppSession: ObservableObject {
         client.invalidate()
         api = nil
         username = ""
+        user = nil
         canRetryRestore = false
         errorMessage = logoutNotice
         finish(ticket)
@@ -127,6 +148,7 @@ final class AppSession: ObservableObject {
 
     private func finish(_ ticket: UUID) {
         guard operation == ticket else { return }
+        if candidate?.identity != api?.identity { candidate?.invalidate() }
         candidate = nil
         isBusy = false
         isRestoring = false
@@ -143,6 +165,7 @@ final class AppSession: ObservableObject {
             self.operation = UUID()
             self.api = nil
             self.username = ""
+            self.user = nil
             self.isBusy = false
             self.isRestoring = false
             self.canRetryRestore = false
@@ -151,6 +174,7 @@ final class AppSession: ObservableObject {
         preferences.set(client.baseURL.absoluteString, forKey: "jizhang.serverAddress")
         preferences.set(user.username, forKey: "jizhang.username")
         username = user.username
+        self.user = user
         canRetryRestore = false
         errorMessage = nil
         api = client

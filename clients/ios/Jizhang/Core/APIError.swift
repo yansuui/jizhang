@@ -24,6 +24,12 @@ struct APIError: Error, LocalizedError, Equatable {
         let message: String
         switch code {
         case "INVALID_CREDENTIALS": message = "账号或密码不正确。"
+        case "INVALID_INVITATION": message = "邀请码无效、已使用或已过期，请向管理员获取新的邀请码。"
+        case "INVITATION_USED": message = "这个邀请码已被使用，请刷新列表查看最新状态。"
+        case "USERNAME_TAKEN": message = "这个账号已被使用，请更换账号。如果刚才已完成注册，请返回登录。"
+        case "WEAK_PASSWORD": message = "密码需为 8–128 位，请修改后重试。"
+        case "RATE_LIMITED": message = "尝试过于频繁，请稍后再试。"
+        case "FORBIDDEN": message = "当前账号没有管理邀请码的权限。"
         case "UNAUTHORIZED": message = "登录已过期，请重新登录。"
         case "CSRF_REQUIRED": message = "请求验证失败，请重新登录后重试。"
         case "AI_NOT_CONFIGURED": message = "请先配置并启用 AI 助手。"

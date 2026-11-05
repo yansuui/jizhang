@@ -9,6 +9,7 @@ struct LoginView: View {
     @State private var showsPassword = false
     @State private var showsConnection = false
     @State private var loadedPreferences = false
+    @State private var showsRegistration = false
     @FocusState private var focusedField: Field?
 
     private enum Field: Hashable { case username, password, server }
@@ -88,6 +89,15 @@ struct LoginView: View {
                     .buttonBorderShape(.roundedRectangle(radius: 14))
                     .disabled(session.isBusy || username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || password.isEmpty)
 
+                    Button("邀请码注册") {
+                        focusedField = nil
+                        password = ""
+                        session.clearError()
+                        showsRegistration = true
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .disabled(session.isBusy)
+
                     if session.isRestoring {
                         Button("改用账号密码登录") { session.cancelRestore() }
                             .frame(maxWidth: .infinity, minHeight: 44)
@@ -135,6 +145,9 @@ struct LoginView: View {
         }
         .background(Color(uiColor: .systemGroupedBackground))
         .scrollDismissesKeyboard(.interactively)
+        .sheet(isPresented: $showsRegistration, onDismiss: { session.clearError() }) {
+            RegistrationView(session: session, serverAddress: serverAddress)
+        }
         .onAppear {
             guard !loadedPreferences else { return }
             loadedPreferences = true
