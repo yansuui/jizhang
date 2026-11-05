@@ -26,8 +26,35 @@ Downloaded real fixture screenshots were inspected for account/date controls, co
 expandable bill detail with refund action, and detailed assistant confirmation. The yellow
 test banner overlapping a navigation title belongs to the screenshot harness, not production UI.
 
-The final integration build and delivered IPA checksum are recorded below when available.
-The small final native adjustment hides internal concurrency tokens in human-facing previews.
+The final integration build and delivered IPA checksum are recorded below. The final
+native adjustment hides internal concurrency tokens in human-facing previews.
+
+## Final integration CI
+
+Code commit `139756f96aba1c0c7204425408a12469ecb8cae2` was pushed directly to original `main`.
+Backend/Android/container run https://github.com/yansuui/jizhang/actions/runs/41974544244
+succeeded in all three jobs: Linux repository quality gates and build, Android JVM tests/APK/lint,
+and actual production-image build plus isolated container lifecycle/complete-backup exercise.
+The iOS integration run https://github.com/yansuui/jizhang/actions/runs/41974544329
+also succeeded: **127 XCTest tests, zero failures**, Release arm64 build and packaging.
+
+Independent visual review covered the remaining seven exported screenshots: refund editor,
+large-text spending suggestions, compact and large/dark provider settings, conversation list,
+invitation management and registration. No confirmed layout defect was found. Offscreen content
+in the provider Form is scrollable; this is not evidence of real-device keyboard behavior.
+
+## Verified local delivery
+
+- Ready file: `clients/ios/build/delivery/Jizhang-iOS-complete-139756f.ipa`.
+- Size: **2,546,086 bytes**.
+- SHA-256: `8a04f154c0bc8cf2764d391133f48c0458a08e6fae4741285cf3200724515175`.
+- Exact source: `139756f96aba1c0c7204425408a12469ecb8cae2`; run **41974544329**.
+- Version **0.1.0**, build **5**, bundle `com.yansuu1.jizhang.ios`, minimum iOS **17.0**.
+- `download-ipa.ps1` validated successful run, SHA-256 and source metadata. Independent ZIP
+  inspection passed CRC checks, verified the iPhoneOS plist and arm64 Mach-O header, and
+  found no XCTest runtime in the Release app. The copied delivery file has the same hash.
+- This is an unsigned device IPA for local Sideloadly signing. No phone installation was
+  attempted; the user previously chose to connect the phone later.
 
 ## Acceptance boundaries
 

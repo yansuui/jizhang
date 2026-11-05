@@ -64,3 +64,37 @@ Implemented private per-user ledgers, original-owner migration, seven-day single
 ### Status
 
 [OK] **Completed**
+
+
+## Session 3: Complete iOS bills, four-purpose plans and assistant business tools
+
+**Date**: 2026-11-05
+**Task**: Complete iOS bills, four-purpose plans and assistant business tools
+**Branch**: `main`
+
+### Summary
+
+Implemented the six requested iOS gaps on original main; built and verified the final device IPA.
+
+### Main Changes
+
+- Restored compact bill details, linked refunds, entry and account/date filters; added allocation editors and explicit AI confirmations/history organization.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fb2f1cf` | (see git log) |
+| `139756f` | (see git log) |
+
+### Testing
+
+- [OK] 405 shared and 1235 server tests; lint/typecheck/build; GitHub backend/Android/container success; 127 native XCTest tests and final arm64 IPA verified.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Production server upgrade and live-provider/physical-phone acceptance remain separate; user deferred phone connection. Ready IPA and checksum in functional-verification.md.

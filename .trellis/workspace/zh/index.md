@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 2
+- **Total Sessions**: 3
 - **Last Active**: 2026-11-05
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~66 | Active |
+| `journal-1.md` | ~100 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 3 | 2026-11-05 | Complete iOS bills, four-purpose plans and assistant business tools | `fb2f1cf`, `139756f` | `main` |
 | 2 | 2026-11-05 | Invite-only accounts and native registration delivered | `351bcff`, `ebe9453` | `feat/ios-assistant` |
 | 1 | 2026-11-04 | Native iOS IPA ready; device connection deferred | `28c7331`, `cb7e98f`, `bc04ea6`, `7816ac5`, `e8734cc` | `feat/ios-assistant` |
 <!-- @@@/auto:session-history -->

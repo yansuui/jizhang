@@ -15,12 +15,12 @@
   "branch": "main",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "e8734cc4d073abc54e916e0bd36b6c0ae866a206",
+  "commit": "139756f96aba1c0c7204425408a12469ecb8cae2",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "IPA preparation complete: successful run 41819877293, 77 tests passed, arm64 device IPA and local checksum verified. Ready file clients/ios/build/delivery/Jizhang-iOS-0.1.0-build4.ipa. User explicitly deferred phone connection; keep task active for signed Keychain/login and physical device acceptance. Existing Sideloadly D:/Sideloadly/Sideloadly.exe v0.72; inspect device later instead of asking for the path again. See delivery.md.",
+  "notes": "Six-item functional continuation implemented directly on original yansuui/jizhang main (fb2f1cf,139756f). User confirmed existing four-purpose allocations. Full local gate passed:405 shared+1235 server tests; GitHub41974544244 backend/Android/container passed; iOS41974544329 passed127 tests and arm64 packaging. Verified ready IPA clients/ios/build/delivery/Jizhang-iOS-complete-139756f.ipa, SHA256 8a04f154c0bc8cf2764d391133f48c0458a08e6fae4741285cf3200724515175. See functional-verification.md and research capability matrix for exact coverage. New AI tools require server update; no production deploy/live-provider check claimed. User deferred phone connection; keep task active for signed Keychain/login and physical acceptance. Existing Sideloadly D:/Sideloadly/Sideloadly.exe v0.72; do not ask path again.",
   "meta": {}
 }

@@ -1,4 +1,12 @@
-# iOS IPA delivery — 2026-11-04
+# Current delivery — original repository/main
+
+The current 2026-11-05 functional-completion delivery is recorded in
+[functional-verification.md](./functional-verification.md). Its code is in
+`yansuui/jizhang` on `main`, including bill/refund editing, allocation controls and
+confirmed assistant business tools. Use that document's newest IPA/run rather than
+the historical first-delivery artifact below.
+
+# Historical first delivery — 2026-11-04
 
 ## Prepared artifact
 
