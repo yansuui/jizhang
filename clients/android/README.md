@@ -1,5 +1,7 @@
 # 记账 Android App：当前功能目录
 
+**2026-11-05 分配模板退役（服务端与 iOS 变更，Android 源码未改）：** 服务端停止把「分配模板」当作产品能力，新增迁移 022 把每个用户自建模板名折叠为同名账单标签（`template_tag_mappings` 仅作审计/回滚，`budget_templates`/`budget_allocations` 行一律保留，历史工资分配快照不受影响），预置的 `builtin-default-template` 刻意不折叠。`/api/v1/templates*` 仍按原契约工作（Android M02.01–M02.07 行为不变），但响应新增 `Deprecation: true`、`Link: </api/v1/tags>; rel="successor-version"` 头与列表里的 `deprecated: true` 字段；Android 忽略这些附加字段，不需要改代码，模板管理页继续可用但已属待移除状态。助理侧 `templates.read`/`template.create`/`template.update`/`template.default`/`template.delete` 已从工具白名单移除（A114 见下），历史整理卡片不再产生 `templateProposals`（A105/A106 见下），因此 §6.1 的“AI 还生成了 N 个预算模板建议”分支在服务端恒为 0、不会显示。同日修复 assistant 历史整理第二次回复必然失败的缺陷：`spending.preview`/`spending.resume` 改为后台启动并立即返回 `run`，需用 `spending.status` 轮询进度、`spending.card` 读取建议；此前它会 await 整段分批次分析，撞上单次生成 180 秒硬上限。**本节只记录服务端契约与 Android 的既有消费路径，Android 源码未修改、未重新编译、未真机验证；iOS 为本次主开发端。**
+
 **2026-11-05 助手业务工具局部源码复核：** 核对 A020/A021/A024、A072/A073/A077/A084/A087，新增 A107–A116 业务能力组，更新 §6.3/6.5、§9.3/10 的服务端工具及 Android 通用卡边界。工具沿用既有 v1 消息、确认卡、结果与 confirm/cancel 接口；本次没有新增 Android 页面或 HTTP 路由。Android 不按工具名限制通用卡确认，但复杂结果摘要、聊天中逐项选择和成功后的跨页面刷新仍有缺口，详见下文。这里只记录源码与契约核对；自动化门禁由本轮任务另行记录，不代表已接真实 Provider、真机安装或生产部署。其他章节审计日期和历史统计不变。
 
 **2026-11-05 多用户局部源码复核：** 仅复核认证/注册/邀请管理 P003–P013、P020/P031/P033、新增 P042–P045，以及 D023–D025 的个人备份边界和 A041/A056/A060 的账号所有权；其余章节审计日期不变。新增注册、身份解码、公开认证 Cookie、邀请码字段和稳定 ID 隔离的 JVM 测试源码。本机 Gradle 尝试因分发包独占锁等待超时而未进入测试，且未发现 Android SDK；本轮编译/测试/lint 以 GitHub CI 结果单独记录，**没有真机验收或部署证据**。
@@ -322,7 +324,9 @@
 | M01.10 | 分类/账户上移下移是调用move(dir=-1/+1)与相邻sort_order交换，再刷新；不是拖动排序；边界无相邻项时后端无动作。 |[ManageTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/ManageTab.kt)、[master-data-service.ts](../../packages/server/src/services/master-data-service.ts)|
 | M01.11 | 加载占位、初次错误/重试、空态与新建按钮；刷新/保存/删除时busy禁用控件；对话框错误保留草稿；没有未保存编辑放弃确认（可直接取消/关闭）。 |[ManageTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/ManageTab.kt)|
 
-### 4.10 M02 工资分配模板
+### 4.10 M02 工资分配模板（已退役，源码保留）
+
+> **2026-11-05 状态：产品方向已取消「分配模板」，模板语义并入账单标签。** 服务端保留表与 `/templates` 路由（已弃用标记），故以下 M02 条目描述的行为在 Android 源码中仍然成立、仍可操作；但该页面已列入移除计划，新功能不应再依赖模板。稳定 ID 全部保留，不回收、不复用。
 
 | ID | 当前能力与行为 | 证据 |
 |---|---|---|
@@ -380,7 +384,7 @@
 | 四账户理财计划 | GET/PUT `/financial-plan`、POST `/financial-plan/preview` | 三项严格整数分输入；独立settings保存一份当前方案，revision CAS/精确重试；目标与预测由shared计算；不写账本、不调用AI |
 | 基金配置 | GET/PUT `/api/v1/financial-funds/config` | 服务端配置带 revision；当前 Android 工资表单未接入此配置或新基金工资合同，不表示四用途 UI 已实现 |
 | 工资 | GET `/salaries`、`/:id`；POST；PATCH `/:id`；PUT `/:id/allocations`；DELETE `/:id` | Android 发旧模板 POST，当前服务端对尚未提交的旧请求返回 410；已提交的相同用户/键/原载荷仍可重放。新建基金工资须 `contractVersion: 1`、`expectedFundConfigRevision`、`operationId`，不接受模板/allocations；新基金工资编辑/删除须版本 1、`expectedGrantRevision` 和 `operationId`，旧 Android 未实现。旧 PUT 是模块分配而非基金 grant 写入。列表最多200，App无分页 |
-| 模板 | GET/POST `/templates`；PATCH/DELETE `/:id`；POST `/:id/default`、`/:id/apply-current` | API create支持isDefault，Android创建不提供默认开关而用列表单独设默认 |
+| 模板（已弃用） | GET/POST `/templates`；PATCH/DELETE `/:id`；POST `/:id/default`、`/:id/apply-current` | API create支持isDefault，Android创建不提供默认开关而用列表单独设默认。**2026-11-05：** 全部响应新增 `Deprecation: true` 与 `Link: </api/v1/tags>; rel="successor-version"` 头，列表另加 `deprecated: true`；状态码与其余字段不变，Android 忽略附加字段。迁移 022 已把用户自建模板名折叠为同名标签，预置默认模板不折叠 |
 | 周期设置 | GET/PUT `/settings`，cycleStartDay=null或1..28 | Android暴露在SettingsTab，由其他研究覆盖 |
 | 统计与分类下钻 | GET `/stats/window?kind=month\|last30&month?`、`/category-share?from&to&accountId?&categoryId?`、`/monthly-trend?months&endMonth?`、`/pool-trend` | window不传month默认服务端当前月；分类/明细使用同一个from/to及精确ID；响应expenseCount/totalCents与nullable账户/分类条件回显；趋势保留1..36服务端/3、6、12 Android；旧range/month-window仍兼容但统计页不再调用 |
 
@@ -599,7 +603,7 @@
 | A036 | 消息追加位置有 motion.quickMillis 动画；“跳到最新”适配 reduced；无动画模拟账务变化 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)|
 | A037 | 归档会使服务端 pending actions expired；无归档列表、取消归档、删除单消息、编辑旧消息、重命名对话 API/UI |[assistant-conversation-service.ts](../../packages/server/src/services/assistant-conversation-service.ts)；[assistant.ts](../../packages/server/src/routes/assistant.ts):API 清单|
 | A105 | 智能整理旧账工作区：AI 助手欢迎卡或右上更多菜单进入；本月/上月/近3个月/今年/自定义起止日期；服务端本地日历含首尾日、单次最多 500 笔，超限明确拒绝；带 UUID clientRequestId 与 background: true 异步启动，显式开始后才调用 Provider，支持相同请求幂等重放；真实读取服务端阶段（preparing/analysing/validating/publishing/ready/failed）、批次 X/Y、已处理笔数、已校验建议数（明确标注未应用）与服务端事件时间线，失败展示安全结构字段诊断；完整分析全部批次后才发布审查卡片，失败无部分结果；逐项显示账单日期/金额/收支类型、分类或标签前后值、理由、置信度；点击分类/标签/备注建议卡片复用 L03 居中账单详情弹窗，按完整 transactionId 读取原备注、分类、账户、日期、金额及既有退款关联展示，详情只读且隐藏编辑/退款/删除；复选框独立勾选，关闭详情保留审查列表滚动与已选项；分类/标签动作默认最多选 100 项，备注建议和新建分类建议只展示，预算模板建议不应用；一次明确确认只提交所选项；观察15分钟超时或中断后保留任务编号通过 GET 继续查看，不盲目重复发起；2026-10-23：新任务每批10笔，Provider超时后可明确点击“继续未完成批次（可能产生 AI 调用费用）”，复用私有已校验断点，不重复请求已提交成功批次；同任务最多3次尝试、创建后24小时内可继续，账单/分类/标签/模板变化拒绝继续；旧失败任务无安全断点时须重新分析；只有全部批次成功才生成卡片 |[AssistantOrganizationWorkspace.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantOrganizationWorkspace.kt)；[AssistantOrganizationModels.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantOrganizationModels.kt)；[AssistantOrganizationState.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantOrganizationState.kt)；[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)；[ai-spending-organization-service.ts](../../packages/server/src/services/ai-spending-organization-service.ts)|
-| A106 | 整理结果与条件撤销：成功显示 operationId 与已应用动作数；可撤销本次分类/标签改动；服务端条件校验失败时显示冲突且不部分恢复；未知网络结果允许显式重试同一应用/撤销请求，服务端按相同动作幂等处理；不修改原备注、金额、账户、日期、退款事实；模板建议不进入应用 |[AssistantOrganizationWorkspace.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantOrganizationWorkspace.kt)；[OrganizationRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/OrganizationRepository.kt)；[ai-spending-organization-service.ts](../../packages/server/src/services/ai-spending-organization-service.ts)；[ai.ts](../../packages/server/src/routes/ai.ts)|
+| A106 | 整理结果与条件撤销：成功显示 operationId 与已应用动作数；可撤销本次分类/标签改动；服务端条件校验失败时显示冲突且不部分恢复；未知网络结果允许显式重试同一应用/撤销请求，服务端按相同动作幂等处理；不修改原备注、金额、账户、日期、退款事实；模板建议不进入应用 |[AssistantOrganizationWorkspace.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantOrganizationWorkspace.kt)；[OrganizationRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/OrganizationRepository.kt)；[ai-spending-organization-service.ts](../../packages/server/src/services/ai-spending-organization-service.ts)；[ai.ts](../../packages/server/src/routes/ai.ts) **2026-11-05：** 助理工具侧 `spending.preview`/`spending.resume` 改为后台启动并立即返回 `run`（需 `spending.status` 轮询），Android 直连 `organization-runs` 的既有异步路径不受影响。 |
 
 ### 6.2 Provider 设置（A038–A062）
 
@@ -660,7 +664,7 @@
 | A081 | account.create | 创建账户、type、initialBalanceCents |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A082 | account.update | 修改指定账户 changes |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A083 | account.delete | 账户软删除 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
-| A084 | budget.template.apply（已移除，2026-11-05复核） | 前序canonical资金迁移已退役新建旧分类预算分配；当前白名单无此工具，不恢复“将模板应用到当前周期”。保留稳定ID，模板本身CRUD见A114。 |[assistant-types.ts](../../packages/server/src/services/assistant-types.ts)、[salary-service.ts](../../packages/server/src/services/salary-service.ts)|
+| A084 | budget.template.apply（已移除，2026-11-05复核） | 前序canonical资金迁移已退役新建旧分类预算分配；当前白名单无此工具，不恢复“将模板应用到当前周期”。保留稳定ID；模板本身（路由已弃用）见 §4.10 M02。 |[assistant-types.ts](../../packages/server/src/services/assistant-types.ts)、[salary-service.ts](../../packages/server/src/services/salary-service.ts)|
 | A085 | backup.create | 服务端创建数据库备份 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A086 | 平台账单确定性预览+配置Provider真实分析+人工审核；显式选择/分类ID/备注覆盖确认入账，原件摘要与当前账本/分类重验；事务/重复确认保护。 | 账单干跑预览；确认后按所选行/分类覆盖导入；原件摘要校验 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
 | A087 | organization.apply | 必须显式提供非空且不重复的actionIds；重验冻结previewHash及确定性事实，确认不再次调用Provider；确认后才应用并写入审计，不再默认选择全部ready动作。 |[assistant-tool-registry.ts](../../packages/server/src/services/assistant-tool-registry.ts)|
@@ -683,7 +687,7 @@
 | A111 | `funds.read`、`salaries.read` | `funds.configure`、`funds.review`、`salary.update`、`salary.delete`；canonical salary.create见A077 | funds view为summary/config/capabilities/issues；ratiosBps四项合计10000，配置带expectedRevision/timeZone且只影响未来分配；review带grantId（可选）、来源salaryId/expectedSourceToken；工资修改/删除带expectedGrantRevision，不借旧模板重建分配。 |
 | A112 | `plan.read`、`plan.preview`、`goals.read` | `plan.save`、`goals.opening`、`goals.create`、`goals.update`、`goals.delete` | 独立计划输入monthlyIncomeCents/essentialMonthlyCents/reserveBalanceCents，保存带revision；目标reserve/investment的期初和deposit/withdrawal进度使用expectedRevision/operationId，支持时间窗/cursor，始终与真实账单分开。 |
 | A113 | `items.read` | `item.create`、`item.update`、`item.sell`、`item.retire`、`item.delete` | 列表、概览、id详情和q/category/status/sort分页；物品名/购入日期/可空价格/状态/备注及购入、售出账单关联使用原域校验。物品登记或状态变化不会自动创建收入/支出；照片上传/删除和抠图任务不在该工具组内。 |
-| A114 | `templates.read`、`settings.read` | `template.create`、`template.update`、`template.default`、`template.delete`、`settings.cycle` | 模板name/modules(categoryId/ratio 0–1)/isDefault；周期起始日1–28或null。模板维护与退役的“写入旧分类预算分配”分开；不恢复A084。主题/密码/Provider密钥不是此设置接口。 |
+| A114 | `settings.read`（`templates.read` 已于 2026-11-05 随分配模板退役移除） | `settings.cycle`（`template.create`/`template.update`/`template.default`/`template.delete` 同日移除） | 周期起始日1–28或null。**2026-11-05 变更：** 助理不再提供任何模板工具，`ASSISTANT_TOOL_NAMES` 同步删除这 5 个名字（保留名字但不注册会让 `catalog()` 抛错）；因此 §6.1 里依赖模板建议的分支恒为空。`/api/v1/templates` HTTP 路由仍存在但已弃用，见 §4.10 与 §11 模板行。不恢复 A084 的“应用到当前周期”。 |
 | A115 | `stats.query`、`planning.read`、`planning.preview` | `planning.configure`、`planning.mapping`、`planning.confirm`、`planning.reconcile`、`planning.purpose`、`planning.refund-splits` | 统计复用服务器时间窗/分类毛支出/退款收入/月趋势；旧执行计划按view读取来源/周期/修订/事实/用途/退款/操作。写入保留源hash、revision与服务端计算；单次规则/来源/拆分最多100项；已有规则超过100项时拒绝整组替换，不能静默丢弃其余规则。旧域已退役写入继续由服务端拒绝。 |
 | A116 | `spending.preview`、`spending.card`、`spending.status`、`spending.resume`、`spending.evidence` | `spending.apply`、`spending.undo` | startDate/endDate为YYYY-MM-DD，完整分析最多500笔；resume仅明确要求时继续失败任务，可能再次产生Provider调用。card建议分页最多100项并返回totalActions/offset/limit/hasMore；coverage为计数及idsOmitted，完整分类金额证据改用evidence分页。apply要求runId及1–100个明确、唯一、有效actionIds，允许非note的分类/标签/新分类及模板建议，禁止默认全选；note只参考。undo遇后续变更拒绝覆盖。Android A105–A106独立整理UI仍只选择分类/标签，其模板与新分类建议不自动应用；聊天没有新增逐项勾选/证据分页控件。 |
 

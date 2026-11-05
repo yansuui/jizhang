@@ -2,10 +2,14 @@ import Foundation
 import SwiftUI
 
 enum AssistantSpendingSelection {
+    /// Only actions the server can still apply. `templateProposals` is deliberately excluded:
+    /// the allocation-template surface is retired (migration 022 folds template names into
+    /// tags), so an old or cached card that still carries proposals must not become a
+    /// selectable action — the server would reject it and the user could not tell why.
     static func actions(_ card: JSONValue) -> [JSONValue] {
         let actions = (card["actions"].arrayValue ?? []).filter {
             ["category", "category-suggestion", "tag"].contains($0["kind"].stringValue ?? "")
-        } + (card["templateProposals"].arrayValue ?? [])
+        }
         var seen = Set<String>()
         return actions.filter {
             guard let id = $0["actionId"].stringValue, !id.isEmpty else { return false }
@@ -75,7 +79,6 @@ struct AssistantSpendingReview: View {
     }
 
     private func title(_ action: JSONValue, index: Int) -> String {
-        if let template = action["templateName"].stringValue { return "分配模板：\(template)" }
         let date = action["transactionDateLabel"].stringValue ?? "第 \(index + 1) 项"
         let amount = action["transactionAmountCents"].intValue.map(LedgerFormat.money) ?? ""
         let category = action["afterCategoryName"].stringValue ?? action["proposedCategoryName"].stringValue

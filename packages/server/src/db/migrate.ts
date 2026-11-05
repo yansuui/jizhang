@@ -35,6 +35,7 @@ import { MIGRATION_018_AI_ORGANIZATION_CHECKPOINTS } from './migrations/018-ai-o
 import { MIGRATION_019_FINANCIAL_EXECUTION } from './migrations/019-financial-execution.js';
 import { MIGRATION_020_MANUAL_GOAL_PROGRESS } from './migrations/020-manual-goal-progress.js';
 import { MIGRATION_021_FOUR_PURPOSE_FUNDS, backfillFourPurposeFunds } from './migrations/021-four-purpose-funds.js';
+import { MIGRATION_022_TEMPLATE_TAGS, backfillTemplateTags } from './migrations/022-template-tags.js';
 
 export interface Migration {
   readonly version: number;
@@ -69,6 +70,9 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 19, name: 'financial-execution', sql: MIGRATION_019_FINANCIAL_EXECUTION },
   { version: 20, name: 'manual-goal-progress', sql: MIGRATION_020_MANUAL_GOAL_PROGRESS },
   { version: 21, name: 'four-purpose-funds', sql: MIGRATION_021_FOUR_PURPOSE_FUNDS, run: backfillFourPurposeFunds },
+  // 22 retires the allocation-template surface without deleting its rows: each template
+  // name is folded into the tag catalog so the meaning survives as a bill label.
+  { version: 22, name: 'template-tags', sql: MIGRATION_022_TEMPLATE_TAGS, run: backfillTemplateTags },
 ];
 
 interface AppliedRow {

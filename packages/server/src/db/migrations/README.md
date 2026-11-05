@@ -17,7 +17,14 @@ Migrations run automatically on server start, before the app accepts traffic.
 4. **`CREATE TABLE` / `CREATE INDEX` only, unless you have a reason.** SQLite cannot
    add a constraint to an existing table; anything beyond `ADD COLUMN` needs the
    documented 12-step table rebuild.
-5. **Never put seed data here.** Preset categories, the default account and the
+5. **Retiring a feature is a migration, not a delete.** Migration 022 retires allocation
+   templates by folding their names into `tags` and leaving every `budget_templates` /
+   `budget_allocations` row intact: shipped clients still call the deprecated route, and
+   historical salary allocations must stay readable. When a surface is removed, add an
+   additive migration that preserves the data and records an audit mapping, and mark the
+   route deprecated instead of returning 4xx to clients that are already installed.
+   See `docs/migrations/022-template-to-tag.md`.
+6. **Never put seed data here.** Preset categories, the default account and the
    default template live in `packages/shared/src/seed-data.ts` and are applied by
    `seed.ts`, which is idempotent and safe to run on every boot.
 

@@ -56,7 +56,10 @@ export const ASSISTANT_TOOL_NAMES = [
   'funds.read', 'funds.configure', 'funds.review', 'salaries.read', 'salary.create', 'salary.update', 'salary.delete',
   'plan.read', 'plan.preview', 'plan.save', 'goals.read', 'goals.opening', 'goals.create', 'goals.update', 'goals.delete',
   'items.read', 'item.create', 'item.update', 'item.sell', 'item.retire', 'item.delete',
-  'templates.read', 'template.create', 'template.update', 'template.default', 'template.delete', 'settings.read', 'settings.cycle',
+    // Template tools were removed with the allocation-template surface (migration 022 folds
+// template names into tags). The names are dropped here rather than kept as dead entries,
+// because `catalog()` throws for an allowlisted name with no registered tool.
+  'settings.read', 'settings.cycle',
   'stats.query', 'planning.read', 'planning.configure', 'planning.mapping', 'planning.preview', 'planning.confirm',
   'planning.reconcile', 'planning.purpose', 'planning.refund-splits',
   'spending.preview', 'spending.card', 'spending.status', 'spending.evidence', 'spending.resume', 'spending.apply', 'spending.undo',

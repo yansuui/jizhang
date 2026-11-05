@@ -56,7 +56,11 @@ function rows(table: string) { return db.prepare(`SELECT * FROM ${table} ORDER B
 describe('four-purpose historical migration', () => {
   it('verifiedLegacyGroupKeepsAggregateTargets and reruns hook twice without duplicates', () => {
     group();
-    expect(migrate().applied).toEqual([21]);
+    // Derived from MIGRATIONS: the property is "everything above schema 20 runs", so
+    // a later migration must not force an edit here.
+    expect(migrate().applied).toEqual(
+      MIGRATIONS.filter((m) => m.version > 20).map((m) => m.version),
+    );
     expect(migrate().applied).toEqual([]);
     db.transaction(() => backfillFourPurposeFunds(db))();
     db.transaction(() => backfillFourPurposeFunds(db))();

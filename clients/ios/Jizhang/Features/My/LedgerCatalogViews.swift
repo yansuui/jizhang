@@ -19,9 +19,10 @@ import Combine
 @MainActor struct LedgerTagsView: View {
     let api: APIClient
     var body: some View {
-        LedgerReadList(api: api, title: "标签", path: "/tags", needsMetadata: false) { (tag: LedgerTag, _) in
+        LedgerReadList(api: api, title: "标签", path: "/tags", needsMetadata: false,
+                       footer: "标签就是原先「分配模板」想表达的记录分类：在账单里用逗号分隔填写即可复用，点标签可查看关联账单。") { (tag: LedgerTag, _) in
             NavigationLink { BillsView(api: api, initialQuery: LedgerBillQuery(tag: tag.name)) } label: {
-                LedgerCatalogRow(title: tag.name, subtitle: "关联账单", symbol: "tag", detail: "\(tag.count) 笔")
+                LedgerCatalogRow(title: tag.name, subtitle: "记录标签", symbol: "tag", detail: "\(tag.count) 笔")
             }
         }
     }
@@ -94,31 +95,6 @@ import Combine
             }
     }
     private func load() async { await resource.load { try await api.request("/salaries/" + LedgerURL.segment(salaryID)) } }
-}
-
-@MainActor struct LedgerTemplatesView: View {
-    let api: APIClient
-    var body: some View {
-        LedgerReadList(api: api, title: "分配模板", path: "/templates", footer: "这里是旧分类分配模板。四用途资金的当前比例请在“计划”中查看。") { (template: LedgerTemplate, metadata) in
-            NavigationLink {
-                LedgerLiveDetail(api: api, initial: template, metadata: metadata, source: .list("/templates")) { template, metadata in
-                    List {
-                        Section {
-                            LedgerFieldRow(title: "名称", value: template.name)
-                            LedgerFieldRow(title: "默认模板", value: template.isDefault ? "是" : "否")
-                        }
-                        Section("分类比例") {
-                            ForEach(template.modules) { module in
-                                LedgerFieldRow(title: metadata.categoryName(module.categoryId), value: module.ratio.formatted(.percent.precision(.fractionLength(0...2))))
-                            }
-                        }
-                    }.navigationTitle(template.name).navigationBarTitleDisplayMode(.inline)
-                }
-            } label: {
-                LedgerCatalogRow(title: template.name, subtitle: "\(template.modules.count) 个分类" + (template.isDefault ? " · 默认模板" : ""), symbol: "square.stack.3d.up")
-            }
-        }
-    }
 }
 
 @MainActor struct LedgerRecurringView: View {

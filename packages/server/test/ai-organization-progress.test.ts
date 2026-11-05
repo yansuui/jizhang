@@ -156,7 +156,12 @@ describe('organization durable progress lifecycle', () => {
       runMigrations(db, null, MIGRATIONS.filter((m) => m.version <= 16));
       db.prepare(`INSERT INTO ai_analysis_runs (id,status,start_date,end_date,eligible_count,created_at,updated_at)
         VALUES ('history','ready','2026-08-01','2026-08-31',0,1,1)`).run();
-      expect(runMigrations(db, null).applied).toEqual([17, 18, 19, 20, 21]);
+      // Every migration above the cutoff applies, and nothing below it is repeated.
+      // Derived from MIGRATIONS so adding a later migration does not require editing
+      // this assertion — the property under test is the cutoff, not a fixed list.
+      expect(runMigrations(db, null).applied).toEqual(
+        MIGRATIONS.filter((m) => m.version > 16).map((m) => m.version),
+      );
       expect(runMigrations(db, null).applied).toEqual([]);
       const service = new AiSpendingOrganizationService(db, {} as AiConfigService, {} as AiProviderService);
       expect(service.getRun('history').progress).toBeNull();

@@ -311,6 +311,39 @@ final class LedgerBillEditingTests: XCTestCase {
         }
     }
 
+    /// The bill card is a centred modal overlay now (Android-parity), not a system sheet.
+    /// This renders it for visual review against `TransactionDetailScreen.kt`.
+    @MainActor func testCentredBillDetailOverlayPreview() async throws {
+        let ready = expectation(description: "Bill detail loaded")
+        BillTestProtocol.configure { transport in transport.respond(Self.row()); ready.fulfill() }
+        let api = try client(); defer { api.invalidate() }
+        try await capture("bill-detail-centred-overlay", ready: ready) {
+            ZStack {
+                Color(uiColor: .systemGroupedBackground)
+                LedgerBillDetailOverlay(api: api, transactionID: "expense", metadata: .empty, onDismiss: {})
+                    .ignoresSafeArea()
+            }
+        }
+    }
+
+    /// The daily totals row is server data. It must render the three authoritative figures,
+    /// and must show placeholders rather than inventing numbers when a summary is missing.
+    @MainActor func testDaySummaryHeaderPreview() async throws {
+        let ready = expectation(description: "Header rendered")
+        ready.fulfill()
+        try await capture("bill-day-summary-header", ready: ready) {
+            VStack(alignment: .leading, spacing: 12) {
+                LedgerDaySummaryHeader(day: "2026-11-05",
+                                       summary: LedgerDaySummary(day: "2026-11-05", expenseCents: 12_800,
+                                                                incomeCents: 300_000, count: 4))
+                LedgerDaySummaryHeader(day: "2026-11-04", summary: nil)
+                LedgerDaySummaryHeader(day: "2026-11-03", summary: nil, summaryAvailable: false)
+                Spacer()
+            }
+            .padding()
+        }
+    }
+
     @MainActor func testAccountAndDateFiltersWithLargeTextPreview() async throws {
         let ready = expectation(description: "Bill list and metadata loaded")
         ready.expectedFulfillmentCount = 3

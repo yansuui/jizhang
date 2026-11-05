@@ -38,4 +38,34 @@ enum LedgerBillDates {
         let bounds = month(containing: Date(timeIntervalSince1970: Double(from) / 1_000))
         return bounds.from == from && bounds.to == to
     }
+
+    /// The daily-summary endpoint only groups one calendar month (maximum 32 days).
+    static let maximumSummarySpan: Int64 = 32 * 86_400_000
+
+    /// IANA name required by `GET /transactions/daily-summary`.
+    /// `Calendar.timeZone.identifier` is used directly: a fixed offset such as `+08:00`
+    /// is rejected by the server, and this client never converts one into a guessed zone.
+    static var summaryTimeZone: String { calendar.timeZone.identifier }
+
+    /// The exact `[from, to)` window the server may summarise, or `nil` when this query
+    /// cannot have authoritative daily totals (all dates, a custom range or more than 32 days).
+    static func summaryScope(_ query: LedgerBillQuery) -> (from: Int64, to: Int64)? {
+        guard let from = query.from, let to = query.to,
+              from < to, to - from <= maximumSummarySpan,
+              isWholeMonth(query) else { return nil }
+        return (from, to)
+    }
+
+    /// Shown instead of per-day totals when the current filter cannot be summarised.
+    static let dailySummaryHint = "选择整月后可查看每日合计。"
+
+    /// A brand-new bills screen starts on the current month, while an explicit caller query
+    /// (account, category, tag) keeps its own date selection unchanged.
+    static func monthQuery(containing date: Date) -> LedgerBillQuery {
+        var query = LedgerBillQuery()
+        let bounds = month(containing: date)
+        query.from = bounds.from
+        query.to = bounds.to
+        return query
+    }
 }

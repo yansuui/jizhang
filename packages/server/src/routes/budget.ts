@@ -9,12 +9,12 @@ import { createRouteServices, type TenantContextManager } from '../tenancy/conte
  *   PATCH  /api/v1/salaries/:id        edit the record
  *   PUT    /api/v1/salaries/:id/allocations  replace the snapshot
  *   DELETE /api/v1/salaries/:id        soft delete the record AND its allocation
- *   GET    /api/v1/templates           list
- *   POST   /api/v1/templates           create
- *   PATCH  /api/v1/templates/:id       edit
- *   DELETE /api/v1/templates/:id       soft delete (never the default)
- *   POST   /api/v1/templates/:id/default  make it the only default
- *   POST   /api/v1/templates/:id/apply-current  apply to the newest cycle
+ *   GET    /api/v1/templates           list              (deprecated, see below)
+ *   POST   /api/v1/templates           create            (deprecated)
+ *   PATCH  /api/v1/templates/:id       edit              (deprecated)
+ *   DELETE /api/v1/templates/:id       soft delete       (deprecated, never the default)
+ *   POST   /api/v1/templates/:id/default  make it the only default   (deprecated)
+ *   POST   /api/v1/templates/:id/apply-current  apply to the newest cycle  (deprecated)
  *   GET/PUT /api/v1/settings           cycle start day
  *
  *   GET    /api/v1/financial-plan          the saved four-purpose plan (or null)
@@ -158,10 +158,27 @@ export async function registerBudgetRoutes(
     return reply.status(204).send();
   });
 
-  // ── templates ──────────────────────────────────────────────────────────────
+  // ── templates (DEPRECATED) ─────────────────────────────────────────────────
+  //
+  // The allocation-template surface is retired in favour of ordinary bill tags:
+  // migration 022 folds every template name into `tags`, and the iOS client no
+  // longer exposes an entry point. These routes keep their exact old contract
+  // (same paths, methods, status codes, payloads) because Android and Harmony
+  // builds already installed on devices still call them; breaking them would
+  // strand those users mid-session rather than migrate them.
+  //
+  // A route response stays byte-compatible apart from one additive header, and
+  // the deprecated flag is also exposed on the list payload. Remove the routes
+  // only once no shipped client references them.
+  const deprecated = (reply: FastifyReply): void => {
+    reply.header('Deprecation', 'true');
+    reply.header('Link', '</api/v1/tags>; rel="successor-version"');
+  };
+
   app.get('/api/v1/templates', async (_request: FastifyRequest, reply: FastifyReply) => {
       const { templates } = getServices(_request);
-    return reply.send({ items: templates.list() });
+    deprecated(reply);
+    return reply.send({ items: templates.list(), deprecated: true });
   });
 
   app.post('/api/v1/templates', async (request: FastifyRequest, reply: FastifyReply) => {
@@ -172,6 +189,7 @@ export async function registerBudgetRoutes(
       Array.isArray(body['modules']) ? (body['modules'] as never) : [],
       body['isDefault'] === true,
     );
+    deprecated(reply);
     return reply.status(201).send(created);
   });
 
@@ -182,12 +200,14 @@ export async function registerBudgetRoutes(
       ...(body['name'] === undefined ? {} : { name: String(body['name']) }),
       ...(Array.isArray(body['modules']) ? { modules: body['modules'] as never } : {}),
     });
+    deprecated(reply);
     return reply.send(updated);
   });
 
   app.delete('/api/v1/templates/:id', async (request: FastifyRequest, reply: FastifyReply) => {
       const { templates } = getServices(request);
     templates.softDelete(requireId(request));
+    deprecated(reply);
     return reply.status(204).send();
   });
 
@@ -195,6 +215,7 @@ export async function registerBudgetRoutes(
     '/api/v1/templates/:id/default',
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { templates } = getServices(request);
+      deprecated(reply);
       return reply.send(templates.setDefault(requireId(request)));
     },
   );
@@ -203,6 +224,7 @@ export async function registerBudgetRoutes(
     '/api/v1/templates/:id/apply-current',
     async (request: FastifyRequest, reply: FastifyReply) => {
       const { salaries } = getServices(request);
+      deprecated(reply);
       return reply.send(salaries.applyTemplateToCurrentCycle(requireId(request)));
     },
   );

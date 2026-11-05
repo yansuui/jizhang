@@ -10,12 +10,7 @@
  * facts; apply revalidates by id against the server-owned run snapshot.
  */
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  RATIO_SUM_TOLERANCE,
-  expenseContribution,
-  templateRatioSum,
-  type Transaction,
-} from '@jizhang/shared';
+import { expenseContribution, type Transaction } from '@jizhang/shared';
 import type { Db } from '../db/index.js';
 import { AiConfigService } from './ai-config-service.js';
 import { AiProviderService } from './ai-provider-service.js';
@@ -30,7 +25,6 @@ import {
   AiSpendingRunsInputError,
 } from './ai-types.js';
 import { normaliseTags, parseTagsJson, serialiseTags } from './tags.js';
-import { validateModules } from './template-service.js';
 import { TagCatalogService } from './tag-catalog-service.js';
 
 /** Provisional cap/batch calibrated synthetically; NOT production-accepted numbers. */
@@ -101,29 +95,12 @@ const RESPONSE_SCHEMA: Record<string, unknown> = {
       },
     },
     templateProposals: {
+      // Deprecated and ignored. The allocation-template surface is retired (migration 022
+      // folds template names into tags), so the model is not asked for template advice and
+      // the schema keeps the member only so a provider replaying an older prompt shape
+      // still validates. Nothing below reads it back.
       type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          kind: { type: 'string', enum: ['new', 'update'] },
-          templateId: { type: ['string', 'null'] },
-          templateName: { type: 'string' },
-          modules: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                categoryId: { type: 'string' },
-                ratio: { type: 'number', minimum: 0 },
-              },
-              required: ['categoryId', 'ratio'],
-            },
-          },
-          reason: { type: 'string' },
-          confidence: { type: 'number', minimum: 0, maximum: 1 },
-        },
-        required: ['kind', 'templateId', 'templateName', 'modules', 'reason', 'confidence'],
-      },
+      items: { type: 'object' },
     },
   },
   required: ['reclassifications', 'tagSuggestions', 'noteSuggestions', 'newCategories', 'templateProposals'],
@@ -230,8 +207,13 @@ export interface SpendingApplyResult {
 interface OperationProjection {
   readonly transactions: readonly { readonly id: string; readonly category_id: string; readonly tags_json: string }[];
   readonly createdCategoryIds: readonly string[];
-  readonly createdTemplateIds: readonly string[];
-  readonly templateUpdates: readonly { readonly id: string; readonly before_modules: string }[];
+  /**
+   * Template projections are still *read* here because operations applied before the
+   * template surface was retired recorded them, and an undo of such an operation must be
+   * able to reverse it. New operations never populate them.
+   */
+  readonly createdTemplateIds?: readonly string[];
+  readonly templateUpdates?: readonly { readonly id: string; readonly before_modules: string }[];
 }
 
 interface OperationRow {
@@ -490,7 +472,7 @@ export class AiSpendingOrganizationService {
         this.sourceHash(startMs, endMsExclusive), BATCH_SIZE, runId);
     this.checkpoint(runId, 'preparing', 0, 0, 0, `已读取所选区间 ${eligible.length} 笔账单，正在准备分类与标签分析。`);
     if (eligible.length === 0) {
-      this.finishReady(runId, coverage, [], []);
+      this.finishReady(runId, coverage, []);
       this.checkpoint(runId, 'ready', 0, 0, 0, '所选区间没有账单，无需调用 AI。');
       return this.getRun(runId);
     }
@@ -566,12 +548,14 @@ export class AiSpendingOrganizationService {
       const secret = this.config.getSecretOrThrow(stored);
       const categories = this.loadCategories();
       const categoryNames = new Map(categories.map((category) => [category.id, category.name]));
-      const templates = this.loadTemplates();
       const initial = this.runRow(runId);
       const saved = this.readCheckpoint(initial);
       this.assertSource(initial, saved);
       const suggestions: SpendingSuggestion[] = [...saved.suggestions];
-      const templateProposals: TemplateProposal[] = [...saved.templateProposals];
+      // `templateProposals` stays on the checkpoint/row shape for older runs, but new
+      // batches no longer produce any: allocation templates are retired in favour of
+      // tags, so proposing a template would suggest an action the product cannot honour.
+      const templateProposals: TemplateProposal[] = [];
       const deadline = performance.now() + ATTEMPT_BUDGET_MS;
 
       for (let offset = saved.completedCount; offset < eligible.length; offset += saved.batchSize) {
@@ -599,9 +583,7 @@ export class AiSpendingOrganizationService {
           `第 ${currentBatch} 批 AI 已返回，正在校验结构、账单编号与分类约束。`);
         this.assertResponseShape(raw);
         const batchSuggestions = this.normalize(raw, batch, categories);
-        const batchProposals = this.normalizeTemplateProposals(raw, categories, templates);
         suggestions.push(...batchSuggestions);
-        templateProposals.push(...batchProposals);
         const committed: SpendingCheckpoint = { ...saved, completedCount: offset + batch.length, suggestions, templateProposals };
         const commit = this.db.transaction(() => {
           this.db.prepare('UPDATE ai_analysis_runs SET completed_count = ?, checkpoint_json = ?, updated_at = ? WHERE id = ?')
@@ -620,7 +602,7 @@ export class AiSpendingOrganizationService {
       const publish = this.db.transaction(() => {
         const current = this.runRow(runId);
         this.assertSource(current, this.readCheckpoint(current));
-        this.finishReady(runId, coverage, suggestions, templateProposals);
+        this.finishReady(runId, coverage, suggestions);
         this.db.prepare('UPDATE ai_analysis_runs SET checkpoint_json = ? WHERE id = ?')
           .run(JSON.stringify({ ...saved, completedCount: eligible.length, suggestions: [], templateProposals: [] }), runId);
         this.checkpoint(runId, 'ready', currentBatch, eligible.length, suggestions.length + templateProposals.length,
@@ -787,7 +769,9 @@ export class AiSpendingOrganizationService {
       coverage: { eligibleIds: coverage.eligibleIds },
       evidenceByCategory: coverage.evidenceByCategory,
       actions: suggestions,
-      templateProposals: this.parseTemplateProposals(row.template_proposals_json),
+      // Always empty: the template surface is retired. Older runs may still carry stored
+      // proposals; returning them would present an action the client can no longer apply.
+      templateProposals: [],
       noteSuggestions: suggestions
         .filter((suggestion) => suggestion.kind === 'note' && suggestion.transactionId !== null)
         .map((suggestion) => ({
@@ -810,25 +794,21 @@ export class AiSpendingOrganizationService {
     }
     const ids = this.parseActionIds(actionIds);
     const suggestions = this.parseSuggestions(row.suggestions_json);
-    const templateProposals = this.parseTemplateProposals(row.template_proposals_json);
     const coverage = this.parseCoverage(row.coverage_json);
 
+    // Template proposals are no longer a thing to apply. A caller that still sends one of
+    // those ids (an older client, or a card cached from a run that produced them) simply
+    // selects nothing, so the request fails with the ordinary "nothing to apply" error
+    // instead of silently creating a budget template behind the user's back.
     const suggestionById = new Map(suggestions.map((suggestion) => [suggestion.actionId, suggestion]));
-    const proposalById = new Map(templateProposals.map((proposal) => [proposal.actionId, proposal]));
     const selectedSuggestions = ids
       .map((id) => suggestionById.get(id))
       .filter((suggestion): suggestion is SpendingSuggestion => suggestion !== undefined && suggestion.kind !== 'note');
-    const selectedProposals = ids
-      .map((id) => proposalById.get(id))
-      .filter((proposal): proposal is TemplateProposal => proposal !== undefined);
 
-    if (selectedSuggestions.length === 0 && selectedProposals.length === 0) {
+    if (selectedSuggestions.length === 0) {
       throw new AiSpendingRunsInputError('没有可应用的动作。');
     }
-    const appliedIds = [
-      ...selectedSuggestions.map((suggestion) => suggestion.actionId),
-      ...selectedProposals.map((proposal) => proposal.actionId),
-    ];
+    const appliedIds = selectedSuggestions.map((suggestion) => suggestion.actionId);
 
     const fingerprint = hashJson({ runId, actionIds: [...appliedIds].sort() });
     const existing = this.db
@@ -865,8 +845,6 @@ export class AiSpendingOrganizationService {
 
     const afterTransactions: { id: string; category_id: string; tags_json: string }[] = [];
     const createdCategoryIds: string[] = [];
-    const createdTemplateIds: string[] = [];
-    const templateUpdates: { id: string; before_modules: string; after_modules: string }[] = [];
     const catalog = new TagCatalogService(this.db, this.now);
 
     const run = this.db.transaction((): string => {
@@ -900,39 +878,13 @@ export class AiSpendingOrganizationService {
         }
       }
 
-      for (const proposal of selectedProposals) {
-        validateModules(proposal.modules, {
-          assertCategoryUsable: (categoryId) => this.assertCategoryUsable(categoryId),
-        });
-        if (proposal.kind === 'update') {
-          const current = this.db
-            .prepare('SELECT modules_json FROM budget_templates WHERE id = ? AND deleted = 0')
-            .get(proposal.templateId as string) as { modules_json: string } | undefined;
-          if (current === undefined) throw new AiOrganizationConflictError('模板已不存在或已删除。');
-          const json = JSON.stringify(proposal.modules);
-          this.db.prepare('UPDATE budget_templates SET modules_json = ?, updated_at = ? WHERE id = ?')
-            .run(json, nowMs, proposal.templateId);
-          templateUpdates.push({ id: proposal.templateId as string, before_modules: current.modules_json, after_modules: json });
-        } else {
-          const id = randomUUID();
-          this.db
-            .prepare('INSERT INTO budget_templates (id, name, is_default, modules_json, deleted, updated_at) VALUES (?, ?, 0, ?, 0, ?)')
-            .run(id, proposal.templateName, JSON.stringify(proposal.modules), nowMs);
-          createdTemplateIds.push(id);
-        }
-      }
-
       const before: OperationProjection = {
         transactions: beforeTransactions,
         createdCategoryIds: [],
-        createdTemplateIds: [],
-        templateUpdates: templateUpdates.map((update) => ({ id: update.id, before_modules: update.before_modules })),
       };
       const after: OperationProjection = {
         transactions: afterTransactions,
         createdCategoryIds,
-        createdTemplateIds,
-        templateUpdates: templateUpdates.map((update) => ({ id: update.id, before_modules: update.after_modules })),
       };
       const operationId = randomUUID();
       this.db
@@ -973,11 +925,14 @@ export class AiSpendingOrganizationService {
       const current = this.db.prepare('SELECT deleted FROM categories WHERE id = ?').get(categoryId) as { deleted: number } | undefined;
       if (current === undefined || current.deleted !== 0) throw new AiOrganizationConflictError('分类已变化，无法撤销。');
     }
-    for (const templateId of after.createdTemplateIds) {
+    // Template guard/restore loops are kept for operations applied *before* the template
+    // surface was retired: dropping them would let those old operations report "undone"
+    // while the created template stayed behind. New operations have no such fields.
+    for (const templateId of after.createdTemplateIds ?? []) {
       const current = this.db.prepare('SELECT deleted FROM budget_templates WHERE id = ?').get(templateId) as { deleted: number } | undefined;
       if (current === undefined || current.deleted !== 0) throw new AiOrganizationConflictError('模板已变化，无法撤销。');
     }
-    for (const update of after.templateUpdates) {
+    for (const update of after.templateUpdates ?? []) {
       const current = this.db
         .prepare('SELECT modules_json FROM budget_templates WHERE id = ?')
         .get(update.id) as { modules_json: string } | undefined;
@@ -992,10 +947,10 @@ export class AiSpendingOrganizationService {
       for (const categoryId of after.createdCategoryIds) {
         this.db.prepare('UPDATE categories SET deleted = 1, updated_at = ? WHERE id = ?').run(nowMs, categoryId);
       }
-      for (const templateId of after.createdTemplateIds) {
+      for (const templateId of after.createdTemplateIds ?? []) {
         this.db.prepare('UPDATE budget_templates SET deleted = 1, updated_at = ? WHERE id = ?').run(nowMs, templateId);
       }
-      for (const update of before.templateUpdates) {
+      for (const update of before.templateUpdates ?? []) {
         this.db.prepare('UPDATE budget_templates SET modules_json = ?, updated_at = ? WHERE id = ?')
           .run(update.before_modules, nowMs, update.id);
       }
@@ -1044,11 +999,6 @@ export class AiSpendingOrganizationService {
     return id;
   }
 
-  private assertCategoryUsable(categoryId: string): void {
-    const row = this.db.prepare('SELECT 1 AS x FROM categories WHERE id = ? AND deleted = 0').get(categoryId) as { x: number } | undefined;
-    if (row === undefined) throw new AiOrganizationConflictError(`分类不存在或已删除：${categoryId}`);
-  }
-
   private runRow(id: string): RunRow {
     const row = this.db.prepare('SELECT * FROM ai_analysis_runs WHERE id = ?').get(id) as RunRow | undefined;
     if (row === undefined) throw new AiSpendingRunNotFoundError();
@@ -1085,15 +1035,6 @@ export class AiSpendingOrganizationService {
     }
   }
 
-  private parseTemplateProposals(raw: string): TemplateProposal[] {
-    try {
-      const value: unknown = JSON.parse(raw);
-      return Array.isArray(value) ? (value as TemplateProposal[]) : [];
-    } catch {
-      return [];
-    }
-  }
-
   private parseSuggestions(raw: string): SpendingSuggestion[] {
     try {
       const value: unknown = JSON.parse(raw);
@@ -1107,8 +1048,10 @@ export class AiSpendingOrganizationService {
     runId: string,
     coverage: unknown,
     suggestions: readonly SpendingSuggestion[],
-    templateProposals: readonly TemplateProposal[],
   ): void {
+    // The template column is still written (as an empty array) because the schema keeps
+    // it for runs created before templates were retired; readers ignore it either way.
+    const templateProposals: TemplateProposal[] = [];
     const fingerprint = hashJson({ coverage, suggestions, templateProposals });
     this.db
       .prepare(
@@ -1172,95 +1115,6 @@ export class AiSpendingOrganizationService {
     return rows
       .filter((row) => !children.has(row.id))
       .map((row) => ({ id: row.id, name: row.name, type: row.type, parentCategoryId: row.parent_id }));
-  }
-
-  private loadTemplates(): ReadonlyMap<string, { readonly name: string; readonly modules: readonly TemplateModuleProposal[] }> {
-    const rows = this.db
-      .prepare('SELECT id, name, modules_json FROM budget_templates WHERE deleted = 0')
-      .all() as { id: string; name: string; modules_json: string }[];
-    const result = new Map<string, { name: string; modules: TemplateModuleProposal[] }>();
-    for (const row of rows) {
-      try {
-        const decoded: unknown = JSON.parse(row.modules_json);
-        if (!Array.isArray(decoded)) continue;
-        const modules: TemplateModuleProposal[] = [];
-        for (const item of decoded) {
-          if (typeof item !== 'object' || item === null) continue;
-          const record = item as Record<string, unknown>;
-          if (typeof record['categoryId'] === 'string' && typeof record['ratio'] === 'number') {
-            modules.push({ categoryId: record['categoryId'], ratio: record['ratio'] });
-          }
-        }
-        result.set(row.id, { name: row.name, modules });
-      } catch {
-        // Malformed template modules are treated as absent, matching parseModulesJson.
-      }
-    }
-    return result;
-  }
-
-  private normalizeTemplateProposals(
-    raw: unknown,
-    categories: readonly CategoryFact[],
-    templates: ReadonlyMap<string, { readonly name: string; readonly modules: readonly TemplateModuleProposal[] }>,
-  ): TemplateProposal[] {
-    const record = asRecord(raw);
-    const categoryIds = new Set(categories.map((category) => category.id));
-    const proposals: TemplateProposal[] = [];
-    const rawProposals = record['templateProposals'];
-    if (!Array.isArray(rawProposals)) throw new AiOrganizationResponseInvalidError();
-    for (const item of rawProposals.slice(0, 10)) {
-      if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
-      const value = item as Record<string, unknown>;
-      const kind = value['kind'];
-      if (kind !== 'new' && kind !== 'update') continue;
-      if (!Array.isArray(value['modules'])) continue;
-      const modules: TemplateModuleProposal[] = [];
-      const seen = new Set<string>();
-      let valid = true;
-      for (const module of value['modules'].slice(0, 50)) {
-        if (typeof module !== 'object' || module === null) { valid = false; break; }
-        const record = module as Record<string, unknown>;
-        const categoryId = record['categoryId'];
-        const ratio = record['ratio'];
-        if (typeof categoryId !== 'string' || !categoryIds.has(categoryId)) { valid = false; break; }
-        if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio <= 0) { valid = false; break; }
-        if (seen.has(categoryId)) { valid = false; break; }
-        seen.add(categoryId);
-        modules.push({ categoryId, ratio });
-      }
-      if (!valid || modules.length === 0) continue;
-      const sum = templateRatioSum(modules as unknown as { readonly categoryId: string; readonly ratio: number }[]);
-      if (Math.abs(sum - 1) >= RATIO_SUM_TOLERANCE) continue;
-
-      let templateId: string | null = null;
-      let beforeModules: TemplateModuleProposal[] = [];
-      let templateName = typeof value['templateName'] === 'string' ? value['templateName'].trim().slice(0, 32) : 'AI 建议模板';
-      if (kind === 'new') {
-        if (templateName === '') templateName = 'AI 建议模板';
-      } else {
-        const rawId = value['templateId'];
-        if (typeof rawId !== 'string') continue;
-        const current = templates.get(rawId);
-        if (current === undefined) continue;
-        templateId = rawId;
-        templateName = current.name;
-        beforeModules = [...current.modules];
-      }
-
-      const actionId = hashJson({ kind: 'template', templateId, modules }).slice(0, 24);
-      proposals.push({
-        actionId,
-        kind,
-        templateId,
-        templateName,
-        modules,
-        beforeModules,
-        reason: boundedReason(value['reason'], '这段区间内的支出分布支持这样的预算结构建议。'),
-        confidence: clampedConfidence(value['confidence']),
-      });
-    }
-    return proposals;
   }
 
   private normalize(raw: unknown, batch: readonly EligibleRow[], categories: readonly CategoryFact[]): SpendingSuggestion[] {

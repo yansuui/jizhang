@@ -27,7 +27,6 @@ const operation = { operationId: { ...text, description: 'Omit for a new draft; 
 const ratios = { type: 'object', required: ['growth', 'reserve', 'essentials', 'joy'], additionalProperties: false,
   properties: { growth: integer, reserve: integer, essentials: integer, joy: integer } } as const;
 const sourceRef = { type: 'object', required: ['salaryId', 'expectedSourceToken'], additionalProperties: false, properties: { salaryId: text, expectedSourceToken: text } } as const;
-const moduleSchema = { type: 'object', required: ['categoryId', 'ratio'], additionalProperties: false, properties: { categoryId: text, ratio: { type: 'number', minimum: 0, maximum: 1 } } } as const;
 const proposal = { type: 'object', additionalProperties: false,
   required: ['periodId', 'expectedRevision', 'expectedConfigRevision', 'expectedMappingRevision', 'selectedSources', 'mappingPolicy', 'reason'],
   properties: { periodId: { type: ['string', 'null'] }, expectedRevision: integer, expectedConfigRevision: integer, expectedMappingRevision: integer,
@@ -264,11 +263,9 @@ write('item.sell', '将物品标为售出，可关联已有收入账单。', { .
 write('item.retire', '将物品标为退役。', { ...id, closedDate: integer }, ['id', 'closedDate'], (c, a) => ({ item: items(c).retire(str(a, 'id'), fields(a, ['id'])) }));
 write('item.delete', '删除物品记录。', id, ['id'], (c, a) => items(c).remove(str(a, 'id')));
 
-read('templates.read', '分页查看已有预算模板（旧预算分配写入已停用）。', { ...id, ...page }, [], (c, a) => a['id'] ? { template: c.services.templates.getByIdOrThrow(str(a, 'id')) } : paged(c.services.templates.list(), a));
-write('template.create', '创建预算模板。', { name: text, modules: { ...array, items: moduleSchema }, isDefault: boolean }, ['name', 'modules'], (c, a) => ({ template: c.services.templates.create(str(a, 'name'), a['modules'] as never, a['isDefault'] === true) }));
-write('template.update', '修改预算模板。', { ...id, name: text, modules: { ...array, items: moduleSchema } }, ['id'], (c, a) => ({ template: c.services.templates.update(str(a, 'id'), fields(a, ['id']) as never) }));
-write('template.default', '设置默认预算模板。', id, ['id'], (c, a) => ({ template: c.services.templates.setDefault(str(a, 'id')) }));
-write('template.delete', '删除预算模板。', id, ['id'], (c, a) => c.services.templates.softDelete(str(a, 'id')));
+// Allocation templates are retired (migration 022 folds template names into tags), so the
+// assistant offers no template tools at all. The deprecated HTTP route stays readable for
+// shipped clients; a model must not create or edit a surface the product is removing.
 read('settings.read', '读取预算周期日和已有预算周期。', {}, [], (c) => ({ cycleStartDay: c.services.salaries.getCycleStartDay() ?? null, periods: c.services.budget.periods() }));
 write('settings.cycle', '修改预算周期起始日。', { cycleStartDay: { type: ['integer', 'null'], minimum: 1, maximum: 28 } }, ['cycleStartDay'], (c, a) => ({ cycleStartDay: c.services.salaries.setCycleStartDay(a['cycleStartDay'] as number | null) ?? null }));
 
@@ -321,41 +318,96 @@ write('planning.refund-splits', '核对退款分摊，不改变原账单总支�
 
 function spendingPage(service: AiSpendingOrganizationService, runId: string, offset = 0, limit = 100): Args {
   const card = service.getCard(runId);
-  const entries = [...card.actions, ...card.templateProposals];
+  // The review card is a per-transaction recommendation list, so this is the only
+  // paginated collection. Template proposals no longer exist (allocation templates were
+  // retired in favour of tags), so they are not part of the selection set or the paging.
+  const entries = [...card.actions];
   const selected = new Set(entries.slice(offset, offset + limit).map((entry) => entry.actionId));
   return json({ ...card,
     coverage: { eligibleCount: card.eligibleCount, completedCount: card.completedCount, idsOmitted: true },
     evidenceByCategory: {}, evidenceCategoryCount: Object.keys(card.evidenceByCategory).length,
     evidenceTool: 'spending.evidence',
     actions: card.actions.filter((entry) => selected.has(entry.actionId)),
-    templateProposals: card.templateProposals.filter((entry) => selected.has(entry.actionId)),
+    templateProposals: [],
     noteSuggestions: card.noteSuggestions.filter((entry) => selected.has(entry.actionId)),
     totalActions: entries.length, offset, limit, hasMore: offset + limit < entries.length,
   });
 }
-read('spending.preview', '按起止日期完整分析历史账单；只生成分类/标签/备注建议，不改账单。最多500笔，日期为 YYYY-MM-DD。', { startDate: text, endDate: text }, ['startDate', 'endDate'], async (c, a) => {
-  const service = spending(c); const run = await service.startAnalysis(a);
-  return run.status === 'ready' ? spendingPage(service, run.runId) : { run };
-});
+
+/**
+ * Starts a long-running analysis and returns immediately.
+ *
+ * This is the fix for the reported "AI asks for the date range, then the second reply
+ * fails" bug. The analysis calls the provider once per 10-transaction batch (up to 50
+ * batches, ~10 minutes of provider time), but one assistant generation is capped at
+ * `MAX_GENERATION_DEADLINE_MS` (180 s) and its tool scope is aborted at that deadline.
+ * Awaiting the whole analysis inside the tool therefore turned the second turn — the one
+ * that actually starts analysing — into a guaranteed timeout.
+ *
+ * Starting it in the background and returning a run summary keeps every assistant turn
+ * short, and leaves progress observation to `spending.status` / `spending.card`.
+ *
+ * A second ask while a run is already going is routine (the user repeats themselves, or the
+ * model retries), so a busy service returns the existing run instead of a hard failure: an
+ * error here would resurface as the same "second reply failed" symptom through a different
+ * door.
+ */
+async function startingAnalysis(c: Context, a: Args): Promise<Args> {
+  const service = spending(c);
+  const startDate = str(a, 'startDate');
+  const endDate = str(a, 'endDate');
+  try {
+    const run = await service.startAnalysis({ startDate, endDate, background: true, clientRequestId: randomUUID() });
+    // A tiny range can finish synchronously; then the card is readable right away.
+    return json(run.status === 'ready'
+      ? { run, step: 'read-card', nextStep: 'spending.card', note: '分析已完成，可直接用 spending.card 分页读取建议。' }
+      : { run, step: 'poll', nextStep: 'spending.status', note: '分析已在后台开始，预计较慢。请用 spending.status 查询进度；状态为 ready 后用 spending.card 分页读取建议。' });
+  } catch (error) {
+    const existing = existingRun(c, startDate, endDate);
+    if (existing === undefined) throw error;
+    return json({ run: existing, step: 'poll', nextStep: 'spending.status', note: '该日期范围已有整理任务；请用 spending.status 查询它，ready 后用 spending.card 读取建议，不要重复开始。' });
+  }
+}
+
+/** The newest unfinished-or-ready run for exactly this range, if one is still reusable. */
+function existingRun(c: Context, startDate: string, endDate: string): AssistantJsonObject | undefined {
+  const row = c.db
+    .prepare(
+      `SELECT id FROM ai_analysis_runs
+        WHERE start_date = ? AND end_date = ? AND status IN ('running', 'ready')
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(startDate, endDate) as { id: string } | undefined;
+  if (row === undefined) return undefined;
+  try {
+    return json(spending(c).getRun(row.id));
+  } catch {
+    return undefined;
+  }
+}
+read('spending.preview', '按起止日期在后台开始完整分析历史账单；只生成分类/标签/备注建议，不改账单。最多500笔，日期为 YYYY-MM-DD。立即返回任务编号，需用 spending.status 查询进度，ready 后用 spending.card 读取建议。', { startDate: text, endDate: text }, ['startDate', 'endDate'], (c, a) => startingAnalysis(c, a));
 read('spending.card', '分页读取历史账单整理卡；note 仅供参考，不可选择应用。', { runId: text, ...page }, ['runId'], (c, a) => spendingPage(spending(c), str(a, 'runId'), num(a, 'offset'), num(a, 'limit', 100)));
-read('spending.status', '读取历史账单整理任务进度。', { runId: text }, ['runId'], (c, a) => spending(c).getRun(str(a, 'runId')));
+read('spending.status', '读取历史账单整理任务进度；ready 前不要展示建议。', { runId: text }, ['runId'], (c, a) => ({ run: spending(c).getRun(str(a, 'runId')) }));
 read('spending.evidence', '分页读取历史整理的完整分类金额证据。', { runId: text, ...page }, ['runId'], (c, a) => {
   const card = spending(c).getCard(str(a, 'runId'));
   return paged(Object.entries(card.evidenceByCategory).sort(([left], [right]) => left.localeCompare(right)).map(([categoryId, amountCents]) => ({ categoryId, amountCents })), a);
 });
 read('spending.resume', '仅在用户明确要求继续失败任务时恢复剩余分析，可能再次调用AI；不修改账单。', { runId: text }, ['runId'], async (c, a) => {
   const service = spending(c);
-  const run = await service.resumeAndWait(str(a, 'runId'), { clientRequestId: randomUUID() });
-  return run.status === 'ready' ? spendingPage(service, run.runId) : { run };
+  // `resumeAnalysis` only *schedules* the remaining batches and returns the run row, so it
+  // is as fast as `spending.preview`. Awaiting the work itself (`resumeAndWait`) would
+  // reintroduce the 180 s generation deadline failure this tool was fixed for.
+  const run = await service.resumeAnalysis(str(a, 'runId'), { clientRequestId: randomUUID() });
+  return json({ run, step: 'poll', nextStep: 'spending.status', note: '已重新在后台继续未完成批次；请用 spending.status 查询进度，ready 后用 spending.card 读取建议。' });
 });
 write('spending.apply', '应用用户明确选择的历史账单整理建议。禁止默认全选或选择 note 建议。', { runId: text, actionIds: { ...array, minItems: 1, items: text } }, ['runId', 'actionIds'], (c, a) => {
   const service = spending(c); const card = service.getCard(str(a, 'runId')); const ids = a['actionIds'] as string[];
-  const selectable = new Set([...card.actions.filter((entry) => entry.kind !== 'note'), ...card.templateProposals].map((entry) => entry.actionId));
+  const selectable = new Set(card.actions.filter((entry) => entry.kind !== 'note').map((entry) => entry.actionId));
   if (new Set(ids).size !== ids.length || ids.some((entry) => !selectable.has(entry))) throw new AssistantValidationError('选择包含不存在、重复或仅供参考的建议。');
   return service.apply(card.runId, ids);
 }, (c, a) => {
   const card = spending(c).getCard(str(a, 'runId')); const ids = new Set(a['actionIds'] as string[]);
-  return json({ runId: card.runId, startDate: card.startDate, endDate: card.endDate, actions: card.actions.filter((entry) => ids.has(entry.actionId)), templateProposals: card.templateProposals.filter((entry) => ids.has(entry.actionId)), expiresAt: card.expiresAt });
+  return json({ runId: card.runId, startDate: card.startDate, endDate: card.endDate, actions: card.actions.filter((entry) => ids.has(entry.actionId)), expiresAt: card.expiresAt });
 });
 write('spending.undo', '条件撤销一次历史账单整理；后续修改冲突时拒绝覆盖。', { operationId: text }, ['operationId'], (c, a) => spending(c).undo(str(a, 'operationId')));
 

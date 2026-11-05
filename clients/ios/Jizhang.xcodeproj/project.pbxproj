@@ -185,6 +185,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "5294B41D4665E5E2C2122565";
 		};
+		"0F50596FB9ECE8F5E6A60358" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Jizhang/Features/Bills/LedgerBillDailySummary.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"20D3B45D143D2E6544739971" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "0F50596FB9ECE8F5E6A60358";
+		};
 		"15D2C311F3CD0BB42665F080" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -204,6 +214,16 @@
 		"A899B49C90F3927C3213F792" = {
 			"isa" = "PBXBuildFile";
 			"fileRef" = "BBF4379ABE86BD425D8EA99A";
+		};
+		"16295077E7FEF6C0D47588AB" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Jizhang/Features/Bills/LedgerBillDetailCard.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"51527AEA333E72CE91556E44" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "16295077E7FEF6C0D47588AB";
 		};
 		"B944027839CA53C3467EC1CB" = {
 			"isa" = "PBXFileReference";
@@ -606,8 +626,10 @@
 				"1FCB1F8439787BC8B784B940",
 				"82E0265BB9A8A0A8E147F9A7",
 				"5294B41D4665E5E2C2122565",
+				"0F50596FB9ECE8F5E6A60358",
 				"15D2C311F3CD0BB42665F080",
 				"BBF4379ABE86BD425D8EA99A",
+				"16295077E7FEF6C0D47588AB",
 				"B944027839CA53C3467EC1CB",
 				"EB4E9F5AF62597BC69B66BF0",
 				"035AE433C49D4492AE5FF962",
@@ -704,8 +726,10 @@
 				"A76AF89693F604D022878055",
 				"24C0B0488D6EF2A57EB7683F",
 				"03063647CEC007936437D8D4",
+				"20D3B45D143D2E6544739971",
 				"51A33DC40E2F346CA8001BE3",
 				"A899B49C90F3927C3213F792",
+				"51527AEA333E72CE91556E44",
 				"A96310C62490A517EE44B54F",
 				"D6101BDC8585A18B74676635",
 				"C8E75A8BB75CE6EDBB431952",

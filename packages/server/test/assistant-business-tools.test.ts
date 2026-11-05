@@ -7,6 +7,7 @@ import { AssistantConversationService } from '../src/services/assistant-conversa
 import { AssistantOrchestrator, buildAssistantContext } from '../src/services/assistant-orchestrator.js';
 import { AiConfigService } from '../src/services/ai-config-service.js';
 import { AiSpendingOrganizationService } from '../src/services/ai-spending-organization-service.js';
+import { AiProviderService } from '../src/services/ai-provider-service.js';
 import { normalizeAssistantJson, type AssistantJsonObject } from '../src/services/assistant-types.js';
 import { seedHistoricalSalary } from './support/historical-salary-fixture.js';
 
@@ -151,17 +152,16 @@ describe('assistant business confirmations', () => {
     expect(stats.data).toHaveProperty('expenseCents', 7500);
   });
 
-  it('preserves all pages past the assistant JSON array bound for accounts, salaries, rules, templates and trash', async () => {
+  it('preserves all pages past the assistant JSON array bound for accounts, salaries, rules and trash', async () => {
     for (let index = 0; index < 205; index++) {
       context.services.masterData.createAccount({ name: `account-${index}`, type: 0 });
       seedHistoricalSalary(db, { amountCents: 100, accountId: ACCOUNT, date: NOW, id: `salary-${index}` });
       context.services.recurring.createRule({ name: `rule-${index}`, type: 0, amountCents: 100, categoryId: FOOD, accountId: ACCOUNT, frequency: 'monthly', anchorDate: NOW });
-      context.services.templates.create(`template-${index}`, [{ categoryId: FOOD, ratio: 1 }]);
       context.services.transactions.softDelete(expense(`deleted-${index}`).id);
     }
     for (const [name, args, expected] of [
       ['master-data.read', { kind: 'accounts' }, 206], ['accounts.balances', {}, 206], ['salaries.read', {}, 205], ['recurring.rules', {}, 205],
-      ['templates.read', {}, context.services.templates.list().length], ['trash.list', {}, 205],
+      ['trash.list', {}, 205],
     ] as const) {
       const collected: string[] = [];
       for (let offset = 0; offset < expected; offset += 100) {
@@ -212,14 +212,11 @@ describe('assistant business confirmations', () => {
     expect(context.services.transactions.list().total).toBe(0);
   });
 
-  it('confirms template, tag, transfer and recycle-bin operations and reports actual bulk counts', async () => {
-    const defaultId = context.services.templates.getDefault()!.id;
-    const template = (await execute('template.create', { name: 'Assistant template', modules: [{ categoryId: FOOD, ratio: 1 }] }))['template'] as AssistantJsonObject;
-    await execute('template.update', { id: template['id']!, name: 'Renamed template' });
-    await execute('template.default', { id: template['id']! });
-    await expect(registry.prepare(context, 'template.delete', { id: template['id']! })).rejects.toThrow('default template');
-    await execute('template.default', { id: defaultId });
-    await execute('template.delete', { id: template['id']! });
+  it('confirms tag, transfer and recycle-bin operations and reports actual bulk counts', async () => {
+    // Template writes are gone from the assistant: allocation templates were retired in
+    // favour of tags (migration 022), so the tool must not even be addressable.
+    await expect(registry.prepare(context, 'template.create', { name: 'Assistant template', modules: [{ categoryId: FOOD, ratio: 1 }] })).rejects.toThrow();
+    await expect(registry.prepare(context, 'template.delete', { id: 'builtin-default-template' })).rejects.toThrow();
     const tag = (await execute('tag.create', { name: 'Trip' }))['tag'] as AssistantJsonObject;
     await execute('tag.update', { id: tag['id']!, name: 'Travel' });
     await execute('tag.remove', { id: tag['id']! });
@@ -269,25 +266,88 @@ function enableProvider() {
   new AiConfigService(db, { aiEncryptionKey: config.aiEncryptionKey, production: false, now: () => NOW }).save({ enabled: true, mode: 'chat-completions', name: 'fixture', url: 'https://example.test/chat/completions', method: 'POST', model: 'fixture', timeoutMs: 10000, headers: {}, auth: { kind: 'none' }, bodyTemplate: null, responsePath: 'choices[0].message.content' });
 }
 
+/**
+ * Starts a background analysis through the assistant tool and waits for it to finish.
+ *
+ * `spending.preview` returns immediately on purpose (awaiting the whole analysis inside one
+ * assistant generation is what made the second turn time out), so a test that wants the card
+ * must poll `spending.status` the way the model is instructed to.
+ */
+async function startSpending(startDate: string, endDate: string): Promise<AssistantJsonObject> {
+  const preview = await registry.read(context, 'spending.preview', { startDate, endDate });
+  const runId = (preview.data['run'] as AssistantJsonObject)['runId'] as string;
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const status = await registry.read(context, 'spending.status', { runId });
+    const run = status.data['run'] as AssistantJsonObject;
+    if (run['status'] === 'ready') {
+      const card = await registry.read(context, 'spending.card', { runId });
+      return card.data;
+    }
+    if (run['status'] === 'failed' || run['status'] === 'cancelled') throw new Error(`analysis did not become ready: ${JSON.stringify(run)}`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('analysis did not become ready in time');
+}
+
 describe('historical spending organization assistant tools', () => {
   it('analyzes without changing bills, applies only explicit choices, and conditionally undoes with an audit operation', async () => {
     enableProvider(); const original = expense('original note');
     response = { reclassifications: [], tagSuggestions: [{ transactionId: original.id, tags: ['工作餐'], reason: 'work lunch', confidence: 0.9 }], noteSuggestions: [{ transactionId: original.id, suggestedNote: 'clean note', reason: 'readable', confidence: 0.8 }], newCategories: [], templateProposals: [] };
     const beforeBills = db.prepare('SELECT * FROM transactions').all();
-    const preview = await registry.read(context, 'spending.preview', { startDate: '2026-09-01', endDate: '2026-09-22' });
-    expect(preview.data).toMatchObject({ eligibleCount: 1, completedCount: 1, totalActions: 2, hasMore: false });
+    const card = await startSpending('2026-09-01', '2026-09-22');
+    expect(card).toMatchObject({ eligibleCount: 1, completedCount: 1, totalActions: 2, hasMore: false });
     expect(db.prepare('SELECT * FROM transactions').all()).toEqual(beforeBills);
-    const actions = preview.data['actions'] as AssistantJsonObject[];
+    const actions = card['actions'] as AssistantJsonObject[];
     const note = actions.find((entry) => entry['kind'] === 'note')!;
     const tag = actions.find((entry) => entry['kind'] === 'tag')!;
-    await expect(registry.prepare(context, 'spending.apply', { runId: preview.data['runId']!, actionIds: [note['actionId']!] })).rejects.toThrow();
-    await expect(registry.prepare(context, 'spending.apply', { runId: preview.data['runId']!, actionIds: [] })).rejects.toThrow();
-    const result = await execute('spending.apply', { runId: preview.data['runId']!, actionIds: [tag['actionId']!] });
+    await expect(registry.prepare(context, 'spending.apply', { runId: card['runId']!, actionIds: [note['actionId']!] })).rejects.toThrow();
+    await expect(registry.prepare(context, 'spending.apply', { runId: card['runId']!, actionIds: [] })).rejects.toThrow();
+    const result = await execute('spending.apply', { runId: card['runId']!, actionIds: [tag['actionId']!] });
     expect(context.services.transactions.getByIdOrThrow(original.id)).toMatchObject({ note: 'original note', tags: ['工作餐'], amountCents: 2500 });
     await execute('spending.undo', { operationId: result['operationId']! });
     expect(context.services.transactions.getByIdOrThrow(original.id)).toMatchObject({ note: 'original note', tags: [] });
     expect(db.prepare('SELECT status FROM ai_organization_operations').all()).toEqual([{ status: 'undone' }]);
     expect(providerCalls).toBe(1);
+  });
+
+  it('returns before the provider-backed analysis finishes, so a second turn cannot hit the generation deadline', async () => {
+    // The reported bug: the assistant asks for a date range, the user answers, and the second
+    // reply fails. The cause was `spending.preview` awaiting the whole batched analysis inside
+    // one generation, which is capped at MAX_GENERATION_DEADLINE_MS (180 s). The tool must now
+    // hand back a run id while the provider work is still blocked.
+    enableProvider();
+    expense();
+    response = { reclassifications: [], tagSuggestions: [], noteSuggestions: [], newCategories: [], templateProposals: [] };
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const gatedFetch: typeof fetch = async () => {
+      providerCalls++;
+      await gate;
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(response) } }] }), { status: 200 });
+    };
+    const gatedContext = { ...context, provider: new AiProviderService(gatedFetch) };
+
+    // Resolves while the provider call is still pending. If the tool awaited the analysis this
+    // await would never settle and the test would time out.
+    const preview = await registry.read(gatedContext, 'spending.preview', { startDate: '2026-09-01', endDate: '2026-09-22' });
+    const run = preview.data['run'] as AssistantJsonObject;
+    expect(run['status']).toBe('running');
+    expect(preview.data['nextStep']).toBe('spending.status');
+
+    // The same ask again (what a repeated or retried second turn does) must reuse the run
+    // instead of failing on AI_ORGANIZATION_BUSY.
+    const repeated = await registry.read(gatedContext, 'spending.preview', { startDate: '2026-09-01', endDate: '2026-09-22' });
+    expect((repeated.data['run'] as AssistantJsonObject)['runId']).toBe(run['runId']);
+
+    release();
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const status = await registry.read(context, 'spending.status', { runId: run['runId'] });
+      if ((status.data['run'] as AssistantJsonObject)['status'] === 'ready') break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+    const card = await registry.read(context, 'spending.card', { runId: run['runId'] });
+    expect(card.data).toMatchObject({ status: 'ready', eligibleCount: 1 });
   });
 
   it('does not recover or interrupt active runs when another scoped assistant service is constructed', async () => {
@@ -316,11 +376,11 @@ describe('historical spending organization assistant tools', () => {
       context.services.transactions.create({ type: 0, amountCents: 100, categoryId: category.id, accountId: ACCOUNT, date: NOW });
     }
     response = { reclassifications: [], tagSuggestions: [], noteSuggestions: [], newCategories: [], templateProposals: [] };
-    const preview = await registry.read(context, 'spending.preview', { startDate: '2026-09-01', endDate: '2026-09-22' });
-    expect(preview.data).toMatchObject({ evidenceCategoryCount: 101, eligibleCount: 101, completedCount: 101 });
-    const card = await registry.read(context, 'spending.card', { runId: preview.data['runId']!, limit: 1 });
-    expect(card.data['evidenceCategoryCount']).toBe(101);
-    const tail = await registry.read(context, 'spending.evidence', { runId: preview.data['runId']!, offset: 100, limit: 100 });
+    const card = await startSpending('2026-09-01', '2026-09-22');
+    expect(card).toMatchObject({ evidenceCategoryCount: 101, eligibleCount: 101, completedCount: 101 });
+    const page = await registry.read(context, 'spending.card', { runId: card['runId']!, limit: 1 });
+    expect(page.data['evidenceCategoryCount']).toBe(101);
+    const tail = await registry.read(context, 'spending.evidence', { runId: card['runId']!, offset: 100, limit: 100 });
     expect(tail.data).toMatchObject({ total: 101, hasMore: false });
     expect(tail.data['items']).toHaveLength(1);
   });

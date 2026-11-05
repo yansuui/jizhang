@@ -42,7 +42,7 @@ import Combine
                     menuRow("分类", subtitle: "收入与支出分类", symbol: "square.grid.2x2")
                 }
                 NavigationLink { LedgerTagsView(api: api) } label: {
-                    menuRow("标签", subtitle: "按标签查看账单", symbol: "tag")
+                    menuRow("标签", subtitle: "记录分类，可查关联账单", symbol: "tag")
                 }
                 NavigationLink { LedgerStatisticsView(api: api) } label: {
                     menuRow("收支统计", subtitle: "趋势与分类占比", symbol: "chart.bar.xaxis")
@@ -53,7 +53,6 @@ import Combine
             }
             Section("计划与记录") {
                 NavigationLink { LedgerSalariesView(api: api) } label: { menuRow("工资记录", symbol: "banknote") }
-                NavigationLink { LedgerTemplatesView(api: api) } label: { menuRow("分配模板", symbol: "square.stack.3d.up") }
                 NavigationLink { LedgerRecurringView(api: api) } label: { menuRow("周期账单", symbol: "repeat") }
                 NavigationLink { LedgerPendingView(api: api) } label: { menuRow("待确认账单", symbol: "clock") }
                 NavigationLink { LedgerTransfersView(api: api) } label: { menuRow("账户转账", symbol: "arrow.left.arrow.right") }

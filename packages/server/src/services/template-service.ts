@@ -2,7 +2,18 @@
  * Budget template service: the "modules = category + ratio" definitions that a
  * salary allocation is generated from.
  *
- * Contract (T6 PRD R3, transcribed from the reference implementation):
+ * ⚠️ DEPRECATED SURFACE. A template no longer drives salary allocation — every new
+ * salary writes a frozen four-purpose grant keyed by operation id
+ * (`salary-service.ts`), and the product direction moved the meaning of a template
+ * to an ordinary bill tag. Migration 022 folds each template name into `tags` and
+ * `routes/budget.ts` marks `/templates` deprecated.
+ *
+ * The class stays because two things still depend on the existing rows:
+ *   * shipped Android/Harmony builds call `/templates`;
+ *   * historical `budget_allocations` reference template-shaped module lists.
+ * Adding a feature here is therefore the wrong move; read the tags of a bill instead.
+ *
+ * Behavior contract is unchanged and still transcribed from the reference:
  *   * ratios sum to 1 within a tolerance of **1e-4**
  *     (`salary_entry_page.dart:206`);
  *   * every module needs a non-empty category and a finite ratio `> 0`;

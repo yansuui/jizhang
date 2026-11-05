@@ -201,7 +201,7 @@ describe('AI spending organization analysis', () => {
     }
   });
 
-  it('publishes interval evidence and a ratio-summing template proposal on the card', async () => {
+  it('publishes interval evidence and drops template proposals now that templates are retired', async () => {
     const db = makeDb();
     try {
       seedCategory(db, 'food', '餐饮');
@@ -231,12 +231,9 @@ describe('AI spending organization analysis', () => {
       const run = await service.startAnalysis({ startDate: '2026-08-01', endDate: '2026-08-31' });
       const card = service.getCard(run.runId);
       expect(card.evidenceByCategory).toEqual({ food: 100 });
-      expect(card.templateProposals).toHaveLength(1);
-      expect(card.templateProposals[0]?.kind).toBe('new');
-      expect(card.templateProposals[0]?.modules).toEqual([
-        { categoryId: 'food', ratio: 0.6 },
-        { categoryId: 'transport', ratio: 0.4 },
-      ]);
+      // Allocation templates are retired (migration 022 folds template names into tags), so
+      // a provider that still emits proposals must not turn them into reviewable actions.
+      expect(card.templateProposals).toEqual([]);
       expect(card.version).toBe(1000);
       expect(card.expiresAt).toBe(1000 + 24 * 60 * 60 * 1000);
     } finally {
@@ -244,7 +241,7 @@ describe('AI spending organization analysis', () => {
     }
   });
 
-  it('drops template proposals whose ratios do not sum to 100%', async () => {
+  it('ignores template proposals entirely, even well-formed ones', async () => {
     const db = makeDb();
     try {
       seedCategory(db, 'food', '餐饮');

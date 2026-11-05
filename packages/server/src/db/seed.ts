@@ -13,6 +13,10 @@
  * `INSERT ... ON CONFLICT DO NOTHING` is what makes this safe: a row that already
  * exists is left completely untouched, so a user's rename or recolour of a preset
  * category survives every restart.
+ *
+ * Seeding also re-runs the template→tag backfill. Migrations run *before* seeding,
+ * so on a fresh install migration 022 finds no templates to fold; the preset
+ * template is inserted afterwards and would otherwise never become a tag.
  */
 import {
   SEED_ACCOUNT,
@@ -21,6 +25,7 @@ import {
   SEED_UPDATED_AT_MS,
 } from '@jizhang/shared';
 import type { Db } from './index.js';
+import { backfillTemplateTags } from './migrations/022-template-tags.js';
 
 export interface SeedResult {
   readonly categoriesInserted: number;
@@ -105,5 +110,11 @@ export function seedDatabase(db: Db): SeedResult {
     };
   });
 
-  return run();
+  const result = run();
+  // Inside the caller's connection but after the rows exist: `template_tag_mappings`
+  // is created by migration 022, which has already run on every path that reaches
+  // `initializeDatabase` (and the guard in the backfill tolerates a bare call).
+  // The seeded template itself is skipped there — it is not user-named content.
+  backfillTemplateTags(db);
+  return result;
 }

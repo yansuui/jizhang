@@ -38,19 +38,6 @@ struct LedgerSalaryDetail: Decodable {
     let fundGrant: Grant?
 }
 
-struct LedgerTemplate: Decodable, Identifiable {
-    struct Module: Decodable, Identifiable {
-        let categoryId: String
-        let ratio: Double
-        var id: String { categoryId }
-    }
-    let id: String
-    let name: String
-    let isDefault: Bool
-    let modules: [Module]
-    let updatedAt: Int64
-}
-
 struct LedgerRecurringRule: Decodable, Identifiable {
     enum Frequency: String, Decodable {
         case daily, weekly, monthly, quarterly, yearly

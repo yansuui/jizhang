@@ -14,6 +14,25 @@ private struct LedgerRecentData {
     @State private var selectedBill: LedgerBillSelection?
 
     var body: some View {
+        ZStack {
+            scroll
+            if let selection = selectedBill {
+                LedgerBillDetailOverlay(api: api, transactionID: selection.id,
+                                        metadata: recent.value?.metadata ?? .empty,
+                                        onDismiss: dismissBill)
+                    .ignoresSafeArea()
+                    .zIndex(1)
+                    .transition(.opacity)
+            }
+        }
+        .navigationTitle("记账")
+        .task(id: api.ledgerRevision) { await loadBalances() }
+        .task(id: api.ledgerRevision) { await loadMonth() }
+        .task(id: api.ledgerRevision) { await loadRecent() }
+    }
+
+    /// 首页「最近账单」与账单页共用同一张弹窗卡片：不推入新页面，不丢失当前滚动与查询。
+    private var scroll: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 6) {
@@ -34,18 +53,21 @@ private struct LedgerRecentData {
             }.padding(20)
         }
         .background(Color(uiColor: .systemGroupedBackground))
-        .navigationTitle("记账")
-        .task(id: api.ledgerRevision) { await loadBalances() }
-        .task(id: api.ledgerRevision) { await loadMonth() }
-        .task(id: api.ledgerRevision) { await loadRecent() }
-        .sheet(item: $selectedBill) { selection in
-            LedgerBillDetailSheet(api: api, transactionID: selection.id, metadata: recent.value?.metadata ?? .empty)
-        }
         .refreshable {
             await loadBalances()
             await loadMonth()
             await loadRecent()
         }
+    }
+
+    private func selectBill(_ id: String) {
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+            selectedBill = LedgerBillSelection(id: id)
+        }
+    }
+
+    private func dismissBill() {
+        withAnimation(.easeOut(duration: 0.2)) { selectedBill = nil }
     }
 
     @ViewBuilder private var balanceSection: some View {
@@ -146,7 +168,7 @@ private struct LedgerRecentData {
                     LedgerEmptyView(title: "还没有账单", message: "已有账单会同步显示在这里。", symbol: "list.bullet.rectangle")
                 } else {
                     ForEach(value.items) { transaction in
-                        Button { selectedBill = LedgerBillSelection(id: transaction.id) } label: {
+                        Button { selectBill(transaction.id) } label: {
                             LedgerTransactionRow(transaction: transaction, metadata: value.metadata)
                         }.buttonStyle(.plain)
                         if transaction.id != value.items.last?.id { Divider() }

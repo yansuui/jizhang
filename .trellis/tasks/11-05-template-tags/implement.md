@@ -1,0 +1,45 @@
+# 实现与验证计划
+
+## 顺序与状态
+
+1. [x] 确认 4 项需求的范围与数据策略（模板保留旧数据 + 迁移映射；iOS 为主开发端；弹窗仿 Android）。
+2. [x] 服务端：新增迁移 022 与回填函数，把用户自建模板名折叠为标签。
+3. [x] 服务端：播种后重跑回填，覆盖"迁移先于播种"的新库窗口。
+4. [x] 服务端：`/templates*` 标注弃用（响应头 + 列表字段），不改状态码与响应体。
+5. [x] 服务端：历史整理卡片停止产出/返回/应用模板建议；undo 仍可逆转历史旧操作。
+6. [x] 服务端：修复 AI 第二次回复失败 —— `spending.preview`/`spending.resume` 改为后台启动并立即返回 `run`。
+7. [x] 服务端：从助理工具白名单移除 5 个模板工具名。
+8. [x] iOS：删除模板入口、视图与模型；标签页承担记录分类语义。
+9. [x] iOS：新增居中浮层账单卡片（对齐 Android 布局），底部胶囊按钮（编辑/记录退款/删除）。
+10. [x] iOS：首页最近账单复用同一张卡片。
+11. [x] iOS：账单页默认本月 + 服务端权威每日合计（严格校验、不可用即隐藏）。
+12. [x] iOS：历史整理建议卡不再把模板建议列为可选。
+13. [x] 重跑 `clients/ios/scripts/generate_project.py` 纳入 2 个新源文件。
+14. [x] 新增 2 个模拟器预览测试（居中弹窗卡片、每日合计分区头）。
+15. [x] 文档：可执行 SQL + README、iOS README、ios-client spec、Android README 契约记录、迁移 README 规则。
+
+## 门禁结果
+
+| 命令 | 结果 |
+|---|---|
+| `pnpm lint` | 通过（shared + server，0 warning） |
+| `pnpm typecheck` | 通过 |
+| `pnpm build` | 通过 |
+| `pnpm test` | shared 405 + server 1244，全通过 |
+| `python3 scripts/generate_project.py` | 45 app + 11 test Swift 文件，工程已更新 |
+| iOS Swift 编译 / XCTest | **未执行**（Windows 无 Xcode） |
+
+## 过程中发现并修掉的真实缺陷
+
+- **AI 历史整理第二次回复必然失败**：`spending.preview` 在工具里 await 整段分批 provider 调用（最坏 50 批），而单次生成硬上限 `MAX_GENERATION_DEADLINE_MS = 180_000`，`openToolScope` 到点 abort，于是"问完日期范围的第二次生成"稳定失败。改为后台启动 + 轮询。
+- **预置模板污染新用户标签**：最初把所有模板都折叠，导致刚注册用户就有一条「默认模板」标签；改为跳过 `builtin-default-template`。
+- **每次启动伪造数据变更**：回填最初无条件写 `updated_at`，使账本快照在重启后出现差异（被 `multiuser-migration-preservation` 测试抓到）；改为只复活软删除行。
+- **iOS 条件手势编译错误**：`@ViewBuilder var dismissDrag: some Gesture` 不是合法 SwiftUI（没有 `@GestureBuilder`），改为无条件手势 + 闭包内判断。
+- **iOS 首页仍走系统 sheet**：与"账单卡片要弹窗"不一致，改为与账单页共用居中浮层。
+- **两个迁移版本号断言写死**：`fund-budget-migration` 与 `ai-organization-progress` 里 `toEqual([21])` / `[17,18,19,20,21]`，改为从 `MIGRATIONS` 派生，避免以后每加一个迁移就要改测试。
+
+## 待办（需要 macOS 或真机）
+
+- GitHub Actions `ios.yml`：XCTest（含新增 2 个预览）+ arm64 打包 + 模拟器启动截图。
+- 真机 Sideloadly 安装与交互验收：弹窗卡片动画、下滑关闭、删除确认、每日合计滚动表现、大字体。
+- Android/Harmony 的模板入口在服务端完全移除后才考虑下线；目前保留且已弃用。
