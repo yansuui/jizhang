@@ -8,7 +8,7 @@ import { AssistantOrchestrator, buildAssistantContext } from '../src/services/as
 import { AiConfigService } from '../src/services/ai-config-service.js';
 import { AiSpendingOrganizationService } from '../src/services/ai-spending-organization-service.js';
 import { AiProviderService } from '../src/services/ai-provider-service.js';
-import { normalizeAssistantJson, type AssistantJsonObject } from '../src/services/assistant-types.js';
+import { normalizeAssistantJson, requireAssistantToolName, type AssistantJsonObject } from '../src/services/assistant-types.js';
 import { seedHistoricalSalary } from './support/historical-salary-fixture.js';
 
 const NOW = new Date(2026, 8, 22, 12).getTime();
@@ -215,6 +215,9 @@ describe('assistant business confirmations', () => {
   it('confirms tag, transfer and recycle-bin operations and reports actual bulk counts', async () => {
     // Template writes are gone from the assistant: allocation templates were retired in
     // favour of tags (migration 022), so the tool must not even be addressable.
+    // Old persisted result messages remain decodable, but the model cannot call the tool.
+    expect(requireAssistantToolName('template.create', 'toolName')).toBe('template.create');
+    expect(registry.catalog().some((tool) => tool.name === 'template.create')).toBe(false);
     await expect(registry.prepare(context, 'template.create', { name: 'Assistant template', modules: [{ categoryId: FOOD, ratio: 1 }] })).rejects.toThrow();
     await expect(registry.prepare(context, 'template.delete', { id: 'builtin-default-template' })).rejects.toThrow();
     const tag = (await execute('tag.create', { name: 'Trip' }))['tag'] as AssistantJsonObject;

@@ -50,6 +50,8 @@ type Turn =
 
 let turns: Turn[] = [];
 let providerBodies: unknown[] = [];
+let spendingGate: Promise<void> | undefined;
+let spendingSignal: AbortSignal | undefined;
 
 function envelope(message: string, extra: Record<string, unknown> = {}): string {
   return JSON.stringify({ message, toolCall: null, clarification: null, ...extra });
@@ -73,6 +75,17 @@ function bufferedEnvelope(value: unknown): Turn {
 function streamingFetch(url: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> {
   void url;
   if (typeof init?.body === 'string') providerBodies.push(JSON.parse(init.body) as unknown);
+  if (spendingGate && typeof init?.body === 'string' && init.body.includes('本批不可信账单数据和服务端分类事实')) {
+    spendingSignal = init.signal ?? undefined;
+    const gate = spendingGate;
+    return (async () => {
+      await gate;
+      if (init.signal?.aborted) throw new DOMException('aborted', 'AbortError');
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+        reclassifications: [], tagSuggestions: [], noteSuggestions: [], newCategories: [],
+      }) } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    })();
+  }
   const turn = turns.shift();
   if (turn === undefined) throw new Error('no mocked provider turn left');
   if (turn.kind === 'status') {
@@ -239,6 +252,8 @@ beforeEach(async () => {
   });
   turns = [];
   providerBodies = [];
+  spendingGate = undefined;
+  spendingSignal = undefined;
   app = buildApp({
     config,
     db,
@@ -1260,6 +1275,47 @@ describe('legacy exclusion cleanup', () => {
     });
     expect(next.statusCode).toBe(202);
     expect((await waitForTerminal(id, next.generation!.id)).status).toBe('completed');
+  });
+});
+
+describe('background history organization', () => {
+  it('keeps the analysis alive after answering a date clarification', async () => {
+    db.prepare(`INSERT INTO transactions
+      (id,type,amount_cents,category_id,account_id,date,note,tags_json,is_refund,deleted,updated_at)
+      VALUES ('history-bill',0,100,'builtin-expense-food','builtin-default-account',?,'','[]',0,0,?)`).run(NOW, NOW);
+    const conversation = await createConversation();
+    turns.push({ kind: 'sse', chunks: sseEnvelope('请选择范围', {
+      clarification: { question: '选择日期范围', options: ['本月', '上月'] },
+    }) });
+    const first = await createGeneration(conversation, {
+      version: 1, clientRequestId: 'history-question', input: { type: 'text', text: '整理历史账单' },
+    });
+    const question = clarificationOf(await waitForTerminal(conversation, first.generation!.id));
+    let release!: () => void;
+    spendingGate = new Promise<void>((resolve) => { release = resolve; });
+    turns.push(
+      { kind: 'sse', chunks: sseEnvelope('开始分析', { toolCall: {
+        name: 'spending.preview', arguments: { startDate: '2026-09-01', endDate: '2026-09-30' },
+      } }) },
+      { kind: 'sse', chunks: sseEnvelope('分析已在后台开始') },
+    );
+    try {
+      const second = await createGeneration(conversation, {
+        version: 1, clientRequestId: 'history-answer', input: {
+          type: 'choice', sourceGenerationId: first.generation!.id,
+          questionId: question.id, optionId: question.options[0]!.id,
+        },
+      });
+      const completed = await waitForTerminal(conversation, second.generation!.id);
+      expect(completed.status).toBe('completed');
+      await waitFor(async () => spendingSignal ? true : null);
+      expect(spendingSignal?.aborted).toBe(false);
+      release();
+      await waitFor(async () => {
+        const row = db.prepare('SELECT status FROM ai_analysis_runs ORDER BY created_at DESC LIMIT 1').get() as {status: string} | undefined;
+        return row?.status === 'ready' ? true : null;
+      });
+    } finally { release(); spendingGate = undefined; }
   });
 });
 

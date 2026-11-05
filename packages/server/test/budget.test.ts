@@ -685,8 +685,13 @@ describe('apply template to current cycle', () => {
       headers: authed(),
     });
 
-    expect(response.statusCode, response.body).toBe(200);
-    expect(response.json()).toMatchObject({
+    expect(response.statusCode, response.body).toBe(410);
+    expect(salaries.getByIdOrThrow(firstCurrent.id).allocations).toEqual([
+      { categoryId: TRANSPORT, amountCents: 1_000_000 },
+    ]);
+    // Legacy domain behaviour is retained for historical compatibility, but is no
+    // longer reachable through the public template mutation endpoint.
+    expect(salaries.applyTemplateToCurrentCycle(template.id)).toMatchObject({
       templateId: template.id,
       templateName: 'current-cycle',
       salaryCount: 2,
@@ -735,8 +740,9 @@ describe('apply template to current cycle', () => {
       headers: authed(),
     });
 
-    expect(response.statusCode).toBe(400);
-    expect(response.json().error.message).toMatch(/no current budget cycle/i);
+    expect(response.statusCode).toBe(410);
+    expect(response.json().error.code).toBe('TEMPLATE_RETIRED');
+    expect(() => salaries.applyTemplateToCurrentCycle(template.id)).toThrow(/no current budget cycle/i);
   });
 });
 // ---------------------------------------------------------------------------
@@ -1121,12 +1127,8 @@ describe('T14 budget overview for a historical cycle', () => {
     // The template funds only FOOD; TRANSPORT is deliberately template-excluded, so
     // its spending must surface as a zero-budget module in both cycles instead of
     // disappearing from the historical review or the carryover arithmetic.
-    const template = await post('/api/v1/templates', {
-      name: 'food-only',
-      modules: [{ categoryId: FOOD, ratio: 1 }],
-    });
-    expect(template.statusCode, template.body).toBe(201);
-    const templateId = template.json().id as string;
+    // This is a historical fixture, not a request to the retired write route.
+    const templateId = templates.create('food-only', [{ categoryId: FOOD, ratio: 1 }]).id;
 
     legacySalary({
       accountId: ACCOUNT,

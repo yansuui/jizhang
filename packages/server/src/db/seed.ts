@@ -14,9 +14,8 @@
  * exists is left completely untouched, so a user's rename or recolour of a preset
  * category survives every restart.
  *
- * Seeding also re-runs the template→tag backfill. Migrations run *before* seeding,
- * so on a fresh install migration 022 finds no templates to fold; the preset
- * template is inserted afterwards and would otherwise never become a tag.
+ * Seeding also re-runs the template→tag backfill for any unmapped legacy templates.
+ * Existing mappings prevent deleted or renamed tags from being re-created.
  */
 import {
   SEED_ACCOUNT,
@@ -114,7 +113,7 @@ export function seedDatabase(db: Db): SeedResult {
   // Inside the caller's connection but after the rows exist: `template_tag_mappings`
   // is created by migration 022, which has already run on every path that reaches
   // `initializeDatabase` (and the guard in the backfill tolerates a bare call).
-  // The seeded template itself is skipped there — it is not user-named content.
+  // The untouched preset is skipped; a user-renamed preset is preserved.
   backfillTemplateTags(db);
   return result;
 }

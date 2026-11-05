@@ -36,7 +36,6 @@ import SwiftUI
                         hero(value)
                         Divider().overlay(Color(uiColor: .separator).opacity(0.4))
                         attributes(value)
-                        if !readOnly { actionArea(value) }
                     } else if resource.loading {
                         loadingState
                     }
@@ -48,6 +47,12 @@ import SwiftUI
                 .padding(.bottom, 20)
             }
             .scrollBounceBehavior(.basedOnSize)
+            if let value = resource.value, !readOnly {
+                Divider()
+                actionArea(value)
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 20)
+            }
         }
         .background(Color(uiColor: .secondarySystemGroupedBackground))
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))

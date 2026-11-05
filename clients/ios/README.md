@@ -54,7 +54,7 @@ The generated project contains app and XCTest targets. The script selects a simu
 | Bills | Visible entry on Home/Bills/Plan, expense/income editing, centred modal detail card (Android-parity layout), linked refunds, delete, account and month/date-range filters, authoritative per-day expense/income/count summary | Server totals; original expense stays gross while refund is separate linked income; the detail card is an overlay so the tab, filters and scroll position survive; daily totals come only from `/transactions/daily-summary` (whole month, ≤32 days) and are never summed from loaded rows |
 | Four-purpose plan | Add allocated income, change current ratios, review income allocations and legacy sources | Four fixed purposes, exact 10000-bps totals, frozen historical allocations, server CAS and idempotency |
 | Other accounting screens | Server-backed stats, accounts, categories, goals, recurring and items | Existing display surfaces retained; additional mutations available through validated AI tools |
-| Tags | My → 标签 lists every tag with its linked-bill count and opens the filtered bill list; tags are the record-level labels that replaced allocation templates | Tag names come from the bills themselves; no separate template entity, no client-side mutation surface |
+| Tags | My → 标签 lists the tag catalog, including migrated names with zero linked bills; the bill editor can select existing tags or accept manually entered names | Existing transaction tags remain unchanged; no separate iOS template surface |
 | Historical organization | Start a background analysis of a date range, poll its progress, preview bill category/tag suggestions, select specific actions, prepare/confirm, undo through conversation | No automatic all-selection; note suggestions are reference only; paginated suggestions remain inspectable; template suggestions were retired with the allocation-template surface and are neither produced nor applicable |
 | File import | Attach a single WeChat XLSX or Alipay CSV, review rows/categories/notes, select 1–100 rows and confirm | Original-file SHA-256/size required; 5 MB limit; merged multi-file workspace remains available in Android |
 | Backups/admin | Existing read results and trusted UI | No model access to account secrets, unrestricted filesystem operations or offline restore |
@@ -85,6 +85,8 @@ The current plan surface follows the backend's continuous four-purpose fund cont
 ## Verification record
 
 Native compilation, XCTest, simulator launch and device installation are recorded separately in the task delivery evidence. A Windows source review alone is not a build. Live-provider behavior also requires a configured backend and explicit interaction.
+
+The subsequent tag-catalog picker, fixed bottom actions and background-run status UI changes have not yet been compiled by the previously recorded run; verify their exact commit with macOS CI before distributing an IPA.
 
 Initial implementation and verification are tracked in [the iOS task](../../.trellis/tasks/11-04-ios-assistant/implement.md). No production API deployment is included in this client delivery.
 

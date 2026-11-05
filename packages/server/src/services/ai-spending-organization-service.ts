@@ -94,16 +94,8 @@ const RESPONSE_SCHEMA: Record<string, unknown> = {
         required: ['name', 'type', 'parentCategoryId', 'evidenceTransactionIds', 'reason', 'confidence'],
       },
     },
-    templateProposals: {
-      // Deprecated and ignored. The allocation-template surface is retired (migration 022
-      // folds template names into tags), so the model is not asked for template advice and
-      // the schema keeps the member only so a provider replaying an older prompt shape
-      // still validates. Nothing below reads it back.
-      type: 'array',
-      items: { type: 'object' },
-    },
   },
-  required: ['reclassifications', 'tagSuggestions', 'noteSuggestions', 'newCategories', 'templateProposals'],
+  required: ['reclassifications', 'tagSuggestions', 'noteSuggestions', 'newCategories'],
 };
 
 interface EligibleRow {
@@ -678,7 +670,7 @@ export class AiSpendingOrganizationService {
   private assertResponseShape(raw: unknown): void {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new SpendingResponseShapeError('response');
     const record = raw as Record<string, unknown>;
-    for (const field of ['reclassifications', 'tagSuggestions', 'noteSuggestions', 'newCategories', 'templateProposals']) {
+    for (const field of ['reclassifications', 'tagSuggestions', 'noteSuggestions', 'newCategories']) {
       if (!Array.isArray(record[field])) throw new SpendingResponseShapeError(field);
     }
   }

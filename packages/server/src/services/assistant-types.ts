@@ -56,18 +56,20 @@ export const ASSISTANT_TOOL_NAMES = [
   'funds.read', 'funds.configure', 'funds.review', 'salaries.read', 'salary.create', 'salary.update', 'salary.delete',
   'plan.read', 'plan.preview', 'plan.save', 'goals.read', 'goals.opening', 'goals.create', 'goals.update', 'goals.delete',
   'items.read', 'item.create', 'item.update', 'item.sell', 'item.retire', 'item.delete',
-    // Template tools were removed with the allocation-template surface (migration 022 folds
-// template names into tags). The names are dropped here rather than kept as dead entries,
-// because `catalog()` throws for an allowlisted name with no registered tool.
   'settings.read', 'settings.cycle',
   'stats.query', 'planning.read', 'planning.configure', 'planning.mapping', 'planning.preview', 'planning.confirm',
   'planning.reconcile', 'planning.purpose', 'planning.refund-splits',
   'spending.preview', 'spending.card', 'spending.status', 'spending.evidence', 'spending.resume', 'spending.apply', 'spending.undo',
 ] as const;
 
-export type AssistantToolName = (typeof ASSISTANT_TOOL_NAMES)[number];
+// Persisted historical result/progress messages still contain these names. They are
+// accepted by decoders, but never registered or advertised as executable tools.
+const LEGACY_TEMPLATE_TOOL_NAMES = [
+  'templates.read', 'template.create', 'template.update', 'template.default', 'template.delete',
+] as const;
+export type AssistantToolName = (typeof ASSISTANT_TOOL_NAMES)[number] | (typeof LEGACY_TEMPLATE_TOOL_NAMES)[number];
 
-const ASSISTANT_TOOL_NAME_SET: ReadonlySet<string> = new Set(ASSISTANT_TOOL_NAMES);
+const ASSISTANT_TOOL_NAME_SET: ReadonlySet<string> = new Set([...ASSISTANT_TOOL_NAMES, ...LEGACY_TEMPLATE_TOOL_NAMES]);
 
 export function isAssistantToolName(value: string): value is AssistantToolName {
   return ASSISTANT_TOOL_NAME_SET.has(value);

@@ -162,14 +162,9 @@ export async function registerBudgetRoutes(
   //
   // The allocation-template surface is retired in favour of ordinary bill tags:
   // migration 022 folds every template name into `tags`, and the iOS client no
-  // longer exposes an entry point. These routes keep their exact old contract
-  // (same paths, methods, status codes, payloads) because Android and Harmony
-  // builds already installed on devices still call them; breaking them would
-  // strand those users mid-session rather than migrate them.
-  //
-  // A route response stays byte-compatible apart from one additive header, and
-  // the deprecated flag is also exposed on the list payload. Remove the routes
-  // only once no shipped client references them.
+  // longer exposes an entry point. Reading remains available for older clients;
+  // mutation routes explicitly return 410 so they cannot create new allocations.
+  // The list retains its items and adds a deprecation flag.
   const deprecated = (reply: FastifyReply): void => {
     reply.header('Deprecation', 'true');
     reply.header('Link', '</api/v1/tags>; rel="successor-version"');
@@ -181,53 +176,17 @@ export async function registerBudgetRoutes(
     return reply.send({ items: templates.list(), deprecated: true });
   });
 
-  app.post('/api/v1/templates', async (request: FastifyRequest, reply: FastifyReply) => {
-      const { templates } = getServices(request);
-    const body = (request.body ?? {}) as Record<string, unknown>;
-    const created = templates.create(
-      typeof body['name'] === 'string' ? body['name'] : '',
-      Array.isArray(body['modules']) ? (body['modules'] as never) : [],
-      body['isDefault'] === true,
-    );
+  // Shipped clients can inspect old templates, but creating, editing or applying
+  // allocations is intentionally retired. No historical allocation rows are modified.
+  const retired = (reply: FastifyReply) => {
     deprecated(reply);
-    return reply.status(201).send(created);
-  });
-
-  app.patch('/api/v1/templates/:id', async (request: FastifyRequest, reply: FastifyReply) => {
-      const { templates } = getServices(request);
-    const body = (request.body ?? {}) as Record<string, unknown>;
-    const updated = templates.update(requireId(request), {
-      ...(body['name'] === undefined ? {} : { name: String(body['name']) }),
-      ...(Array.isArray(body['modules']) ? { modules: body['modules'] as never } : {}),
-    });
-    deprecated(reply);
-    return reply.send(updated);
-  });
-
-  app.delete('/api/v1/templates/:id', async (request: FastifyRequest, reply: FastifyReply) => {
-      const { templates } = getServices(request);
-    templates.softDelete(requireId(request));
-    deprecated(reply);
-    return reply.status(204).send();
-  });
-
-  app.post(
-    '/api/v1/templates/:id/default',
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      const { templates } = getServices(request);
-      deprecated(reply);
-      return reply.send(templates.setDefault(requireId(request)));
-    },
-  );
-
-  app.post(
-    '/api/v1/templates/:id/apply-current',
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      const { salaries } = getServices(request);
-      deprecated(reply);
-      return reply.send(salaries.applyTemplateToCurrentCycle(requireId(request)));
-    },
-  );
+    return reply.status(410).send({ error: { code: 'TEMPLATE_RETIRED', message: '分配模板已停用，请改用标签。' } });
+  };
+  app.post('/api/v1/templates', async (_request: FastifyRequest, reply: FastifyReply) => retired(reply));
+  app.patch('/api/v1/templates/:id', async (_request: FastifyRequest, reply: FastifyReply) => retired(reply));
+  app.delete('/api/v1/templates/:id', async (_request: FastifyRequest, reply: FastifyReply) => retired(reply));
+  app.post('/api/v1/templates/:id/default', async (_request: FastifyRequest, reply: FastifyReply) => retired(reply));
+  app.post('/api/v1/templates/:id/apply-current', async (_request: FastifyRequest, reply: FastifyReply) => retired(reply));
 
   // ── settings ───────────────────────────────────────────────────────────────
   app.get('/api/v1/settings', async (_request: FastifyRequest, reply: FastifyReply) => {

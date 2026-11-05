@@ -741,7 +741,12 @@ export class AssistantGenerationRunner {
     }
     const scope = this.openToolScope(generationId, deadline);
     try {
-      const result = await Promise.race([this.registry.read(scope.context, toolName, args), scope.aborted]);
+      // These tools only schedule durable background work and return immediately. Their
+      // provider belongs to the tenant lifecycle, not this short-lived tool scope: disposing
+      // the latter aborts its signal and would otherwise cancel every scheduled batch.
+      const context = toolName === 'spending.preview' || toolName === 'spending.resume'
+        ? this.toolContext : scope.context;
+      const result = await Promise.race([this.registry.read(context, toolName, args), scope.aborted]);
       if (!this.isLive(conversationId, generationId) || this.isArchived(conversationId)) {
         return { dropped: true, result: null };
       }

@@ -30,6 +30,85 @@ enum AssistantSpendingSelection {
     }
 }
 
+/// Observe a durable background run without starting another paid model request.
+@MainActor struct AssistantSpendingRunStatus: View {
+    let api: APIClient
+    let runID: String
+    let initial: JSONValue
+    let onSuggestion: (String) -> Void
+    @State private var run: JSONValue = .null
+    @State private var card: JSONValue?
+    @State private var error: String?
+    @State private var showingReview = false
+
+    private var current: JSONValue { run.objectValue == nil ? initial : run }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("历史账单整理").font(.headline)
+            let status = current["status"].stringValue ?? "running"
+            if status == "running" {
+                ProgressView("正在分析 \(current["completedCount"].intValue ?? 0) / \(current["eligibleCount"].intValue ?? 0) 笔")
+            } else if status == "ready" {
+                Text("分析完成，请选择要采用的建议。")
+                Button("查看整理建议") { Task { await openCard() } }.buttonStyle(.bordered)
+            } else {
+                Text("分析未完成，请查看任务状态或稍后重试。")
+                if current["canResume"].boolValue == true {
+                    Button("继续未完成的分析") { onSuggestion("请继续历史账单整理任务 \(runID)，只处理未完成批次。") }
+                }
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
+            Button("刷新进度") { Task { await refresh() } }.font(.caption)
+        }
+        .task(id: runID) {
+            await refresh()
+            while !Task.isCancelled && current["status"].stringValue == "running" && error == nil {
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                await refresh()
+            }
+        }
+        .sheet(isPresented: $showingReview) {
+            NavigationStack {
+                ScrollView {
+                    if let card {
+                        AssistantSpendingReview(card: card) { prompt in
+                            showingReview = false
+                            onSuggestion(prompt)
+                        }.padding()
+                    }
+                }
+                .navigationTitle("整理建议")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("关闭") { showingReview = false } } }
+            }
+        }
+    }
+
+    private func refresh() async {
+        do {
+            let result: JSONValue = try await api.request("/ai/organization-runs/" + LedgerURL.segment(runID))
+            guard !Task.isCancelled else { return }
+            guard result["runId"].stringValue == runID, result["status"].stringValue != nil else { throw LedgerDataError.invalidResponse }
+            run = result
+            error = nil
+        } catch {
+            guard !Task.isCancelled else { return }
+            self.error = "进度读取失败：" + error.localizedDescription
+        }
+    }
+
+    private func openCard() async {
+        do {
+            let result: JSONValue = try await api.request("/ai/organization-runs/" + LedgerURL.segment(runID) + "/card")
+            guard result["runId"].stringValue == runID, result["status"].stringValue == "ready" else { throw LedgerDataError.invalidResponse }
+            card = result
+            showingReview = true
+            error = nil
+        } catch { self.error = "建议读取失败：" + error.localizedDescription }
+    }
+}
+
 struct AssistantSpendingReview: View {
     let card: JSONValue
     let onSuggestion: (String) -> Void

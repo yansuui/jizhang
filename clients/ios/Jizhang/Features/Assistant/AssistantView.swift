@@ -243,7 +243,7 @@ private struct AssistantChatView: View {
                             welcome
                         }
                         ForEach(state.messages) { message in
-                            AssistantMessageBubble(message: message, mayAnswer: store.canAnswer(message, in: conversation.id),
+                            AssistantMessageBubble(api: store.api, message: message, mayAnswer: store.canAnswer(message, in: conversation.id),
                                 mayConfirm: message.content.card.map { store.canAct(on: $0, in: conversation.id) } ?? false,
                                 mayCancel: message.content.card.map { store.canAct(on: $0, in: conversation.id, confirm: false) } ?? false,
                                 onReview: { card in actionReview = AssistantActionReview(card: card) },
@@ -387,6 +387,7 @@ struct AssistantNotice: View {
 }
 
 private struct AssistantMessageBubble: View {
+    let api: APIClient
     let message: AssistantMessage
     let mayAnswer: Bool
     let mayConfirm: Bool
@@ -409,7 +410,9 @@ private struct AssistantMessageBubble: View {
                 if let card = message.content.card { actionCard(card) }
                 if let result = message.content.result, let summary = result["summary"].stringValue, !summary.isEmpty {
                     Label(summary, systemImage: "doc.text.magnifyingglass").font(.subheadline).textSelection(.enabled)
-                    if result["data"]["actions"].arrayValue != nil, result["data"]["runId"].stringValue != nil {
+                    if let runID = result["data"]["run"]["runId"].stringValue, !runID.isEmpty {
+                        AssistantSpendingRunStatus(api: api, runID: runID, initial: result["data"]["run"], onSuggestion: onSuggestion)
+                    } else if result["data"]["actions"].arrayValue != nil, result["data"]["runId"].stringValue != nil {
                         AssistantSpendingReview(card: result["data"], onSuggestion: onSuggestion)
                     } else if result["data"].objectValue?.isEmpty == false {
                         DisclosureGroup("查看明细") { AssistantPreviewValues(value: result["data"], context: result["toolName"].stringValue ?? "").padding(.top, 8) }

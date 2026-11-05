@@ -5,6 +5,7 @@
  * existing ledger already has templates, salary allocations and possibly tags whose
  * names collide with a template. None of that may be destroyed or duplicated.
  */
+import { readFileSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { initializeDatabase, seedDatabase } from '../src/db/index.js';
@@ -69,6 +70,30 @@ function tagNames(db: Database.Database): string[] {
 }
 
 describe('022 template → tag migration', () => {
+  it('preserves a mapped tag deletion and rename across subsequent backfills', () => {
+    const db = preTemplatesDatabase();
+    try {
+      addTemplate(db, 'user-template', '出行');
+      runMigrations(db, null);
+      const row = db.prepare('SELECT tag_id FROM template_tag_mappings WHERE template_id = ?').get('user-template') as { tag_id: string };
+      db.prepare('UPDATE tags SET name = ?, deleted = 1 WHERE id = ?').run('已改名', row.tag_id);
+      backfillTemplateTags(db);
+      expect(db.prepare('SELECT name, deleted FROM tags WHERE id = ?').get(row.tag_id)).toEqual({ name: '已改名', deleted: 1 });
+      expect(db.prepare('SELECT COUNT(*) AS c FROM tags WHERE deleted = 0').get()).toEqual({ c: 0 });
+    } finally { db.close(); }
+  });
+
+  it('allows the documented SQL to run twice before the server migration', () => {
+    const db = preTemplatesDatabase();
+    try {
+      addTemplate(db, 'user-template', '出行');
+      const sql = readFileSync(new URL('../../../docs/migrations/022-template-to-tag.sql', import.meta.url), 'utf8');
+      db.exec(sql);
+      db.exec(sql);
+      expect(runMigrations(db, null).applied).toContain(22);
+      expect(db.prepare('SELECT name FROM tags WHERE deleted = 0').all()).toEqual([{ name: '出行' }]);
+    } finally { db.close(); }
+  });
   it('folds every live template into a tag while keeping template and allocation rows intact', () => {
     const db = preTemplatesDatabase();
     try {
@@ -147,7 +172,7 @@ describe('022 template → tag migration', () => {
     }
   });
 
-  it('revives a soft-deleted tag with the template name rather than duplicating it', () => {
+  it('preserves a soft-deleted tag while creating a distinct active label', () => {
     const db = preTemplatesDatabase();
     try {
       addTemplate(db, 'template-a', '日常分配');
@@ -161,7 +186,8 @@ describe('022 template → tag migration', () => {
         id: string;
         deleted: number;
       }[];
-      expect(rows).toEqual([{ id: 'tag-deleted', deleted: 0 }]);
+      expect(rows).toContainEqual({ id: 'tag-deleted', deleted: 1 });
+      expect(rows.filter((row) => row.deleted === 0)).toHaveLength(1);
     } finally {
       db.close();
     }
@@ -184,11 +210,14 @@ describe('022 template → tag migration', () => {
         id: string;
         name: string;
       }[];
-      expect(tags).toEqual([{ id: `tag-${tagNameKey('日常分配')}`, name: '用户改过的名字' }]);
+      expect(tags).toContainEqual({ id: `tag-${tagNameKey('日常分配')}`, name: '用户改过的名字' });
+      expect(tags).toHaveLength(2);
+      expect(tags.map((tag) => tag.name)).toContain('日常分配');
       const mapping = db
         .prepare('SELECT tag_id, tag_name FROM template_tag_mappings WHERE template_id = ?')
         .get('template-a') as { tag_id: string; tag_name: string };
-      expect(mapping.tag_name).toBe('用户改过的名字');
+      expect(mapping.tag_name).toBe('日常分配');
+      expect(mapping.tag_id).not.toBe(`tag-${tagNameKey('日常分配')}`);
     } finally {
       db.close();
     }

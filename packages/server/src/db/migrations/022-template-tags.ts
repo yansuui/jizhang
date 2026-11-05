@@ -1,4 +1,5 @@
-import { BUILTIN_DEFAULT_TEMPLATE_ID } from '@jizhang/shared';
+import { randomUUID } from 'node:crypto';
+import { BUILTIN_DEFAULT_TEMPLATE_ID, SEED_TEMPLATE } from '@jizhang/shared';
 import type { Db } from '../index.js';
 import { normaliseTags, tagNameKey } from '../../services/tags.js';
 
@@ -21,27 +22,23 @@ import { normaliseTags, tagNameKey } from '../../services/tags.js';
  *   * `template_tag_mappings` records which tag a template became. It is audit
  *     and rollback material only — no runtime code reads it.
  *
- * The seeded template is deliberately NOT folded. Every account starts with it, so
- * turning it into a tag would hand a brand-new user a meaningless "默认模板" label
- * before they have recorded anything. It is app furniture, not something they named.
+ * The unchanged seeded default is skipped to avoid a meaningless label on new
+ * accounts; a user-renamed default is retained. A tag previously deleted or renamed
+ * by the user is never revived or overwritten merely because a backfill runs again.
  *
- * Idempotency
- * -----------
- * The migration runs once per database by version, but `seed.ts` calls the same
- * backfill on every boot (a fresh install has no templates yet when migrations
- * run), so the function below must be safe to call repeatedly. It never renames
- * or re-creates an existing tag: a name match reuses (and un-deletes) the row, an
- * id match reuses the row it found, and only a complete miss inserts.
+ * The backfill may run on startup and in manual-repair workflows. Existing mappings
+ * are immutable: they prevent deleted/renamed tags being re-created on restart. A new
+ * mapping reuses an active tag of the same name, otherwise creates a distinct identity.
  */
 export const MIGRATION_022_TEMPLATE_TAGS = `
-CREATE TABLE template_tag_mappings (
+CREATE TABLE IF NOT EXISTS template_tag_mappings (
   template_id   TEXT PRIMARY KEY,
   template_name TEXT NOT NULL,
   tag_id        TEXT NOT NULL,
   tag_name      TEXT NOT NULL,
   created_at    INTEGER NOT NULL
 );
-CREATE INDEX template_tag_mappings_tag ON template_tag_mappings(tag_id);
+CREATE INDEX IF NOT EXISTS template_tag_mappings_tag ON template_tag_mappings(tag_id);
 `;
 
 interface TemplateRow {
@@ -70,58 +67,40 @@ export function backfillTemplateTags(db: Db, now = Date.now()): number {
   const templates = db
     .prepare('SELECT id, name FROM budget_templates WHERE deleted = 0 ORDER BY id')
     .all() as TemplateRow[];
-  const findByName = db.prepare('SELECT id FROM tags WHERE name = ?');
-  const findById = db.prepare('SELECT id, name FROM tags WHERE id = ?');
-  // Only a soft-deleted row is written. Touching `updated_at` on an already-live tag
-  // would make every boot a data change, which breaks the ledger snapshot guarantees
-  // (and would show up as spurious "modified" rows to a client diffing them).
-  const revive = db.prepare(
-    'UPDATE tags SET deleted = 0, updated_at = ? WHERE id = ? AND deleted = 1',
-  );
+  const findByName = db.prepare('SELECT id FROM tags WHERE name = ? AND deleted = 0');
+  const findById = db.prepare('SELECT id FROM tags WHERE id = ?');
+  const findMapping = db.prepare('SELECT 1 FROM template_tag_mappings WHERE template_id = ?');
   const insert = db.prepare(
     'INSERT INTO tags (id, name, parent_id, deleted, created_at, updated_at) VALUES (?, ?, NULL, 0, ?, ?)',
   );
   const recordMapping = db.prepare(
     `INSERT INTO template_tag_mappings (template_id, template_name, tag_id, tag_name, created_at)
      VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(template_id) DO UPDATE SET
-       template_name = excluded.template_name,
-       tag_id = excluded.tag_id,
-       tag_name = excluded.tag_name`,
+     ON CONFLICT(template_id) DO NOTHING`,
   );
 
   let created = 0;
   const run = db.transaction((): number => {
     for (const template of templates) {
-      // The seeded template is app furniture that every account has; folding it
-      // would put a meaningless "默认模板" label in a brand-new user's tag list.
-      if (template.id === BUILTIN_DEFAULT_TEMPLATE_ID) continue;
+      // A renamed preset is user data; only the untouched default name is skipped.
+      if (template.id === BUILTIN_DEFAULT_TEMPLATE_ID && template.name === SEED_TEMPLATE.name) continue;
+      // Backfill is called at startup too. Once mapped, never recreate a tag the user
+      // subsequently renamed or deleted, and never silently change the audit mapping.
+      if (findMapping.get(template.id) !== undefined) continue;
       const name = normaliseTags([template.name])[0];
       if (name === undefined) continue;
 
       const byName = findByName.get(name) as { id: string } | undefined;
-      let tagId: string;
-      let tagName = name;
-      if (byName !== undefined) {
-        tagId = byName.id;
-        revive.run(now, tagId);
-      } else {
-        // The derived id may already belong to a tag the user renamed. Reusing it
-        // keeps `tags.id` stable for bills that reference the name, and skipping
-        // the rename avoids overwriting the user's choice.
+      let tagId = byName?.id;
+      if (tagId === undefined) {
         const derivedId = `tag-${tagNameKey(name)}`;
-        const byId = findById.get(derivedId) as { id: string; name: string } | undefined;
-        if (byId !== undefined) {
-          tagId = byId.id;
-          tagName = byId.name;
-          revive.run(now, tagId);
-        } else {
-          tagId = derivedId;
-          insert.run(tagId, name, now, now);
-          created += 1;
-        }
+        // A renamed or soft-deleted row can own the derived ID. It is not the same
+        // active tag; allocate a fresh identity without changing the historical row.
+        tagId = findById.get(derivedId) === undefined ? derivedId : randomUUID();
+        insert.run(tagId, name, now, now);
+        created += 1;
       }
-      recordMapping.run(template.id, template.name, tagId, tagName, now);
+      recordMapping.run(template.id, template.name, tagId, name, now);
     }
     return created;
   });

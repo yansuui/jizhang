@@ -6,6 +6,9 @@ import SwiftUI
     private let editing: Bool
     @Environment(\.dismiss) private var dismiss
     @StateObject private var store: LedgerTransactionEditorStore
+    @State private var availableTags: [LedgerTag] = []
+    @State private var tagLoadError: String?
+    @State private var showingTags = false
 
     init(api: APIClient, transaction: LedgerTransaction? = nil, refundOf: LedgerTransaction? = nil, onSaved: @escaping () -> Void) {
         self.api = api
@@ -89,6 +92,7 @@ import SwiftUI
                     Section {
                         TextField("备注（选填）", text: $store.draft.note, axis: .vertical).lineLimit(2...5)
                         TextField("标签，用逗号分隔（选填）", text: $store.draft.tags)
+                        Button("选择已有标签") { showingTags = true }
                     }
                     if store.draft.isRefund {
                         Section("关联原支出") {
@@ -123,9 +127,67 @@ import SwiftUI
             }
             .interactiveDismissDisabled(store.saving || store.awaitingReconciliation)
             .task { await store.load(api: api) }
+            .sheet(isPresented: $showingTags) {
+                NavigationStack {
+                    List {
+                        if let tagLoadError {
+                            Text(tagLoadError).foregroundStyle(.secondary)
+                            Button("重试") { Task { await loadTags() } }
+                        } else if availableTags.isEmpty {
+                            Text("暂无标签，可以在账单中手动填写。")
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(availableTags) { tag in
+                            Button {
+                                store.draft.tags = LedgerBillTagSelection.toggling(tag.name, in: store.draft.tags)
+                            } label: {
+                                HStack {
+                                    Text(tag.name)
+                                    Spacer()
+                                    if LedgerBillTagSelection.names(in: store.draft.tags).contains(tag.name) {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .navigationTitle("选择标签")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showingTags = false } } }
+                    .task { await loadTags() }
+                }
+            }
+        }
+    }
+
+    private func loadTags() async {
+        do {
+            let page: LedgerPage<LedgerTag> = try await api.request("/tags/hierarchy")
+            guard !Task.isCancelled else { return }
+            availableTags = page.items
+            tagLoadError = nil
+        } catch {
+            guard !Task.isCancelled else { return }
+            tagLoadError = error.localizedDescription
         }
     }
 
     private func save() { Task { if await store.save(api: api) { finish() } } }
     private func finish() { onSaved(); dismiss() }
+}
+
+/// Preserve manually entered tags while allowing a catalog label to be toggled.
+enum LedgerBillTagSelection {
+    static func names(in text: String) -> [String] {
+        text.components(separatedBy: CharacterSet(charactersIn: ",，\n"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    static func toggling(_ name: String, in text: String) -> String {
+        var values = names(in: text)
+        if values.contains(name) { values.removeAll { $0 == name } }
+        else { values.append(name) }
+        return values.joined(separator: "，")
+    }
 }

@@ -1,6 +1,6 @@
 # 记账 Android App：当前功能目录
 
-**2026-11-05 分配模板退役（服务端与 iOS 变更，Android 源码未改）：** 服务端停止把「分配模板」当作产品能力，新增迁移 022 把每个用户自建模板名折叠为同名账单标签（`template_tag_mappings` 仅作审计/回滚，`budget_templates`/`budget_allocations` 行一律保留，历史工资分配快照不受影响），预置的 `builtin-default-template` 刻意不折叠。`/api/v1/templates*` 仍按原契约工作（Android M02.01–M02.07 行为不变），但响应新增 `Deprecation: true`、`Link: </api/v1/tags>; rel="successor-version"` 头与列表里的 `deprecated: true` 字段；Android 忽略这些附加字段，不需要改代码，模板管理页继续可用但已属待移除状态。助理侧 `templates.read`/`template.create`/`template.update`/`template.default`/`template.delete` 已从工具白名单移除（A114 见下），历史整理卡片不再产生 `templateProposals`（A105/A106 见下），因此 §6.1 的“AI 还生成了 N 个预算模板建议”分支在服务端恒为 0、不会显示。同日修复 assistant 历史整理第二次回复必然失败的缺陷：`spending.preview`/`spending.resume` 改为后台启动并立即返回 `run`，需用 `spending.status` 轮询进度、`spending.card` 读取建议；此前它会 await 整段分批次分析，撞上单次生成 180 秒硬上限。**本节只记录服务端契约与 Android 的既有消费路径，Android 源码未修改、未重新编译、未真机验证；iOS 为本次主开发端。**
+**2026-11-05 分配模板退役（服务端与 iOS 变更，Android 源码未改）：** 服务端停止把「分配模板」当作产品能力，新增迁移 022 把每个用户自建模板名折叠为同名账单标签（`template_tag_mappings` 仅作审计/回滚，`budget_templates`/`budget_allocations` 行一律保留，历史工资分配快照不受影响），预置的 `builtin-default-template` 刻意不折叠。`GET /api/v1/templates` 保持只读兼容并返回弃用标记；创建、编辑、删除、设置默认和应用当前周期均返回 410。Android 源码仍保留 M02.01–M02.07 的入口和按钮，但这些写入不再可用，需要后续客户端适配。助理侧 `templates.read`/`template.create`/`template.update`/`template.default`/`template.delete` 已从工具白名单移除（A114 见下），历史整理卡片不再产生 `templateProposals`（A105/A106 见下），因此 §6.1 的“AI 还生成了 N 个预算模板建议”分支在服务端恒为 0、不会显示。同日修复 assistant 历史整理第二次回复必然失败的缺陷：`spending.preview`/`spending.resume` 改为后台启动并立即返回 `run`，需用 `spending.status` 轮询进度、`spending.card` 读取建议；此前它会 await 整段分批次分析，撞上单次生成 180 秒硬上限。**本节只记录服务端契约与 Android 的既有消费路径，Android 源码未修改、未重新编译、未真机验证；iOS 为本次主开发端。**
 
 **2026-11-05 助手业务工具局部源码复核：** 核对 A020/A021/A024、A072/A073/A077/A084/A087，新增 A107–A116 业务能力组，更新 §6.3/6.5、§9.3/10 的服务端工具及 Android 通用卡边界。工具沿用既有 v1 消息、确认卡、结果与 confirm/cancel 接口；本次没有新增 Android 页面或 HTTP 路由。Android 不按工具名限制通用卡确认，但复杂结果摘要、聊天中逐项选择和成功后的跨页面刷新仍有缺口，详见下文。这里只记录源码与契约核对；自动化门禁由本轮任务另行记录，不代表已接真实 Provider、真机安装或生产部署。其他章节审计日期和历史统计不变。
 
@@ -326,7 +326,7 @@
 
 ### 4.10 M02 工资分配模板（已退役，源码保留）
 
-> **2026-11-05 状态：产品方向已取消「分配模板」，模板语义并入账单标签。** 服务端保留表与 `/templates` 路由（已弃用标记），故以下 M02 条目描述的行为在 Android 源码中仍然成立、仍可操作；但该页面已列入移除计划，新功能不应再依赖模板。稳定 ID 全部保留，不回收、不复用。
+> **2026-11-05 状态：分配模板已退役。** Android 源码仍显示以下 M02 入口和按钮，但服务端只允许读取旧模板；写入和应用返回 410。以下 M02.02–M02.06 不再端到端可用；稳定 ID 全部保留，不回收、不复用。
 
 | ID | 当前能力与行为 | 证据 |
 |---|---|---|
@@ -384,7 +384,7 @@
 | 四账户理财计划 | GET/PUT `/financial-plan`、POST `/financial-plan/preview` | 三项严格整数分输入；独立settings保存一份当前方案，revision CAS/精确重试；目标与预测由shared计算；不写账本、不调用AI |
 | 基金配置 | GET/PUT `/api/v1/financial-funds/config` | 服务端配置带 revision；当前 Android 工资表单未接入此配置或新基金工资合同，不表示四用途 UI 已实现 |
 | 工资 | GET `/salaries`、`/:id`；POST；PATCH `/:id`；PUT `/:id/allocations`；DELETE `/:id` | Android 发旧模板 POST，当前服务端对尚未提交的旧请求返回 410；已提交的相同用户/键/原载荷仍可重放。新建基金工资须 `contractVersion: 1`、`expectedFundConfigRevision`、`operationId`，不接受模板/allocations；新基金工资编辑/删除须版本 1、`expectedGrantRevision` 和 `operationId`，旧 Android 未实现。旧 PUT 是模块分配而非基金 grant 写入。列表最多200，App无分页 |
-| 模板（已弃用） | GET/POST `/templates`；PATCH/DELETE `/:id`；POST `/:id/default`、`/:id/apply-current` | API create支持isDefault，Android创建不提供默认开关而用列表单独设默认。**2026-11-05：** 全部响应新增 `Deprecation: true` 与 `Link: </api/v1/tags>; rel="successor-version"` 头，列表另加 `deprecated: true`；状态码与其余字段不变，Android 忽略附加字段。迁移 022 已把用户自建模板名折叠为同名标签，预置默认模板不折叠 |
+| 模板（已退役，只读兼容） | GET `/templates`；原 POST/PATCH/DELETE 模板路由 | GET 可读取旧数据并包含弃用标记；所有模板写入及应用当前周期返回 410 `TEMPLATE_RETIRED`。Android 仍展示对应按钮，但写入不再可用；迁移 022 保留旧数据并将模板名加入标签目录。 |
 | 周期设置 | GET/PUT `/settings`，cycleStartDay=null或1..28 | Android暴露在SettingsTab，由其他研究覆盖 |
 | 统计与分类下钻 | GET `/stats/window?kind=month\|last30&month?`、`/category-share?from&to&accountId?&categoryId?`、`/monthly-trend?months&endMonth?`、`/pool-trend` | window不传month默认服务端当前月；分类/明细使用同一个from/to及精确ID；响应expenseCount/totalCents与nullable账户/分类条件回显；趋势保留1..36服务端/3、6、12 Android；旧range/month-window仍兼容但统计页不再调用 |
 

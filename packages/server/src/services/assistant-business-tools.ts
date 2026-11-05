@@ -363,6 +363,7 @@ async function startingAnalysis(c: Context, a: Args): Promise<Args> {
       ? { run, step: 'read-card', nextStep: 'spending.card', note: '分析已完成，可直接用 spending.card 分页读取建议。' }
       : { run, step: 'poll', nextStep: 'spending.status', note: '分析已在后台开始，预计较慢。请用 spending.status 查询进度；状态为 ready 后用 spending.card 分页读取建议。' });
   } catch (error) {
+    if (!(error instanceof Error) || !('code' in error) || error.code !== 'AI_ORGANIZATION_BUSY') throw error;
     const existing = existingRun(c, startDate, endDate);
     if (existing === undefined) throw error;
     return json({ run: existing, step: 'poll', nextStep: 'spending.status', note: '该日期范围已有整理任务；请用 spending.status 查询它，ready 后用 spending.card 读取建议，不要重复开始。' });
@@ -374,7 +375,7 @@ function existingRun(c: Context, startDate: string, endDate: string): AssistantJ
   const row = c.db
     .prepare(
       `SELECT id FROM ai_analysis_runs
-        WHERE start_date = ? AND end_date = ? AND status IN ('running', 'ready')
+        WHERE start_date = ? AND end_date = ? AND status = 'running'
         ORDER BY created_at DESC LIMIT 1`,
     )
     .get(startDate, endDate) as { id: string } | undefined;

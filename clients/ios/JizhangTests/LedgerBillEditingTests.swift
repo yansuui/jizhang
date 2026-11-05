@@ -6,6 +6,13 @@ import UIKit
 final class LedgerBillEditingTests: XCTestCase {
     override func tearDown() { BillTestProtocol.configure(nil); super.tearDown() }
 
+    func testTagPickerPreservesManualNamesAndTogglesSelection() {
+        let added = LedgerBillTagSelection.toggling("旅行", in: "餐饮, 工作\n家庭")
+        XCTAssertEqual(LedgerBillTagSelection.names(in: added), ["餐饮", "工作", "家庭", "旅行"])
+        let removed = LedgerBillTagSelection.toggling("工作", in: added)
+        XCTAssertEqual(LedgerBillTagSelection.names(in: removed), ["餐饮", "家庭", "旅行"])
+    }
+
     func testCentsAreExactAndRejectFractionalCentsScientificNotationAndOverflow() throws {
         XCTAssertEqual(try LedgerTransactionDraft.cents("0.01"), 1)
         XCTAssertEqual(try LedgerTransactionDraft.cents(" 123.4 "), 12_340)

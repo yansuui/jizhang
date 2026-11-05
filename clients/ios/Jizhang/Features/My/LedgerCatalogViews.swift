@@ -19,8 +19,8 @@ import Combine
 @MainActor struct LedgerTagsView: View {
     let api: APIClient
     var body: some View {
-        LedgerReadList(api: api, title: "标签", path: "/tags", needsMetadata: false,
-                       footer: "标签就是原先「分配模板」想表达的记录分类：在账单里用逗号分隔填写即可复用，点标签可查看关联账单。") { (tag: LedgerTag, _) in
+        LedgerReadList(api: api, title: "标签", path: "/tags/hierarchy", needsMetadata: false,
+                       footer: "标签可用于标记和筛选账单。旧模板名称保留在标签目录中；原有分类和历史分配不变。") { (tag: LedgerTag, _) in
             NavigationLink { BillsView(api: api, initialQuery: LedgerBillQuery(tag: tag.name)) } label: {
                 LedgerCatalogRow(title: tag.name, subtitle: "记录标签", symbol: "tag", detail: "\(tag.count) 笔")
             }
