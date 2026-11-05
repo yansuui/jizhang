@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 1
-- **Last Active**: 2026-11-04
+- **Total Sessions**: 2
+- **Last Active**: 2026-11-05
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~44 | Active |
+| `journal-1.md` | ~66 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 2 | 2026-11-05 | Invite-only accounts and native registration delivered | `351bcff`, `ebe9453` | `feat/ios-assistant` |
 | 1 | 2026-11-04 | Native iOS IPA ready; device connection deferred | `28c7331`, `cb7e98f`, `bc04ea6`, `7816ac5`, `e8734cc` | `feat/ios-assistant` |
 <!-- @@@/auto:session-history -->
 
