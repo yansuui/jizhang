@@ -20,7 +20,7 @@ final class ScreenPreviewTests: XCTestCase {
             "items": names.enumerated().map { index, name in
                 ["id": "account-\(index)", "title": name, "subtitle": "测试账本 · 账户 \(index + 1)"]
             }, "page": ["offset": 0, "limit": 7, "total": 18, "hasMore": true]]
-        let value = try JSONValue.decodeData(JSONSerialization.data(withJSONObject: object))
+        let value = try JSONDecoder().decode(JSONValue.self, from: JSONSerialization.data(withJSONObject: object))
         CoreMockURLProtocol.setHandler { request in
             XCTAssertEqual(request.httpMethod, "GET")
             XCTAssertEqual(request.url?.path, "/api/v1/assistant/conversations/selection-preview/workspace/interactions/account-choice-preview")
