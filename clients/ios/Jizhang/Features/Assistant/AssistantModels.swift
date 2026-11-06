@@ -29,10 +29,24 @@ struct AssistantFault: Codable, Equatable {
         case "AI_RESPONSE_INVALID": return "AI 返回的内容无法识别，请检查模型和接口协议。"
         case "ASSISTANT_CHOICE_STALE": return "这个问题已经更新，请刷新对话后继续。"
         case "ASSISTANT_GENERATION_ACTIVE": return "这段对话仍在生成回复，请等待或先停止。"
-        case "ASSISTANT_STREAM_BOUNDS": return "本次回复未能完成，可以查看已有内容后重新提问。"
+        case "ASSISTANT_STREAM_BOUNDS":
+            // Only fixed, server-owned sentences may select a specific explanation.
+            // Never display arbitrary provider bodies or internal exception messages.
+            return Self.safeStreamMessages[message] ?? "本次回复未能完成，可以查看已有内容后重新提问。"
         default: return "本次请求未能完成，请刷新核对后重试。"
         }
     }
+
+    private static let safeStreamMessages: [String: String] = [
+        "AI 响应超时，本次生成已中断。": "AI 服务响应超时，请稍后重试。",
+        "暂时无法连接 AI 服务，本次生成已中断。": "暂时无法连接 AI 服务，请检查服务连接或稍后重试。",
+        "AI 服务当前不可用，本次生成已中断。": "AI 服务当前不可用，请检查 AI 配置。",
+        "AI 返回内容无法识别，本次生成未产生结果。": "模型返回的格式无法识别，请核对模型和接口配置。",
+        "本次生成步骤过多，已中断。": "这次处理步骤达到上限，可缩小范围或继续提问。",
+        "本次生成超出时限，已中断。": "这次处理已超时。后台整理可通过任务卡查看进度。",
+        "本次生成已停止或超出时限。": "这次处理已停止或超时，请刷新对话核对状态。",
+        "配置已变化，请核对后重新发起生成。": "AI 配置已变化，请刷新对话后重新发送。"
+    ]
 }
 
 struct AssistantClarification: Codable, Equatable, Identifiable {

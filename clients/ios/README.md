@@ -74,6 +74,7 @@ The current plan surface follows the backend's continuous four-purpose fund cont
 - Same-draft retries keep their request ID. A disconnect reconciles the same generation; it does not automatically create another model request.
 - Drafts, messages and in-flight work belong to a server/session/conversation identity. Changing server or expiring a session cannot publish into a newer one.
 - Generated previews do not confirm ledger changes. A reply being complete does not mean money was recorded.
+- Background organization turns hand off a durable task card. The phone observes the existing run with bounded, cancellable GET polling; a temporary read failure can recover, and manual refresh restarts observation without another model request. Known safe stream-failure causes have distinct explanations; unknown provider text is never displayed directly.
 - `APIClient.ledgerRevision` invalidates ledger surfaces after successful writes within one API identity. Obsolete sessions cannot broadcast into another account.
 - Ambiguous bill/plan/assistant writes retain the same operation/action identity and payload while the current session remains alive. Closing and reopening a sheet must recover that pending operation. Cold-start persistence of manual draft state is not implemented.
 - Uploaded bill bytes and selected confirmation payloads remain in memory only for the active assistant store. Reopening an old import card can reattach its original file; mismatched hashes or sizes cannot confirm it.

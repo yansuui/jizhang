@@ -7,6 +7,30 @@ import XCTest
 /// They support visual review; they do not claim live-provider or physical-device acceptance.
 final class ScreenPreviewTests: XCTestCase {
     @MainActor
+    func testBackgroundSpendingTaskCardAtCompactWidth() async throws {
+        let ready = expectation(description: "Read-only background progress loaded")
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CoreMockURLProtocol.self]
+        let api = try APIClient(baseURL: ServerAddress.parse("https://example.com"), credentialStore: CoreMemoryCredentialStore(),
+                                restoreSession: false, configuration: config)
+        defer { api.invalidate(); CoreMockURLProtocol.setHandler(nil) }
+        CoreMockURLProtocol.setHandler { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/api/v1/ai/organization-runs/preview-run")
+            let response = try XCTUnwrap(HTTPURLResponse(url: XCTUnwrap(request.url), statusCode: 200,
+                httpVersion: nil, headerFields: ["Content-Type": "application/json"]))
+            let value: [String: Any] = ["runId": "preview-run", "status": "ready", "eligibleCount": 36, "completedCount": 36, "canResume": false]
+            ready.fulfill()
+            return (response, try JSONSerialization.data(withJSONObject: value))
+        }
+        try await capture("assistant-background-run-card-compact", ready: ready) {
+            List {
+                AssistantSpendingRunStatus(api: api, runID: "preview-run", initial: .null, onSuggestion: { _ in })
+            }.navigationTitle("历史账单整理")
+        }
+    }
+
+    @MainActor
     func testActionConfirmationAtCompactWidth() async throws {
         let ready = expectation(description: "Action preview ready")
         ready.fulfill()

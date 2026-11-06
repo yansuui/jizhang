@@ -412,6 +412,7 @@ private struct AssistantMessageBubble: View {
                     Label(summary, systemImage: "doc.text.magnifyingglass").font(.subheadline).textSelection(.enabled)
                     if let runID = result["data"]["run"]["runId"].stringValue, !runID.isEmpty {
                         AssistantSpendingRunStatus(api: api, runID: runID, initial: result["data"]["run"], onSuggestion: onSuggestion)
+                            .id("\(api.identity):\(runID)")
                     } else if result["data"]["actions"].arrayValue != nil, result["data"]["runId"].stringValue != nil {
                         AssistantSpendingReview(card: result["data"], onSuggestion: onSuggestion)
                     } else if result["data"].objectValue?.isEmpty == false {

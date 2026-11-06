@@ -32,46 +32,54 @@ enum AssistantSpendingSelection {
 
 /// Observe a durable background run without starting another paid model request.
 @MainActor struct AssistantSpendingRunStatus: View {
-    let api: APIClient
-    let runID: String
-    let initial: JSONValue
+    @StateObject private var store: AssistantSpendingRunStore
     let onSuggestion: (String) -> Void
-    @State private var run: JSONValue = .null
-    @State private var card: JSONValue?
-    @State private var error: String?
     @State private var showingReview = false
+    @State private var refreshTicket = UUID()
 
-    private var current: JSONValue { run.objectValue == nil ? initial : run }
+    init(api: APIClient, runID: String, initial: JSONValue, onSuggestion: @escaping (String) -> Void) {
+        _store = StateObject(wrappedValue: AssistantSpendingRunStore(api: api, runID: runID, initial: initial))
+        self.onSuggestion = onSuggestion
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("历史账单整理").font(.headline)
-            let status = current["status"].stringValue ?? "running"
-            if status == "running" {
-                ProgressView("正在分析 \(current["completedCount"].intValue ?? 0) / \(current["eligibleCount"].intValue ?? 0) 笔")
-            } else if status == "ready" {
-                Text("分析完成，请选择要采用的建议。")
-                Button("查看整理建议") { Task { await openCard() } }.buttonStyle(.bordered)
-            } else {
-                Text("分析未完成，请查看任务状态或稍后重试。")
-                if current["canResume"].boolValue == true {
-                    Button("继续未完成的分析") { onSuggestion("请继续历史账单整理任务 \(runID)，只处理未完成批次。") }
+            if store.status == "ready" {
+                Label("分析完成，请选择要采用的建议。", systemImage: "checkmark.circle")
+                Button {
+                    Task { showingReview = await store.openCard() }
+                } label: {
+                    HStack {
+                        if store.opening { ProgressView() }
+                        Text("查看整理建议")
+                    }
+                }.buttonStyle(.bordered).disabled(store.opening)
+            } else if store.status == "failed" {
+                Text("分析未完成，已保留可用的进度。")
+                if store.run["canResume"].boolValue == true {
+                    Button("继续未完成的分析") {
+                        onSuggestion("请继续历史账单整理任务 \(store.runID)，只处理未完成批次。")
+                    }.buttonStyle(.bordered)
                 }
+            } else if store.status == "cancelled" {
+                Text("这次整理已停止，账本没有被整理任务修改。")
+            } else if store.observing && store.error == nil {
+                ProgressView(store.progressText)
+            } else {
+                Text(store.progressText).foregroundStyle(.secondary)
             }
-            if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
-            Button("刷新进度") { Task { await refresh() } }.font(.caption)
+            Text("分析只生成建议，选择并确认后才会修改账本。")
+                .font(.caption).foregroundStyle(.secondary)
+            if let error = store.error { Text(error).font(.caption).foregroundStyle(.secondary) }
+            Button(store.observing ? "重新读取进度" : "刷新进度") { refreshTicket = UUID() }
+                .font(.caption).disabled(store.opening)
         }
-        .task(id: runID) {
-            await refresh()
-            while !Task.isCancelled && current["status"].stringValue == "running" && error == nil {
-                do { try await Task.sleep(for: .seconds(3)) } catch { return }
-                await refresh()
-            }
-        }
+        .task(id: refreshTicket) { await store.observe() }
         .sheet(isPresented: $showingReview) {
             NavigationStack {
                 ScrollView {
-                    if let card {
+                    if let card = store.card {
                         AssistantSpendingReview(card: card) { prompt in
                             showingReview = false
                             onSuggestion(prompt)
@@ -84,29 +92,6 @@ enum AssistantSpendingSelection {
             }
         }
     }
-
-    private func refresh() async {
-        do {
-            let result: JSONValue = try await api.request("/ai/organization-runs/" + LedgerURL.segment(runID))
-            guard !Task.isCancelled else { return }
-            guard result["runId"].stringValue == runID, result["status"].stringValue != nil else { throw LedgerDataError.invalidResponse }
-            run = result
-            error = nil
-        } catch {
-            guard !Task.isCancelled else { return }
-            self.error = "进度读取失败：" + error.localizedDescription
-        }
-    }
-
-    private func openCard() async {
-        do {
-            let result: JSONValue = try await api.request("/ai/organization-runs/" + LedgerURL.segment(runID) + "/card")
-            guard result["runId"].stringValue == runID, result["status"].stringValue == "ready" else { throw LedgerDataError.invalidResponse }
-            card = result
-            showingReview = true
-            error = nil
-        } catch { self.error = "建议读取失败：" + error.localizedDescription }
-    }
 }
 
 struct AssistantSpendingReview: View {
@@ -115,6 +100,10 @@ struct AssistantSpendingReview: View {
     @State private var selected = Set<String>()
     private var actions: [JSONValue] { AssistantSpendingSelection.actions(card) }
     private var prompt: String? { AssistantSpendingSelection.prompt(card: card, selected: selected) }
+    private var expired: Bool {
+        guard let expiry = card["expiresAt"].intValue else { return true }
+        return expiry <= Int64(Date().timeIntervalSince1970 * 1_000)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -144,6 +133,12 @@ struct AssistantSpendingReview: View {
             }
             Button("为所选 \(selected.count) 项生成草案") { if let prompt { onSuggestion(prompt) } }
                 .buttonStyle(.bordered).disabled(prompt == nil)
+            if expired {
+                Text("整理建议已过期，请重新分析后再选择。").font(.caption).foregroundStyle(.secondary)
+            } else if !selected.isEmpty && prompt == nil {
+                Text("所选内容超过单次消息支持的范围，请分批生成草案。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if card["hasMore"].boolValue == true, let runID = card["runId"].stringValue {
                 Button("查看下一页建议") {
                     let offset = (card["offset"].intValue ?? 0) + (card["limit"].intValue ?? 100)

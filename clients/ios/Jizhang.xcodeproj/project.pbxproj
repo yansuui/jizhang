@@ -145,6 +145,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "F8EDD8B94EC04B395AB70CBE";
 		};
+		"80A4FFB947BDF4C63D177180" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Jizhang/Features/Assistant/AssistantSpendingRunStore.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"750E25B4920B5D8140584332" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "80A4FFB947BDF4C63D177180";
+		};
 		"EE45EB9BE5D4E57C23762B0B" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -475,6 +485,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "80043992FCFE15B3855AD66E";
 		};
+		"1CC61DD5197C3CD3587B9514" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "JizhangTests/AssistantSpendingRunTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"6CE0469DEE7A4D86550E655A" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "1CC61DD5197C3CD3587B9514";
+		};
 		"9747A7A40056BA4F24B6BDEB" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -652,6 +672,7 @@
 				"150262C7DE54887539490F09",
 				"723D9A635D957B8269FD0DE6",
 				"F8EDD8B94EC04B395AB70CBE",
+				"80A4FFB947BDF4C63D177180",
 				"EE45EB9BE5D4E57C23762B0B",
 				"1FCB1F8439787BC8B784B940",
 				"82E0265BB9A8A0A8E147F9A7",
@@ -692,6 +713,7 @@
 			"isa" = "PBXGroup";
 			"children" = (
 				"80043992FCFE15B3855AD66E",
+				"1CC61DD5197C3CD3587B9514",
 				"9747A7A40056BA4F24B6BDEB",
 				"7658D7616C01FD79A7F54799",
 				"B2599AC3949AD9D41D06A5D0",
@@ -755,6 +777,7 @@
 				"E4026D32711A71CF76E126FB",
 				"D3F87E161BF87C090732F608",
 				"1FB00D5D25AEE480F4891A07",
+				"750E25B4920B5D8140584332",
 				"B24F32CE2F5ADD1C33DC4895",
 				"A76AF89693F604D022878055",
 				"24C0B0488D6EF2A57EB7683F",
@@ -795,6 +818,7 @@
 			"buildActionMask" = 2147483647;
 			"files" = (
 				"B8CF0D4255E9872207E90B1B",
+				"6CE0469DEE7A4D86550E655A",
 				"DEB2E92658D7751C8867A20D",
 				"E0892E29697AA8611888B9B6",
 				"0E8883713811BC0050CE386C",
