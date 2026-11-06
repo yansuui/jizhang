@@ -9,6 +9,7 @@ import { FinancialPlanningService } from './financial-planning-service.js';
 import { MonthlyPlanService } from './monthly-plan-service.js';
 import { ItemService } from './item-service.js';
 import { AiSpendingOrganizationService } from './ai-spending-organization-service.js';
+import { AiSpendingCardNotReadyError } from './ai-types.js';
 import type { InternalTool, AssistantToolContext, AssistantToolDefinition } from './assistant-tool-registry.js';
 import { AssistantActionStaleError, AssistantValidationError, assistantJsonObject, type AssistantJsonObject, type AssistantJsonValue, type AssistantToolName } from './assistant-types.js';
 
@@ -134,10 +135,26 @@ export function simulateAssistantWrite<T>(c: Context, run: () => T): T {
 type Read = (c: Context, args: Args) => unknown | Promise<unknown>;
 type Write = (c: Context, args: Args) => unknown;
 const tools: InternalTool[] = [];
+const backgroundTools = new Set<AssistantToolName>(['spending.preview', 'spending.status', 'spending.resume']);
+function readSummary(name: AssistantToolName, fallback: string, data: Args): string {
+  if (!backgroundTools.has(name) && !(name === 'spending.card' && data['run'])) return fallback;
+  const run = data['run'];
+  const status = run && typeof run === 'object' && !Array.isArray(run) && 'status' in run ? run.status : undefined;
+  switch (status) {
+    case 'ready': return '历史账单整理已完成，可查看分类和标签建议。';
+    case 'running': return '历史账单正在后台整理，可在任务卡片查看进度。';
+    case 'failed': return '历史账单整理未完成，请查看任务原因后继续。';
+    case 'cancelled': return '历史账单整理已停止。';
+    default: return '历史账单整理任务状态。';
+  }
+}
 function read(name: AssistantToolName, description: string, properties: Fields, required: readonly string[], run: Read): void {
   const def = definition(name, 'read', description, properties, required);
   tools.push({ definition: def, parseArguments: (value) => { const args = json(value); validate(args, def.inputSchema, name); return args; },
-    read: async (c, args) => ({ toolName: name, summary: description, data: projectedResult(await run(c, args)) }) });
+    read: async (c, args) => {
+      const data = projectedResult(await run(c, args));
+      return { toolName: name, summary: readSummary(name, description, data), data };
+    } });
 }
 function write(name: AssistantToolName, description: string, properties: Fields, required: readonly string[], run: Write,
   display?: (c: Context, args: Args, outcome: unknown) => Args): void {
@@ -181,9 +198,23 @@ function write(name: AssistantToolName, description: string, properties: Fields,
 const txQuery = { ...page, from: integer, to: integer, type: { type: 'integer', enum: [0, 1] }, categoryId: text, accountId: text,
   tag: text, tagId: text, q: text, search: { type: 'string', maxLength: 4000 }, includeDeleted: boolean,
   expectedExpenseCents: integer, expectedExpenseCount: integer } as const;
-read('transactions.query', '分页查询完整账单，保留账户、日期、分类、标签及高级搜索条件；total 大于本页时继续 offset，不能把本页当全部。', txQuery, [],
+read('transactions.query', '分页查询账单，保留账户、日期、分类、标签及高级搜索条件；total大于本页时用返回的nextOffset或offset+实际limit继续，不能把本页当全部。长备注仅摘要，可用transaction.details读取更多；超出助手显示上限时请在账单详情页查看全文。', txQuery, [],
   (c, a) => c.services.transactions.list({ ...a, limit: num(a, 'limit', 50) }));
-read('transaction.details', '查询账单详情及双向退款关联。', id, ['id'], (c, a) => ({ transaction: c.services.transactions.getByIdOrThrow(str(a, 'id')) }));
+read('transaction.details', '查询单笔账单备注及双向退款关联；超出助手显示上限的备注会标明省略，请在账单详情页查看全文。关联记录按offset/limit分页，后续按各page的nextOffset继续，不可把一页当全部。', { ...id, ...page }, ['id'], (c, a) => {
+  const transaction = c.services.transactions.getByIdOrThrow(str(a, 'id'));
+  // Record the original length before the shared protected JSON boundary shortens text.
+  const displayedNote = json({ note: transaction.note })['note'] as string;
+  const noteOmitted = displayedNote !== transaction.note;
+  const offset = num(a, 'offset'); const limit = num(a, 'limit', 20);
+  const refunds = transaction.refundDetails ?? [];
+  const originals = transaction.refundLinkedTxIds ?? [];
+  const meta = (total: number) => ({ total, offset, limit, nextOffset: Math.min(total, offset + limit), hasMore: offset + limit < total });
+  return { transaction: { ...transaction, note: displayedNote,
+    ...(noteOmitted ? { noteTruncated: true, noteOriginalUnits: transaction.note.length, noteDisplayedUnits: displayedNote.length } : {}),
+    refundDetails: refunds.slice(offset, offset + limit), refundLinkedTxIds: originals.slice(offset, offset + limit) },
+    ...(noteOmitted ? { fullNoteOmitted: true, notice: '备注超过助手显示上限，当前内容有省略；请在账单页打开该记录查看完整备注。' } : {}),
+    refundDetailsPage: meta(refunds.length), refundLinkedTxIdsPage: meta(originals.length) };
+});
 read('transactions.daily', '查询筛选范围内服务端日汇总，最多32天。', { ...txQuery, timeZone: text }, ['from', 'to', 'timeZone'], (c, a) => c.services.transactions.dailySummary(a));
 read('master-data.read', '分页查询分类、账户、标签层级和引用数量，创建账单前先获取真实编号。', { kind: { enum: ['categories', 'accounts', 'tags', 'tag-names', 'category-usage', 'account-usage'] }, ...id, ...page, includeDeleted: boolean }, ['kind'], (c, a) => {
   switch (a['kind']) {
@@ -269,13 +300,14 @@ write('item.delete', '删除物品记录。', id, ['id'], (c, a) => items(c).rem
 read('settings.read', '读取预算周期日和已有预算周期。', {}, [], (c) => ({ cycleStartDay: c.services.salaries.getCycleStartDay() ?? null, periods: c.services.budget.periods() }));
 write('settings.cycle', '修改预算周期起始日。', { cycleStartDay: { type: ['integer', 'null'], minimum: 1, maximum: 28 } }, ['cycleStartDay'], (c, a) => ({ cycleStartDay: c.services.salaries.setCycleStartDay(a['cycleStartDay'] as number | null) ?? null }));
 
-read('stats.query', '查询服务端统计时间窗、分类占比、历史月趋势、结余趋势或账单范围。', { view: { enum: ['window', 'categories', 'monthly', 'pool', 'range'] }, kind: { enum: ['month', 'last30'] }, month: text, timeZone: text,
+read('stats.query', '查询服务端统计时间窗、分类占比、历史月趋势、结余趋势或账单范围。指定month且未指定kind时按该自然月查询。', { view: { enum: ['window', 'categories', 'monthly', 'pool', 'range'] }, kind: { enum: ['month', 'last30'] }, month: text, timeZone: text,
   from: integer, to: integer, accountId: text, categoryId: text, months: { type: 'integer', minimum: 1, maximum: 120 }, endMonth: text }, ['view'], (c, a) => {
   if (a['view'] === 'monthly') return c.services.stats.monthlyTrendSeries(num(a, 'months', 6), typeof a['endMonth'] === 'string' ? a['endMonth'] : null);
   if (a['view'] === 'pool') return c.services.stats.poolTrend();
   if (a['view'] === 'range') return c.services.stats.availableRange();
   const zone = typeof a['timeZone'] === 'string' ? a['timeZone'] : Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const window = resolveStatsWindow(a['kind'] === 'month' ? 'month' : 'last30', typeof a['month'] === 'string' ? a['month'] : null, c.now(), zone);
+  const kind = a['kind'] === 'month' || (a['kind'] === undefined && typeof a['month'] === 'string') ? 'month' : 'last30';
+  const window = resolveStatsWindow(kind, typeof a['month'] === 'string' ? a['month'] : null, c.now(), zone);
   return a['view'] === 'window' ? window : c.services.stats.categoryShare(num(a, 'from', window.from), num(a, 'to', window.to), {
     ...(typeof a['accountId'] === 'string' ? { accountId: a['accountId'] } : {}),
     ...(typeof a['categoryId'] === 'string' ? { categoryId: a['categoryId'] } : {}),
@@ -345,7 +377,8 @@ function spendingPage(service: AiSpendingOrganizationService, runId: string, off
  * that actually starts analysing — into a guaranteed timeout.
  *
  * Starting it in the background and returning a run summary keeps every assistant turn
- * short, and leaves progress observation to `spending.status` / `spending.card`.
+ * short. The runner hands this result to the native task card and completes the turn;
+ * progress observation must not consume repeated provider/tool steps in the same turn.
  *
  * A second ask while a run is already going is routine (the user repeats themselves, or the
  * model retries), so a busy service returns the existing run instead of a hard failure: an
@@ -360,13 +393,13 @@ async function startingAnalysis(c: Context, a: Args): Promise<Args> {
     const run = await service.startAnalysis({ startDate, endDate, background: true, clientRequestId: randomUUID() });
     // A tiny range can finish synchronously; then the card is readable right away.
     return json(run.status === 'ready'
-      ? { run, step: 'read-card', nextStep: 'spending.card', note: '分析已完成，可直接用 spending.card 分页读取建议。' }
-      : { run, step: 'poll', nextStep: 'spending.status', note: '分析已在后台开始，预计较慢。请用 spending.status 查询进度；状态为 ready 后用 spending.card 分页读取建议。' });
+      ? { run, step: 'read-card', nextStep: 'spending.card', note: '分析已完成，任务卡片可读取整理建议；本轮无需继续查询进度。' }
+      : { run, step: 'background', nextStep: 'spending.status', note: '分析已在后台开始，进度会显示在任务卡片中；本轮无需重复查询或重新开始。' });
   } catch (error) {
     if (!(error instanceof Error) || !('code' in error) || error.code !== 'AI_ORGANIZATION_BUSY') throw error;
     const existing = existingRun(c, startDate, endDate);
     if (existing === undefined) throw error;
-    return json({ run: existing, step: 'poll', nextStep: 'spending.status', note: '该日期范围已有整理任务；请用 spending.status 查询它，ready 后用 spending.card 读取建议，不要重复开始。' });
+    return json({ run: existing, step: 'background', nextStep: 'spending.status', note: '该日期范围已有后台整理任务，任务卡片会显示进度；本轮无需重复查询或重新开始。' });
   }
 }
 
@@ -386,20 +419,27 @@ function existingRun(c: Context, startDate: string, endDate: string): AssistantJ
     return undefined;
   }
 }
-read('spending.preview', '按起止日期在后台开始完整分析历史账单；只生成分类/标签/备注建议，不改账单。最多500笔，日期为 YYYY-MM-DD。立即返回任务编号，需用 spending.status 查询进度，ready 后用 spending.card 读取建议。', { startDate: text, endDate: text }, ['startDate', 'endDate'], (c, a) => startingAnalysis(c, a));
-read('spending.card', '分页读取历史账单整理卡；note 仅供参考，不可选择应用。', { runId: text, ...page }, ['runId'], (c, a) => spendingPage(spending(c), str(a, 'runId'), num(a, 'offset'), num(a, 'limit', 100)));
-read('spending.status', '读取历史账单整理任务进度；ready 前不要展示建议。', { runId: text }, ['runId'], (c, a) => ({ run: spending(c).getRun(str(a, 'runId')) }));
+read('spending.preview', '按起止日期在后台开始完整分析历史账单；只生成分类/标签/备注建议，不改账单。最多500笔，日期为 YYYY-MM-DD。返回后结束本轮，将进度交给客户端任务卡片；不要在同一轮重复查询进度或重新开始。', { startDate: text, endDate: text }, ['startDate', 'endDate'], (c, a) => startingAnalysis(c, a));
+read('spending.card', '分页读取已就绪的历史账单整理卡；note 仅供参考，不可选择应用。未就绪时返回真实任务状态并交给客户端任务卡片，不要循环查询。', { runId: text, ...page }, ['runId'], (c, a) => {
+  const service = spending(c); const runId = str(a, 'runId');
+  try { return spendingPage(service, runId, num(a, 'offset'), num(a, 'limit', 100)); }
+  catch (error) {
+    if (!(error instanceof AiSpendingCardNotReadyError)) throw error;
+    return { run: service.getRun(runId), note: '整理建议尚未就绪，进度由任务卡片显示；本轮无需重复查询。' };
+  }
+});
+read('spending.status', '读取一次历史账单整理任务进度；返回后交给客户端任务卡片并结束本轮，不要循环查询。ready 前不要展示建议。', { runId: text }, ['runId'], (c, a) => ({ run: spending(c).getRun(str(a, 'runId')) }));
 read('spending.evidence', '分页读取历史整理的完整分类金额证据。', { runId: text, ...page }, ['runId'], (c, a) => {
   const card = spending(c).getCard(str(a, 'runId'));
   return paged(Object.entries(card.evidenceByCategory).sort(([left], [right]) => left.localeCompare(right)).map(([categoryId, amountCents]) => ({ categoryId, amountCents })), a);
 });
-read('spending.resume', '仅在用户明确要求继续失败任务时恢复剩余分析，可能再次调用AI；不修改账单。', { runId: text }, ['runId'], async (c, a) => {
+read('spending.resume', '仅在用户明确要求继续失败任务时恢复剩余分析，可能再次调用AI；不修改账单。返回后结束本轮并交给客户端任务卡片，不要循环查询进度。', { runId: text }, ['runId'], async (c, a) => {
   const service = spending(c);
   // `resumeAnalysis` only *schedules* the remaining batches and returns the run row, so it
   // is as fast as `spending.preview`. Awaiting the work itself (`resumeAndWait`) would
   // reintroduce the 180 s generation deadline failure this tool was fixed for.
   const run = await service.resumeAnalysis(str(a, 'runId'), { clientRequestId: randomUUID() });
-  return json({ run, step: 'poll', nextStep: 'spending.status', note: '已重新在后台继续未完成批次；请用 spending.status 查询进度，ready 后用 spending.card 读取建议。' });
+  return json({ run, step: 'background', nextStep: 'spending.status', note: '已在后台继续未完成批次，进度会显示在任务卡片中；本轮无需重复查询。' });
 });
 write('spending.apply', '应用用户明确选择的历史账单整理建议。禁止默认全选或选择 note 建议。', { runId: text, actionIds: { ...array, minItems: 1, items: text } }, ['runId', 'actionIds'], (c, a) => {
   const service = spending(c); const card = service.getCard(str(a, 'runId')); const ids = a['actionIds'] as string[];

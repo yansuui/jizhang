@@ -12,6 +12,18 @@ The route-family inventory belongs in the task's `research/assistant-business-ma
 - Read tools return authoritative service facts and explicit pagination/coverage when bounded.
   A result limit must never silently turn the first page into a claimed full account/history.
   The model must follow subsequent pages when the user's question requires complete history.
+- Shared read projection caps the whole tool result at 40 KiB UTF-8. Long descriptive text
+  becomes a labelled 200-UTF-16-unit excerpt; IDs, amounts, tags and concurrency hashes stay
+  exact. `transaction.details` exempts the main note from the shorter excerpt but preserves
+  the existing 4000-unit assistant string limit; longer notes disclose original/displayed
+  length, truncation and the native bill-detail route to the full text. It independently
+  pages linked refunds/originals. Reduced offset pages report the actual returned limit and
+  `nextOffset`; never slice an opaque cursor page while retaining its old cursor. If exact
+  facts cannot fit, return explicit `requiresNarrowerQuery`/`financialFactsOmitted` rather
+  than fabricated empty facts or a silently incomplete financial scope.
+- Legitimate `snapshotToken` values are allowed only as exact 64-hex business digests;
+  credential-shaped fields remain forbidden. A stats query with a month but no kind uses
+  that month; an explicitly supplied kind remains authoritative.
 - Financial writes prepare a durable action/card and return `pending-confirmation`. The same
   authenticated human confirms through `/assistant/actions/:id/confirm`; generation completion
   or selecting a clarification is never confirmation. Cancellation changes draft metadata only.

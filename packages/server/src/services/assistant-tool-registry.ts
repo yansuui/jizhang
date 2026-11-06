@@ -11,6 +11,7 @@ import {
   type PlatformBillSource,
 } from '@jizhang/shared';
 import type { Db } from '../db/index.js';
+import { projectAssistantReadResult } from './assistant-result-projection.js';
 import { AccountBalanceService } from './account-balance-service.js';
 import { AiConfigService } from './ai-config-service.js';
 import { AiOrganizationService } from './ai-organization-service.js';
@@ -409,7 +410,7 @@ export class AssistantToolRegistry {
     if (tool.definition.access !== 'read' || tool.read === undefined) {
       throw new AssistantValidationError('该助手工具不是只读工具。');
     }
-    return tool.read(context, args);
+    return projectAssistantReadResult(await tool.read(context, args), args);
   }
 
   async prepare(context: AssistantToolContext, name: string, value: unknown): Promise<AssistantPreparedTool> {
@@ -488,7 +489,7 @@ export class AssistantToolRegistry {
         });
         return toolResult('transactions.recent', `找到 ${result.items.length} 笔最近账单。`, {
           total: result.total,
-          items: result.items.slice(0, 50).map((item) => ({ ...item, note: item.note.slice(0, 160), tags: item.tags.slice(0, 20) })),
+          items: result.items.slice(0, 50),
         });
       },
     });

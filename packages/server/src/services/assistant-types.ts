@@ -307,7 +307,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const FORBIDDEN_KEYS = /(?:base64|cookie|credential|password|prompt|providerbody|secret|token)/i;
 // These SHA-256 optimistic-concurrency facts are not credentials. Business tools
 // must round-trip them without weakening the provider/session secret boundary.
-const BUSINESS_HASH_KEYS = new Set(['previewToken', 'topologyToken', 'expectedTopologyToken', 'sourceToken', 'expectedSourceToken', 'transactionToken', 'expectedTransactionToken', 'refundToken', 'expectedRefundToken']);
+const BUSINESS_HASH_KEYS = new Set(['snapshotToken', 'previewToken', 'topologyToken', 'expectedTopologyToken', 'sourceToken', 'expectedSourceToken', 'transactionToken', 'expectedTransactionToken', 'refundToken', 'expectedRefundToken']);
 /*
  * Every string that enters a bounded assistant JSON value is truncated to this many UTF-16
  * units. The truncation must never cut a surrogate pair (`boundedProviderMessage`), because a
@@ -562,7 +562,7 @@ const MAX_PROVIDER_MESSAGE_UNITS = 4_000;
  * First `maxUnits` UTF-16 units of `text`, never cutting a surrogate pair in half.
  * Mirrors the streamed path's `takeUtf16Units` in `assistant-generation-runner.ts`.
  */
-function boundedProviderMessage(text: string, maxUnits: number): string {
+export function boundedProviderMessage(text: string, maxUnits: number): string {
   if (text.length <= maxUnits) return text;
   let end = maxUnits;
   const last = text.charCodeAt(end - 1);

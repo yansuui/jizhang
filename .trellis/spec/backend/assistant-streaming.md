@@ -22,6 +22,26 @@ Migration011 adds `assistant_generations` and `assistant_generation_events`; exi
 - Android blocked reads must be cancelled by a separately cancellable owner, not an invokeOnCompletion handler on the blocked reader itself. `cancellableBlockingFlow` is used by production SSE read; parser handles LF/CRLF/CR without reading past completed frames. EOF without terminal means reconcile, not successful answer.
 - UI scroll and new-message indicator: when observing scroll state and pending new-message indicators via `snapshotFlow`, the pending state (`newMessagesAvailable`) must be read directly inside the `snapshotFlow` block—e.g. `Triple(newMessagesAvailable, atBottom, isScrollInProgress)`—rather than outside in `.collect` over `Pair(atBottom, isScrollInProgress)`. Otherwise Compose's internal `distinctUntilChanged` suppresses emission when geometric bottom state remains unchanged during a pending flag transition, causing the pill indicator to linger. Clearing the indicator must strictly require `atBottom && !isScrollInProgress` so manual reading away from bottom preserves the pill until true natural bottom is reached, without stealing focus or forcing unconditional auto-scroll on every text delta.
 - Preserve all existing file digest/100-selection/idempotent human confirmation guards. History authoritative action statuses override cached generation pending status.
+- A streamed or legacy turn allows eight provider decisions, including the final answer,
+  under the same 180-second deadline. Snapshot partial-message validation uses that shared
+  decision bound. Successful reads are persisted immediately and retained as bounded facts
+  in later decisions, not overwritten by the most recent tool result. Current read facts
+  are capped at 64 KiB; recent history at 128 KiB with an explicit omission notice. A budget
+  handoff preserves partial facts and completes honestly instead of claiming full coverage.
+- `spending.preview/status/resume/card` returning an actual `data.run` completes the chat
+  turn deterministically with the durable task result. Background analysis owns its provider
+  scope; no model polling or wait-for-analysis loop inside a generation. Ready suggestion
+  cards without a run continue through normal read/confirmation handling.
+- Read results fit 40 KiB UTF-8 including the tool envelope. Generation message/card
+  serialization fits 48 KiB before persistence, leaving room for the native 64 KiB SSE line.
+  Reject an oversized financial preview before creating a pending action; never remove
+  effects from a write preview to make it fit. This event guard does not change the legacy
+  attachment-import path's existing file/selection contract.
+- Canonically identical reads execute once per turn. Only known typed business validation
+  errors (400/404/409) receive at most two correction opportunities with fixed safe feedback;
+  unknown tools, retired allocation arguments, authentication, cancellation and deadlines
+  remain hard boundaries. Expected organization capacity/busy/not-ready states use fixed
+  actionable replies without another inference or raw error disclosure.
 
 ## 4. Validation & Error Matrix
 | Condition | Behavior |
@@ -41,6 +61,13 @@ Good: delayed mock upstream has not completed, client already receives prose; va
 ## 6. Tests Required
 Server `assistant-stream.test.ts`, `assistant-stream-routes.test.ts`, `assistant-generation-persistence.test.ts`: incremental-before-finish, Unicode/framing/size, auth/CSRF, ownership/dedup/replay/cancel/archive/restart, atomic rollback, terminal reservation, slow subscribers, malformed legacy input recovery, nested read-tool and write-tool prepare cancellation/deadline regressions (verifying scoped abort/deadline cut nested requests before atomic commit), tokenizer regressions for valid empty containers (`[]`/`{}` across chunk splits) and illegal trailing commas (verifying arrays and objects reject trailing commas without fallback), and unchanged ledger. Socket-only incremental acceptance uses an ephemeral loopback port with cleanup; ordinary route tests use inject. This is a narrow transport-test exception, never production-provider evidence.
 Android SSE controlled-source/socket cancellation, strict DTO/reducer, seq/gap/identity/ABA, stale confirmed card, EOF/choice uncertainty/scroll helpers; full unit/lint/build. Actual New API/Caddy/Huawei timing, large-font/IME/back/reading/reconnect remain device acceptance until tested.
+
+Composed real-route regressions also cover four reads then answer/plan preview, seven
+reads then an eighth final answer, preservation after later failure, one-call background
+handoff in streamed and buffered modes, typed correction without writes, duplicate-read
+termination, 500-record capacity/busy feedback, long populated results with replay limits,
+and oversized write-preview rejection before a pending action exists. Isolated tool tests
+alone do not establish conversation usability.
 
 ## 7. Wrong vs Correct
 Wrong: synchronous statements assumed atomic; complete-handler waits for blocked reader; two-pass LF then CR searches; terminal capacity consumed by text; unbounded nested prepare ignoring deadline/abort; tokenizer rejecting empty arrays `[]` or silently tolerating trailing commas; `snapshotFlow` reading `newMessagesAvailable` outside the flow block causing lingering scroll pill. Correct: SQLite transaction then publish; separate owner cancels transport; one-pass/stateful delimiter reader; terminal capacity reserved before emitting nonterminal events; scoped abort/deadline for both nested read-tool execution and write-tool prepare; accept empty containers while strictly rejecting trailing commas; observe `Triple(newMessagesAvailable, atBottom, isScrollInProgress)` inside `snapshotFlow` and clear only when true bottom is reached without scrolling in progress.

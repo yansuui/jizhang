@@ -6,10 +6,18 @@ import type { Db } from '../db/index.js';
 import { AccountBalanceService } from './account-balance-service.js';
 import { AiConfigService } from './ai-config-service.js';
 import { AiOrganizationService } from './ai-organization-service.js';
-import { AiProviderService } from './ai-provider-service.js';
+import { AiProviderService, type AiCallOptions } from './ai-provider-service.js';
+import type { AiPromptContext, StoredAiProviderConfig } from './ai-types.js';
 import { AssistantConversationService } from './assistant-conversation-service.js';
-import { AssistantActionStaleError, normalizeAssistantJson, normalizeAssistantProviderTurn, type AssistantAttachmentMetadata, type AssistantJsonObject, type AssistantMessageDto, type AssistantPendingActionDto } from './assistant-types.js';
+import { AssistantActionStaleError, AssistantValidationError, normalizeAssistantJson, normalizeAssistantProviderTurn, type AssistantAttachmentMetadata, type AssistantJsonObject, type AssistantMessageDto, type AssistantPendingActionDto } from './assistant-types.js';
 import { AssistantToolRegistry, type AssistantToolContext, type AssistantToolResult } from './assistant-tool-registry.js';
+import {
+  assistantBackgroundReply, assistantCanCorrectTool, assistantExpectedToolReply, assistantHistory, assistantReadIdentity, assistantRetiredAllocationInput,
+  ASSISTANT_READ_LIMIT_REPLY, ASSISTANT_REPEATED_READ_REPLY,
+  ASSISTANT_TOOL_CORRECTION_HINT, ASSISTANT_TOOL_CORRECTION_REPLY, MAX_ASSISTANT_TOOL_CORRECTIONS,
+  ASSISTANT_NARROW_QUERY_REPLY, MAX_ASSISTANT_READ_FACT_BYTES,
+} from './assistant-turn-policy.js';
+import { AssistantStreamError, MAX_GENERATION_DEADLINE_MS, MAX_GENERATION_STEPS } from './assistant-stream-types.js';
 import { BudgetOverviewService } from './budget-overview-service.js';
 import { MasterDataService } from './master-data-service.js';
 import { MonthlyEvaluationService } from './monthly-evaluation-service.js';
@@ -118,17 +126,17 @@ export class AssistantOrchestrator {
   private readonly conversations: AssistantConversationService;
   private readonly now: () => number;
   private readonly config: AiConfigService;
-  private readonly provider: AiProviderService;
   private readonly registry = new AssistantToolRegistry();
   private readonly context: AssistantToolContext;
+  private readonly options: AssistantOrchestratorOptions;
 
   constructor(options: AssistantOrchestratorOptions) {
+    this.options = options;
     this.db = options.db;
     this.conversations = options.conversations;
     this.now = options.now ?? (() => Date.now());
     const built = buildAssistantContext(options);
     this.config = built.config;
-    this.provider = built.provider;
     this.context = built.context;
   }
 
@@ -137,6 +145,18 @@ export class AssistantOrchestrator {
   }
 
   async handleMessage(conversationId: string, userText: string, userMessageId: string, attachment?: { metadata: AssistantAttachmentMetadata; bytes: Uint8Array }): Promise<AssistantTurnResult> {
+    const deadline = this.now() + MAX_GENERATION_DEADLINE_MS;
+    const remaining = (): number => {
+      const budget = deadline - this.now();
+      if (budget <= 0) throw new AssistantStreamError('ASSISTANT_STREAM_BOUNDS', '本次生成超出时限，已中断。');
+      return budget;
+    };
+    const provider = new class extends AiProviderService {
+      override complete(config: StoredAiProviderConfig, secret: string | null, context: AiPromptContext, options: AiCallOptions = {}): Promise<unknown> {
+        return super.complete(config, secret, context, { ...options, timeoutMs: Math.min(options.timeoutMs ?? config.timeoutMs, remaining()) });
+      }
+    }(this.options.fetchImpl);
+    const context = buildAssistantContext({ ...this.options, provider }).context;
     if (attachment !== undefined) {
       const prepared = await this.registry.prepare({ ...this.context, attachmentBytes: attachment.bytes, attachment: attachment.metadata }, 'platform-import.prepare', {
         source: attachment.metadata.source,
@@ -152,10 +172,11 @@ export class AssistantOrchestrator {
         for (let start = 0; start < rows.length; start += 25) {
           const batch = rows.slice(start, start + 25);
           const facts = { rows: batch, categories };
-          const raw = await this.provider.complete(stored, secret, {
+          const raw = await provider.complete(stored, secret, {
             input: JSON.stringify(facts), facts, categories, accounts: [], model: stored.model,
             today: dateLabel(this.now()), responseSchema: BILL_ANALYSIS_SCHEMA, feature: 'bill-import',
           });
+          remaining();
           recommendations.push(...normalizeBillRecommendations(raw, batch, categories));
         }
         analysis = { status: 'complete', analysed: rows.length, recommendations };
@@ -200,21 +221,29 @@ export class AssistantOrchestrator {
     });
     let lastResult: AssistantToolResult | null = null;
     let providerMessage = '';
-    for (let step = 0; step < 3; step += 1) {
+    const reads = new Set<string>();
+    let toolCorrections = 0;
+    let toolFailure: AssistantJsonObject | null = null;
+    let resultAlreadyStored = false;
+    let readFactBytes = 0;
+    for (let step = 0; step < MAX_GENERATION_STEPS; step += 1) {
+      remaining();
       const stored = this.config.getStoredOrThrow();
       const secret = this.config.getSecretOrThrow(stored);
       const categories = this.context.services.masterData.listCategories().map(({ id, name, type }) => ({ id, name, type }));
       const accounts = this.context.services.masterData.listAccounts().map(({ id, name, type }) => ({ id, name, type }));
-      const messages = this.conversations.context(conversationId);
+      const messages = assistantHistory(this.conversations.context(conversationId));
       const facts = {
         messages,
         tools: this.registry.catalog(),
         ...(lastResult === null ? {} : { lastToolResult: lastResult }),
+        ...(toolFailure === null ? {} : { toolFailure }),
+        remainingProviderSteps: MAX_GENERATION_STEPS - step,
         categories,
         accounts,
       };
-      const input = JSON.stringify({ request: userText.slice(0, 2_000), priorMessages: messages.slice(-12), ...(lastResult === null ? {} : { previousResult: lastResult }) });
-      const raw = await this.provider.complete(stored, secret, {
+      const input = JSON.stringify({ request: userText.slice(0, 2_000), priorMessages: messages, ...(lastResult === null ? {} : { previousResult: lastResult }), ...(toolFailure === null ? {} : { toolFailure }) });
+      const raw = await provider.complete(stored, secret, {
         input,
         categories,
         accounts,
@@ -224,14 +253,20 @@ export class AssistantOrchestrator {
         feature: 'assistant',
         facts,
       });
+      remaining();
       const turn = normalizeAssistantProviderTurn(raw);
       providerMessage = turn.message;
       if (turn.toolCall === null) break;
+      if (this.registry.get(turn.toolCall.name) === undefined || assistantRetiredAllocationInput(turn.toolCall.name, turn.toolCall.arguments)) {
+        throw new AssistantValidationError('AI 选择了不受支持的工具或已停用的分配方式，未执行任何操作。');
+      }
 
       // A name is checked before argument parsing, and arguments before an adapter or domain service runs.
-      const { tool, arguments: args } = this.registry.parseArguments(turn.toolCall.name, turn.toolCall.arguments);
-      if (tool.definition.access === 'write') {
-        const prepared = await this.registry.prepare(this.context, tool.definition.name, args);
+      try {
+        const { tool, arguments: args } = this.registry.parseArguments(turn.toolCall.name, turn.toolCall.arguments);
+        if (tool.definition.access === 'write') {
+        const prepared = await this.registry.prepare(context, tool.definition.name, args);
+        remaining();
         const pending = this.conversations.createPendingAction({
           conversationId,
           sourceMessageId: userMessageId,
@@ -258,17 +293,42 @@ export class AssistantOrchestrator {
         };
         this.conversations.updateProgressStatus(progress.id, 'complete');
         this.conversations.appendMessage({ conversationId, role: 'assistant', kind: 'tool-card', content: { version: 1, text: providerMessage, card } });
-        return { messages: this.conversations.messages(conversationId), pendingActionId: pending.id };
+          return { messages: this.conversations.messages(conversationId), pendingActionId: pending.id };
+        }
+        const identity = assistantReadIdentity(tool.definition.name, args);
+        if (reads.has(identity)) { providerMessage = ASSISTANT_REPEATED_READ_REPLY; break; }
+        const readContext = ['spending.preview', 'spending.resume'].includes(tool.definition.name) ? this.context : context;
+        lastResult = await this.registry.read(readContext, tool.definition.name, args);
+        toolFailure = null;
+        reads.add(identity);
+        this.conversations.appendMessage({ conversationId, role: 'assistant', kind: 'result',
+          content: { version: 1, result: { version: 1, toolName: lastResult.toolName, summary: lastResult.summary, data: lastResult.data } } });
+        resultAlreadyStored = true;
+        const handoff = assistantBackgroundReply(lastResult);
+        if (handoff !== null) { providerMessage = handoff; break; }
+        readFactBytes += Buffer.byteLength(JSON.stringify(lastResult), 'utf8');
+        if (lastResult.data['requiresNarrowerQuery'] === true || readFactBytes > MAX_ASSISTANT_READ_FACT_BYTES) {
+          providerMessage = ASSISTANT_NARROW_QUERY_REPLY;
+          break;
+        }
+        if (step === MAX_GENERATION_STEPS - 1) providerMessage = ASSISTANT_READ_LIMIT_REPLY;
+      } catch (error) {
+        const expectedReply = assistantExpectedToolReply(error);
+        if (expectedReply !== null) { providerMessage = expectedReply; break; }
+        if (!assistantCanCorrectTool(error)) throw error;
+        toolCorrections += 1;
+        if (toolCorrections > MAX_ASSISTANT_TOOL_CORRECTIONS) { providerMessage = ASSISTANT_TOOL_CORRECTION_REPLY; break; }
+        toolFailure = { code: 'TOOL_ARGUMENTS_INVALID', message: ASSISTANT_TOOL_CORRECTION_HINT };
+        if (step === MAX_GENERATION_STEPS - 1) providerMessage = ASSISTANT_TOOL_CORRECTION_REPLY;
       }
-      lastResult = await this.registry.read(this.context, tool.definition.name, args);
     }
     this.conversations.updateProgressStatus(progress.id, 'complete');
     if (providerMessage.trim() === '') providerMessage = lastResult?.summary ?? '无法处理这条请求，请补充更多信息。';
     this.conversations.appendMessage({
       conversationId,
       role: 'assistant',
-      kind: lastResult === null ? 'text' : 'result',
-      content: lastResult === null
+      kind: lastResult === null || resultAlreadyStored ? 'text' : 'result',
+      content: lastResult === null || resultAlreadyStored
         ? { version: 1, text: providerMessage.slice(0, 4_000) }
         : { version: 1, text: providerMessage.slice(0, 4_000), result: { version: 1, toolName: lastResult.toolName, summary: lastResult.summary, data: lastResult.data } },
     });

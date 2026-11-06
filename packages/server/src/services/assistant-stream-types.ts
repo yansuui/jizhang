@@ -16,7 +16,9 @@ export const MAX_REPLAY_EVENTS = 2_048;
 export const MAX_REPLAY_BYTES = 2 * 1024 * 1024;
 export const MAX_DISPLAY_CHARS_PER_TURN = 4_000;
 export const MAX_DISPLAY_CHARS_TOTAL = 12_000;
-export const MAX_GENERATION_STEPS = 3;
+/** Eight bounded provider decisions permit multi-resource reads before a final answer/card.
+ * Background jobs and duplicate reads hand off immediately rather than consuming this budget. */
+export const MAX_GENERATION_STEPS = 8;
 export const MAX_GENERATION_DEADLINE_MS = 180_000;
 export const SUBSCRIBER_QUEUE_MAX_EVENTS = 128;
 export const SUBSCRIBER_QUEUE_MAX_BYTES = 256 * 1024;

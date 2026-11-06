@@ -337,11 +337,20 @@ describe('historical spending organization assistant tools', () => {
     const run = preview.data['run'] as AssistantJsonObject;
     expect(run['status']).toBe('running');
     expect(preview.data['nextStep']).toBe('spending.status');
+    expect(preview.data['step']).toBe('background');
+    expect(preview.summary).toBe('历史账单正在后台整理，可在任务卡片查看进度。');
+    expect(preview.data['note']).toContain('本轮无需重复查询');
 
     // The same ask again (what a repeated or retried second turn does) must reuse the run
     // instead of failing on AI_ORGANIZATION_BUSY.
     const repeated = await registry.read(gatedContext, 'spending.preview', { startDate: '2026-09-01', endDate: '2026-09-22' });
     expect((repeated.data['run'] as AssistantJsonObject)['runId']).toBe(run['runId']);
+    const callsBeforeCard = providerCalls;
+    const earlyCard = await registry.read(gatedContext, 'spending.card', { runId: run['runId'] });
+    expect(earlyCard.data['run']).toEqual(run);
+    expect(earlyCard.data['actions']).toBeUndefined();
+    expect(earlyCard.summary).toBe('历史账单正在后台整理，可在任务卡片查看进度。');
+    expect(providerCalls).toBe(callsBeforeCard);
 
     release();
     for (let attempt = 0; attempt < 200; attempt++) {

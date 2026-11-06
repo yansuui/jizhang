@@ -1,5 +1,7 @@
 # 记账 Android App：当前功能目录
 
+**2026-11-06 助手执行可靠性局部源码复核：** 复核 A020/A093/A107/A115/A116 与 §6.5/9.3 的现有消费契约：服务端逐次保存成功读取的结果，历史整理启动/继续/状态查询返回任务后结束当轮对话，后台分析独立继续；模型不在同一轮反复轮询。扩充有界决策与参数纠错，保留写入预览、用户确认和账本隔离。Android 源码未修改，聊天仍没有独立任务观察卡及完整复杂结果页；A105–A106 的既有独立整理工作区继续使用原观察流程。仅推进上述条目的源码核对，其他审计日期、历史总数与设备验收状态不变；本轮证据见[可靠性审查记录](../../.trellis/tasks/11-04-ios-assistant/research/assistant-reliability-review.md)。
+
 **2026-11-05 分配模板退役（服务端与 iOS 变更，Android 源码未改）：** 服务端停止把「分配模板」当作产品能力，新增迁移 022 把每个用户自建模板名折叠为同名账单标签（`template_tag_mappings` 仅作审计/回滚，`budget_templates`/`budget_allocations` 行一律保留，历史工资分配快照不受影响），预置的 `builtin-default-template` 刻意不折叠。`GET /api/v1/templates` 保持只读兼容并返回弃用标记；创建、编辑、删除、设置默认和应用当前周期均返回 410。Android 源码仍保留 M02.01–M02.07 的入口和按钮，但这些写入不再可用，需要后续客户端适配。助理侧 `templates.read`/`template.create`/`template.update`/`template.default`/`template.delete` 已从工具白名单移除（A114 见下），历史整理卡片不再产生 `templateProposals`（A105/A106 见下），因此 §6.1 的“AI 还生成了 N 个预算模板建议”分支在服务端恒为 0、不会显示。同日修复 assistant 历史整理第二次回复必然失败的缺陷：`spending.preview`/`spending.resume` 改为后台启动并立即返回 `run`，需用 `spending.status` 轮询进度、`spending.card` 读取建议；此前它会 await 整段分批次分析，撞上单次生成 180 秒硬上限。**本节只记录服务端契约与 Android 的既有消费路径，Android 源码未修改、未重新编译、未真机验证；iOS 为本次主开发端。**
 
 **2026-11-05 助手业务工具局部源码复核：** 核对 A020/A021/A024、A072/A073/A077/A084/A087，新增 A107–A116 业务能力组，更新 §6.3/6.5、§9.3/10 的服务端工具及 Android 通用卡边界。工具沿用既有 v1 消息、确认卡、结果与 confirm/cancel 接口；本次没有新增 Android 页面或 HTTP 路由。Android 不按工具名限制通用卡确认，但复杂结果摘要、聊天中逐项选择和成功后的跨页面刷新仍有缺口，详见下文。这里只记录源码与契约核对；自动化门禁由本轮任务另行记录，不代表已接真实 Provider、真机安装或生产部署。其他章节审计日期和历史统计不变。
@@ -584,7 +586,7 @@
 | A017 | 对话附件输入：传统对话消息发送一次附单个文件；账单导入入口支持多选1–5个账单文件作为融合批次发送；无相机、照片、音频、PDF或通用文档AI分析入口 |AssistantComposerDraft；[DocumentFiles.kt](app/src/main/java/com/yansuu1/jizhang/ui/DocumentFiles.kt)；[assistant.ts](../../packages/server/src/routes/assistant.ts)|
 | A018 | 消息区显示用户/助理/工具的内容，文本、progress、error、attachment、result、tool-card以及融合批次导入卡（ImportBatchCard，文本消息附带content.importBatch结构）；文本按普通 Text 显示 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)|
 | A019 | 无正文的历史 complete 进度不再占卡（结束不等于入账）；running/failed/未知状态紧凑提示，失败只按安全错误码显示一次说明，不渲染原始错误正文；附件显示文件名 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)|
-| A020 | 结果卡显示服务端 summary 和最多 6 个白名单摘要字段，递归对象最多深度 2，不遍历数组；金额明确带 ¥，类型 0/1 展示支出/收入，日期按有效 ISO 或毫秒时间戳格式化。2026-11-05复核：新资金/目标/物品/统计/整理读工具可返回现有 result，但列表、比例、证据数组及 hasMore 等未有完整通用展示，不能视为已提供全部结果的核对页。 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)、[AssistantConversationHelper.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantConversationHelper.kt)|
+| A020 | 结果卡显示服务端 summary 和最多 6 个白名单摘要字段，递归对象最多深度 2，不遍历数组；金额明确带 ¥，类型 0/1 展示支出/收入，日期按有效 ISO 或毫秒时间戳格式化。2026-11-06复核：服务端每次成功读取即独立保存 result 卡，后续回答可复用累计事实；Android沿用既有卡展示。新资金/目标/物品/统计/整理读工具的列表、比例、证据数组及 hasMore 等仍未有完整通用展示，不能视为已提供全部结果的核对页。 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)、[AssistantConversationHelper.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantConversationHelper.kt)；[assistant-generation-runner.ts](../../packages/server/src/services/assistant-generation-runner.ts)|
 | A021 | 工具卡与导入卡：保留操作名/toolName/摘要/影响数/warnings，values与非导入preview可展开递归操作详情。2026-11-05复核：除platform-import.prepare专用分支外，Android没有封闭toolName白名单；新增业务工具可使用现有pending卡、二次确认和取消，详情仍是字段路径文本而非专用领域表单。单文件导入卡打开历史全屏工作区；融合批次导入卡展示文件数、融合记录数与分析状态并打开多文件工作区。 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)、[AssistantBatchImportWorkspace.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantBatchImportWorkspace.kt)|
 | A022 | 操作与批次状态：传统操作状态有 pending / confirmed / cancelled / expired；融合批次分析状态包含 idle / running / complete / failed，未知wire状态在Repository保留为unknown并提供GET查询，不映射成可重试failed；批次终态confirmed/cancelled/expired阻止变更；确认只有matched conversationId/batchId、status=confirmed及完整结果时才发成功回调 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)、[AssistantRepository.kt](app/src/main/java/com/yansuu1/jizhang/repo/AssistantRepository.kt)、[AssistantBatchImportWorkspace.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantBatchImportWorkspace.kt)|
 | A023 | 全屏二次核对与权威审核：单文件全屏核对收支合计/退款标签/现有分类/审核备注；融合批次采用两阶段核对，POST review返回服务端权威计算的收支合计（毛支出/毛收入/退款收入/净额）、文件分布、分类新建与复用计划（categoriesToCreate/categoriesToReuse）及已选行清单（`selectedRows`），支持展开逐行检查。每行完整渲染：服务端 `categoryType`（0支出/1收入）、分类名、拟新建徽章（`approvedNewCategoryName != null` 标注“拟新建”）、逐笔备注精准保留（服务端空字符串 `""` 明确保留为 `(空备注)`，不回退为草稿或占位符）；权威统计（`ReviewSummary.counts`）严格区分 `ruleIgnored`（规则忽略）与 `userExcluded`（用户主动排除，可空，为 null 时独立展示为“未提供”，绝不回退为 0），保留服务端原始财务金额不作前端重算；0选择禁止确认，返回不写账 |[AssistantTab.kt](app/src/main/java/com/yansuu1/jizhang/ui/AssistantTab.kt)、[AssistantBatchImportWorkspace.kt](app/src/main/java/com/yansuu1/jizhang/ui/feature/assistant/AssistantBatchImportWorkspace.kt)|
@@ -680,7 +682,7 @@
 
 | ID | 读/分析工具 | 待确认写工具 | 输入、校验与业务边界 |
 |---|---|---|---|
-| A107 | `transactions.query`、`transaction.details`、`transactions.daily` | 原A072–A075 | 完整账单筛选含账户/日期/分类/标签及高级搜索；offset分页返回权威total；详情返回双向退款关系；daily要求from/to/timeZone，最多32天。普通支出仍为毛额，退款独立记入收入。 |
+| A107 | `transactions.query`、`transaction.details`、`transactions.daily` | 原A072–A075 | 完整账单筛选含账户/日期/分类/标签及高级搜索；offset分页返回权威total。2026-11-06复核：长备注/理由在列表中摘要并标明截取，完整账单备注用details读取；展示体积过大可减少本页实际limit，按nextOffset继续。details的refundDetails/refundLinkedTxIds双向退款关系各有total/offset/limit/nextOffset/hasMore分页元数据，不把一页当全部。daily要求from/to/timeZone，最多32天。普通支出仍为毛额，退款独立记入收入。 |
 | A108 | `master-data.read` | `master-data.move`、`tag.create`、`tag.update`、`tag.remove`；原分类/账户CRUD及tag.rename/delete保留 | kind选择分类/账户/标签层级或引用情况；分页取得真实ID。排序direction仅-1/1；标签name/parentId经现有服务校验。模型不能提供任意SQL或URL。 |
 | A109 | `transfers.query`、`trash.list` | `transfer.update`、`transfer.delete`、`trash.restore-all`、`trash.purge`、`trash.purge-all`；原transfer.create/single restore保留 | 转账按id或accountId分页，不计收支；回收站返回total/offset/limit/hasMore，永久删除在确认描述中明确不可撤销。全部恢复/清空是全库当前用户范围的操作，不是仅当前页。 |
 | A110 | `recurring.rules`（view=rules/occurrences/pending） | `recurring.create`、`recurring.update`、`recurring.toggle`、`recurring.delete`、`recurring.generate`；原confirm/ignore保留 | 规则含name/type/amountCents/categoryId/accountId/frequency/anchorDate/enabled；生成只产生待确认记录，不直接记账；后续confirm才写入一次收入或支出。字段校验沿用原服务，更新规则的引用校验差异仍见§9.2。 |
@@ -688,18 +690,18 @@
 | A112 | `plan.read`、`plan.preview`、`goals.read` | `plan.save`、`goals.opening`、`goals.create`、`goals.update`、`goals.delete` | 独立计划输入monthlyIncomeCents/essentialMonthlyCents/reserveBalanceCents，保存带revision；目标reserve/investment的期初和deposit/withdrawal进度使用expectedRevision/operationId，支持时间窗/cursor，始终与真实账单分开。 |
 | A113 | `items.read` | `item.create`、`item.update`、`item.sell`、`item.retire`、`item.delete` | 列表、概览、id详情和q/category/status/sort分页；物品名/购入日期/可空价格/状态/备注及购入、售出账单关联使用原域校验。物品登记或状态变化不会自动创建收入/支出；照片上传/删除和抠图任务不在该工具组内。 |
 | A114 | `settings.read`（`templates.read` 已于 2026-11-05 随分配模板退役移除） | `settings.cycle`（`template.create`/`template.update`/`template.default`/`template.delete` 同日移除） | 周期起始日1–28或null。**2026-11-05 变更：** 助理不再提供任何模板工具，`ASSISTANT_TOOL_NAMES` 同步删除这 5 个名字（保留名字但不注册会让 `catalog()` 抛错）；因此 §6.1 里依赖模板建议的分支恒为空。`/api/v1/templates` HTTP 路由仍存在但已弃用，见 §4.10 与 §11 模板行。不恢复 A084 的“应用到当前周期”。 |
-| A115 | `stats.query`、`planning.read`、`planning.preview` | `planning.configure`、`planning.mapping`、`planning.confirm`、`planning.reconcile`、`planning.purpose`、`planning.refund-splits` | 统计复用服务器时间窗/分类毛支出/退款收入/月趋势；旧执行计划按view读取来源/周期/修订/事实/用途/退款/操作。写入保留源hash、revision与服务端计算；单次规则/来源/拆分最多100项；已有规则超过100项时拒绝整组替换，不能静默丢弃其余规则。旧域已退役写入继续由服务端拒绝。 |
-| A116 | `spending.preview`、`spending.card`、`spending.status`、`spending.resume`、`spending.evidence` | `spending.apply`、`spending.undo` | startDate/endDate为YYYY-MM-DD，完整分析最多500笔；resume仅明确要求时继续失败任务，可能再次产生Provider调用。card建议分页最多100项并返回totalActions/offset/limit/hasMore；coverage为计数及idsOmitted，完整分类金额证据改用evidence分页。apply要求runId及1–100个明确、唯一、有效actionIds，允许非note的分类/标签/新分类及模板建议，禁止默认全选；note只参考。undo遇后续变更拒绝覆盖。Android A105–A106独立整理UI仍只选择分类/标签，其模板与新分类建议不自动应用；聊天没有新增逐项勾选/证据分页控件。 |
+| A115 | `stats.query`、`planning.read`、`planning.preview` | `planning.configure`、`planning.mapping`、`planning.confirm`、`planning.reconcile`、`planning.purpose`、`planning.refund-splits` | 统计复用服务器时间窗/分类毛支出/退款收入/月趋势；2026-11-06复核：指定month且省略kind时查询该自然月，显式kind=last30仍按近30天。旧执行计划按view读取来源/周期/修订/事实/用途/退款/操作。写入保留源hash、revision与服务端计算；单次规则/来源/拆分最多100项；已有规则超过100项时拒绝整组替换，不能静默丢弃其余规则。旧域已退役写入继续由服务端拒绝。 |
+| A116 | `spending.preview`、`spending.card`、`spending.status`、`spending.resume`、`spending.evidence` | `spending.apply`、`spending.undo` | startDate/endDate为YYYY-MM-DD，完整分析最多500笔；resume仅明确要求时继续失败任务，可能再次产生Provider调用。2026-11-06复核：preview/resume/status返回run后结束当轮，保存任务结果并将后续进度交给客户端；后台分析不随正常对话结束而中止，不再用模型循环轮询。card建议分页最多100项并返回totalActions/offset/limit/hasMore；coverage为计数及idsOmitted，完整分类金额证据改用evidence分页。apply要求runId及1–100个明确、唯一、有效actionIds，允许分类/标签/新分类建议，禁止默认全选；note只参考，模板建议已退役。undo遇后续变更拒绝覆盖。Android A105–A106独立整理UI仍只选择分类/标签，新分类建议不自动应用；聊天没有新增任务观察卡、逐项勾选或证据分页控件。 |
 
 当前仍不提供模型工具的能力包括照片/抠图上传、任意文件字节/融合导入人工审核替代、主题/密码/邀请码/Provider密钥管理、备份恢复和数据库运维；这些保留专用可信UI或运维入口。旧预算分配写入属于已退役能力。可由工具访问、Android通用卡可提交确认、存在专门移动页面是三种不同能力，不能互相替代。
 
 ### 6.4 服务端流程与约束（A093–A104）
 
-本节 A104 及 A101–A103 批次对比相关源码核对日期：2026-10-17（本地源码核对与自动化测试，未部署/未设备实测）；A093–A100 保留原审计证据。
+本节 A104 及 A101–A103 批次对比相关源码核对日期：2026-10-17（本地源码核对与自动化测试，未部署/未设备实测）；A093于2026-11-06局部源码复核，A094–A100保留原审计证据。
 
 | ID | 能力 / 边界 | 证据 |
 |---|---|---|
-| A093 | 不含附件时模型最多 3 步工具调用；历史 context 最多 20 条（每条文本 2,000），input 最近 12 条；回复文本截断 4,000 |[assistant-orchestrator.ts](../../packages/server/src/services/assistant-orchestrator.ts)；[assistant-conversation-service.ts](../../packages/server/src/services/assistant-conversation-service.ts)|
+| A093 | 普通对话最多8次模型决策（包括最终回答），总时限180秒；同工具同参数的重复读取结束当轮并复用已有结果。已知业务参数错误最多给模型2次纠正机会，未知/退役工具、权限、取消、超时等不进入纠错。逐次成功读取立即保存；回复每步最多4,000字符，流式代次累计最多12,000字符。历史context与input均取最近最多20条、每条文本2,000，上下文窗口限128 KiB并明确标记较早内容省略；单次读取投影最多40 KiB，累计已读超过64 KiB时保存结果并结束当轮提示缩小范围。长文本摘要和offset缩页均显式标记，cursor页超限要求缩小查询，不伪造续页；金额、编号、标签与来源hash不因展示而缩写。写操作仍只生成待确认草案，不自动入账；流式财务预览超过单条事件大小时要求缩小选择，不裁掉待确认影响范围。 |[assistant-orchestrator.ts](../../packages/server/src/services/assistant-orchestrator.ts)；[assistant-generation-runner.ts](../../packages/server/src/services/assistant-generation-runner.ts)；[assistant-turn-policy.ts](../../packages/server/src/services/assistant-turn-policy.ts)；[assistant-result-projection.ts](../../packages/server/src/services/assistant-result-projection.ts)；[assistant-conversation-service.ts](../../packages/server/src/services/assistant-conversation-service.ts)|
 | A094 | 附件先确定性提取事实，再调用已保存Provider分析前200行（每批25行），只接受已知行ID/理由/选入建议/现有同类型分类ID；没有工具执行或金额日期更改。失败明确显示且支持原件匹配的显式重试（新卡、重置旧草稿）；确认不调用AI。 |[assistant-orchestrator.ts](../../packages/server/src/services/assistant-orchestrator.ts)|
 | A095 | 写操作预览记录参数、fingerprint、附件元信息；确认时重跑预览比较指纹、原件大小/hash； stale 被置 expired |[assistant-orchestrator.ts](../../packages/server/src/services/assistant-orchestrator.ts)；[assistant.ts](../../packages/server/src/routes/assistant.ts)|
 | A096 | 确认操作同 action ID 的并发请求复用 Promise；写入 + 状态 + 消息在 SQLite 事务；已确认重复请求返回既有结果 |[assistant.ts](../../packages/server/src/routes/assistant.ts)；[assistant-orchestrator.ts](../../packages/server/src/services/assistant-orchestrator.ts)|
@@ -715,6 +717,8 @@
 ### 6.5 API 覆盖矩阵
 
 2026-11-05工具扩展**没有新HTTP路由**：文本与流式调用继续使用下表既有messages/generations，所有新写工具仍经过`/assistant/actions/:id/confirm`或`cancel`；v1 card/result不改版。`GET /assistant/tools`包含新的服务端白名单，Android仍无目录请求/UI。业务域原HTTP端点并未因此自动增加Android原生页面。
+
+2026-11-06可靠性修复继续沿用这些路由。后台历史整理结果保存为现有result消息；读取既有`/ai/organization-runs/:id`进度及`/:id/card`建议不调用模型，显式resume仍可能调用模型。Android聊天当前仅显示通用结果摘要，自动GET观察仍是A105–A106独立整理工作区的能力，未新增聊天任务观察入口。
 
 | API | Android 实际入口 | 可用程度 |
 |---|---|---|
@@ -881,7 +885,7 @@
 
 ### 9.3 AI 助理和 Provider
 
-**2026-11-05新增工具局部复核：** 新toolName不会被Android通用卡/二次确认封闭白名单阻止；values/preview可展开字段路径，但result仍只显示最多6个已知摘要字段、不遍历数组。因此新资金/目标/物品/统计读结果、spending.card/evidence分页与逐项选择不是完整的Android聊天工作区；既有A105–A106独立整理只支持分类/标签选择，不自动获得聊天工具的模板/新分类应用能力。确认普通业务工具后只刷新对话，现有`onDataChanged`成功信号限定导入分支，其他已打开业务页可能需要手动重读。这些是当前源码缺口；本轮仅更新目录，未改Android代码或宣称设备验收通过。
+**2026-11-06新增工具与执行可靠性局部复核：** 新toolName不会被Android通用卡/二次确认封闭白名单阻止；values/preview可展开字段路径，但result仍只显示最多6个已知摘要字段、不遍历数组。因此新资金/目标/物品/统计读结果、spending.card/evidence分页与逐项选择不是完整的Android聊天工作区；既有A105–A106独立整理只支持分类/标签选择，不自动获得聊天工具的新分类应用能力，模板建议已退役。服务端现逐次保存读取结果并结束后台任务的模型轮询；Android聊天未新增后台任务观察卡，仍需独立整理入口查看完整进度与审查建议。确认普通业务工具后只刷新对话，现有`onDataChanged`成功信号限定导入分支，其他已打开业务页可能需要手动重读。Android的既有固定错误映射也未在本轮调整。这些是当前源码缺口；本轮仅更新目录，未改Android代码或宣称设备验收通过。
 
 
 1. **导入日期错配已源码修复**：本轮统一读取服务端 `dateLabel`，新增decoder单元测试；实际文件/设备日期展示尚待验证。
@@ -1294,6 +1298,8 @@
 | 日期/日志 | 源码核对日期与运行验证日期分别记录，描述变化 |
 
 ### 12.3 变更日志
+
+**2026-11-06 助手执行可靠性（局部源码核对）：** 更新A020/A093/A107/A115/A116及§6.5/9.3：记录8次有界模型决策、业务参数2次纠错、立即保存成功读取、重复查询收口与后台整理任务移交；补充长文本摘要、退款关联分页与自然月统计的month默认语义。写操作仍需用户确认，模板不恢复。Android原生代码未变，保留通用结果展示、聊天任务观察和跨页刷新缺口，独立整理工作区原有15分钟观察不改。仅推进这些条目的源码日期；全库日期、总数、历史测试和设备证据不重算。本轮隔离复现与源码核对见[可靠性审查](../../.trellis/tasks/11-04-ios-assistant/research/assistant-reliability-review.md)，最终自动化门禁由主任务记录；无真实Provider调用、生产部署或Android真机验证。
 
 **2026-11-05 助手全业务工具目录补齐（局部源码核对）：** 在原稳定ID上更新A020/A021/A024、A072/A073/A077/A084/A087，追加A107–A116十个业务能力组；准确列出新工具和参数/CAS/分页/历史整理限制。A084保留ID并标退役；A077仅canonical四用途收入，不重启旧模板分配。复核Android generic card与Repository未封闭toolName、结果摘要不遍历数组、普通工具成功不发跨页刷新信号，分别记录兼容和缺口；没有新增Android代码、页面、route或工具目录UI。此前314/322功能与30工具、126/137API等数字全部保留为历史统计；本轮不重算全库。服务端/客户端CI结果由本轮任务单独记录，此记录不构成真实Provider、设备安装或生产部署证据。
 

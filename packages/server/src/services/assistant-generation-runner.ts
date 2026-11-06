@@ -31,6 +31,13 @@ import type { AiPromptContext, StoredAiProviderConfig } from './ai-types.js';
 import { AssistantConversationService } from './assistant-conversation-service.js';
 import { AssistantGenerationService } from './assistant-generation-service.js';
 import { buildAssistantContext } from './assistant-orchestrator.js';
+import {
+  assistantBackgroundReply, assistantCanCorrectTool, assistantExpectedToolReply, assistantHistory, assistantReadIdentity, assistantRetiredAllocationInput,
+  ASSISTANT_READ_LIMIT_REPLY, ASSISTANT_REPEATED_READ_REPLY,
+  ASSISTANT_TOOL_CORRECTION_HINT, ASSISTANT_TOOL_CORRECTION_REPLY, MAX_ASSISTANT_TOOL_CORRECTIONS,
+  ASSISTANT_NARROW_QUERY_REPLY, MAX_ASSISTANT_READ_FACT_BYTES,
+  AssistantPreviewTooLargeError, ASSISTANT_PREVIEW_TOO_LARGE_REPLY, MAX_ASSISTANT_MESSAGE_EVENT_BYTES,
+} from './assistant-turn-policy.js';
 import { AssistantToolRegistry, type AssistantToolContext, type AssistantToolResult } from './assistant-tool-registry.js';
 import {
   AssistantProviderTurnError,
@@ -368,10 +375,18 @@ export class AssistantGenerationRunner {
 
     let lastResult: AssistantToolResult | null = null;
     let displayChars = 0;
+    const reads = new Map<string, AssistantToolResult>();
+    let toolCorrections = 0;
+    let toolFailure: AssistantJsonObject | null = null;
+    let readFactBytes = 0;
 
     for (let step = 0; step < MAX_GENERATION_STEPS; step += 1) {
       if (!this.isLive(conversationId, generationId)) return;
       if (this.now() >= deadline) return this.failDeadline(conversationId, generationId);
+      if (displayChars >= MAX_DISPLAY_CHARS_TOTAL && lastResult !== null) {
+        this.finishTextTurn(conversationId, generationId, { message: '', toolCall: null, clarification: null }, null, null);
+        return;
+      }
       if (step > 0 && this.stepDelayMs > 0) await delay(this.stepDelayMs);
       if (!this.isLive(conversationId, generationId)) return;
 
@@ -386,12 +401,13 @@ export class AssistantGenerationRunner {
 
       const categories = this.toolContext.services.masterData.listCategories().map(({ id, name, type }) => ({ id, name, type }));
       const accounts = this.toolContext.services.masterData.listAccounts().map(({ id, name, type }) => ({ id, name, type }));
-      const messages = this.conversations.context(conversationId);
+      const messages = assistantHistory(this.conversations.context(conversationId));
       const requestContext: AiPromptContext = {
         input: JSON.stringify({
           request: inputText,
-          priorMessages: messages.slice(-12),
+          priorMessages: messages,
           ...(lastResult === null ? {} : { previousResult: lastResult }),
+          ...(toolFailure === null ? {} : { toolFailure }),
           today,
         }),
         categories,
@@ -404,6 +420,8 @@ export class AssistantGenerationRunner {
           messages,
           tools: this.registry.catalog(),
           ...(lastResult === null ? {} : { lastToolResult: lastResult }),
+          ...(toolFailure === null ? {} : { toolFailure }),
+          remainingProviderSteps: MAX_GENERATION_STEPS - step,
           categories,
           accounts,
           // Explicit server-local date so the model never has to ask for it.
@@ -442,6 +460,8 @@ export class AssistantGenerationRunner {
         } else {
           const raw = await this.completeBuffered(stored, secret, requestContext, providerTimeoutMs, generationId);
           turn = normalizeAssistantProviderTurn(raw);
+          turn = { ...turn, message: takeUtf16Units(turn.message, Math.max(0, Math.min(MAX_DISPLAY_CHARS_PER_TURN, MAX_DISPLAY_CHARS_TOTAL - displayChars))) };
+          displayChars += turn.message.length;
         }
       } catch (error) {
         streamError = error;
@@ -460,46 +480,85 @@ export class AssistantGenerationRunner {
 
       const normalizedTurn = turn;
       if (normalizedTurn.toolCall === null) {
-        this.finishTextTurn(conversationId, generationId, normalizedTurn, lastResult, partial);
+        this.finishTextTurn(conversationId, generationId, normalizedTurn, null, partial);
         return;
+      }
+      // Unknown/retired tools remain hard failures; only known tools may correct arguments.
+      if (this.registry.get(normalizedTurn.toolCall.name) === undefined || assistantRetiredAllocationInput(normalizedTurn.toolCall.name, normalizedTurn.toolCall.arguments)) {
+        throw new AssistantValidationError('AI 选择了不受支持的工具或已停用的分配方式，未执行任何操作。');
       }
 
-      const { tool, arguments: args } = this.registry.parseArguments(
-        normalizedTurn.toolCall.name,
-        normalizedTurn.toolCall.arguments,
-      );
-      if (tool.definition.access === 'write') {
-        await this.finishWriteTurn(
-          conversationId,
-          generationId,
-          normalizedTurn,
-          tool.definition.name,
-          args,
-          row.user_message_id,
-          partial,
-          deadline,
+      try {
+        const { tool, arguments: args } = this.registry.parseArguments(
+          normalizedTurn.toolCall.name,
+          normalizedTurn.toolCall.arguments,
         );
-        return;
+        if (tool.definition.access === 'write') {
+          await this.finishWriteTurn(conversationId, generationId, normalizedTurn, tool.definition.name, args,
+            row.user_message_id, partial, deadline);
+          return;
+        }
+        const identity = assistantReadIdentity(tool.definition.name, args);
+        if (reads.has(identity)) {
+          this.finishTextTurn(conversationId, generationId,
+            { message: ASSISTANT_REPEATED_READ_REPLY, toolCall: null, clarification: null }, null, partial);
+          return;
+        }
+        const read = await this.readTool(conversationId, generationId, normalizedTurn, tool.definition.name, args, partial, deadline);
+        if (read.dropped || read.result === null) return;
+        lastResult = read.result;
+        toolFailure = null;
+        reads.set(identity, read.result);
+        const handoff = assistantBackgroundReply(read.result);
+        if (handoff !== null) {
+          this.finishTextTurn(conversationId, generationId,
+            { message: handoff, toolCall: null, clarification: null }, read.result, null);
+          return;
+        }
+        this.generations.persistTurn(conversationId, generationId, {
+          messages: [{ id: randomUUID(), role: 'assistant', kind: 'result', content: {
+            version: 1, generationId,
+            result: { version: 1, toolName: read.result.toolName, summary: read.result.summary, data: read.result.data },
+          } }],
+        });
+        readFactBytes += Buffer.byteLength(JSON.stringify(read.result), 'utf8');
+        if (read.result.data['requiresNarrowerQuery'] === true || readFactBytes > MAX_ASSISTANT_READ_FACT_BYTES) {
+          this.finishTextTurn(conversationId, generationId,
+            { message: ASSISTANT_NARROW_QUERY_REPLY, toolCall: null, clarification: null }, null, null);
+          return;
+        }
+      } catch (error) {
+        if (!this.isLive(conversationId, generationId) || this.isArchived(conversationId)) return;
+        const expectedReply = assistantExpectedToolReply(error);
+        if (expectedReply !== null) {
+          this.finishTextTurn(conversationId, generationId,
+            { message: expectedReply, toolCall: null, clarification: null }, null, partial);
+          return;
+        }
+        if (error instanceof AssistantPreviewTooLargeError) {
+          this.finishTextTurn(conversationId, generationId,
+            { message: ASSISTANT_PREVIEW_TOO_LARGE_REPLY, toolCall: null, clarification: null }, null, partial);
+          return;
+        }
+        if (!assistantCanCorrectTool(error)) throw error;
+        toolCorrections += 1;
+        if (toolCorrections > MAX_ASSISTANT_TOOL_CORRECTIONS) {
+          this.finishTextTurn(conversationId, generationId,
+            { message: ASSISTANT_TOOL_CORRECTION_REPLY, toolCall: null, clarification: null }, null, partial);
+          return;
+        }
+        toolFailure = { code: 'TOOL_ARGUMENTS_INVALID', message: ASSISTANT_TOOL_CORRECTION_HINT };
       }
-      const read = await this.readTool(
-        conversationId,
-        generationId,
-        normalizedTurn,
-        tool.definition.name,
-        args,
-        partial,
-        deadline,
-      );
-      if (read.dropped) return;
-      lastResult = read.result;
     }
 
     if (!this.isLive(conversationId, generationId)) return;
-    this.finalizeFailed(
-      conversationId,
-      generationId,
-      new AssistantStreamError('ASSISTANT_STREAM_BOUNDS', '本次生成步骤过多，已中断。'),
-    );
+    if (lastResult !== null || toolFailure !== null) {
+      this.finishTextTurn(conversationId, generationId,
+        { message: toolFailure === null ? ASSISTANT_READ_LIMIT_REPLY : ASSISTANT_TOOL_CORRECTION_REPLY, toolCall: null, clarification: null }, null, null);
+    } else {
+      this.finalizeFailed(conversationId, generationId,
+        new AssistantStreamError('ASSISTANT_STREAM_BOUNDS', '本次生成步骤过多，已中断。'));
+    }
   }
 
   private failDeadline(conversationId: string, generationId: string): void {
@@ -825,7 +884,11 @@ export class AssistantGenerationRunner {
     partial: { messageId: string; text: string } | null,
   ): void {
     const text = takeUtf16Units(turn.message, MAX_DISPLAY_CHARS_PER_TURN);
-    const messageId = partial?.messageId ?? randomUUID();
+    // A read may already have persisted its streamed narration before a domain state
+    // (for example an oversized organization range) stopped the tool. Its safe outcome
+    // needs a new row; reusing that id would make persistTurn's replay fence skip it.
+    const partialStored = partial !== null && this.db.prepare('SELECT id FROM assistant_messages WHERE id = ?').get(partial.messageId) !== undefined;
+    const messageId = partial === null || partialStored ? randomUUID() : partial.messageId;
     if (turn.clarification !== null) {
       // Server-owned question and option ids: the model only proposes labels.
       const question = {
@@ -899,6 +962,21 @@ export class AssistantGenerationRunner {
       const pendingId = randomUUID();
       const messageId = partial?.messageId ?? randomUUID();
       const text = takeUtf16Units(turn.message, MAX_DISPLAY_CHARS_PER_TURN);
+      const content: AssistantMessageContent = {
+        version: 1, text, generationId,
+        card: {
+          version: 1, actionId: pendingId, toolName: prepared.toolName,
+          operation: prepared.operation, summary: prepared.summary, writes: true,
+          affected: prepared.affected, values: prepared.values, warnings: prepared.warnings,
+          fingerprint: prepared.fingerprint, status: 'pending', preview,
+          ...(prepared.attachment === undefined ? {} : { attachment: prepared.attachment }),
+        },
+      };
+      // One SSE data line must fit existing native parsers (64 KiB). Never truncate
+      // the scope of a financial preview to make it fit; ask for a smaller selection.
+      const messageBytes = Buffer.byteLength(JSON.stringify({ id: messageId, conversationId, role: 'assistant',
+        kind: 'tool-card', content, createdAt: this.now() }), 'utf8');
+      if (messageBytes + 512 > MAX_ASSISTANT_MESSAGE_EVENT_BYTES) throw new AssistantPreviewTooLargeError();
       // Pending action + card + terminal frame are one uninterruptible unit, so a Stop can
       // never land between the card and the confirmation state that authorizes it.
       this.generations.persistTurn(conversationId, generationId, {
@@ -916,26 +994,7 @@ export class AssistantGenerationRunner {
           id: messageId,
           role: 'assistant',
           kind: 'tool-card',
-          content: {
-            version: 1,
-            text,
-            generationId,
-            card: {
-              version: 1,
-              actionId: pendingId,
-              toolName: prepared.toolName,
-              operation: prepared.operation,
-              summary: prepared.summary,
-              writes: true,
-              affected: prepared.affected,
-              values: prepared.values,
-              warnings: prepared.warnings,
-              fingerprint: prepared.fingerprint,
-              status: 'pending',
-              preview,
-              ...(prepared.attachment === undefined ? {} : { attachment: prepared.attachment }),
-            },
-          },
+          content,
         }],
         transition: { status: 'completed', outcome: 'pending-confirmation', error: null },
       });

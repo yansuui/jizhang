@@ -185,7 +185,7 @@ function partialArray(value: string): AssistantPartialSnapshot[] {
   if (!Array.isArray(parsed)) throw new AssistantError(500, 'INTERNAL_ERROR', '生成记录无法读取。');
   if (parsed.some((item: unknown) => !isRecord(item) ||
     typeof item['messageId'] !== 'string' || item['messageId'] === '' ||
-    !Number.isInteger(item['step']) || Number(item['step']) < 0 || Number(item['step']) > 2 ||
+    !Number.isInteger(item['step']) || Number(item['step']) < 0 || Number(item['step']) >= MAX_GENERATION_STEPS ||
     typeof item['text'] !== 'string' || typeof item['validated'] !== 'boolean')) {
     throw new AssistantError(500, 'INTERNAL_ERROR', '生成记录无法读取。');
   }
@@ -745,7 +745,7 @@ export class AssistantGenerationService {
   ): void {
     const row = this.requireRow(conversationId, generationId);
     if (TERMINAL_STATUSES.includes(row.status)) return;
-    if (partial.step < 0 || partial.step > MAX_GENERATION_STEPS) {
+    if (partial.step < 0 || partial.step >= MAX_GENERATION_STEPS) {
       throw new AssistantStreamError('ASSISTANT_GENERATION_INVALID', '生成步骤超出上限。');
     }
     const existing = this.partialMessages(row).filter((item) => item.messageId !== partial.messageId);

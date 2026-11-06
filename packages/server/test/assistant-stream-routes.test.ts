@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { closeDatabase, initializeDatabase, type Db } from '../src/db/index.js';
@@ -11,6 +11,8 @@ import { SESSION_COOKIE } from '../src/plugins/auth.js';
 import { AiConfigService } from '../src/services/ai-config-service.js';
 import { AuthService } from '../src/services/auth-service.js';
 import type { AssistantGenerationSnapshot } from '../src/services/assistant-stream-types.js';
+import type { AssistantMessageDto } from '../src/services/assistant-types.js';
+import { AssistantToolRegistry } from '../src/services/assistant-tool-registry.js';
 
 const USERNAME = 'quiz';
 const PASSWORD = 'correct horse battery staple';
@@ -147,6 +149,7 @@ async function inject(
 async function waitForTerminal(conversationId: string, generationId: string): Promise<AssistantGenerationSnapshot> {
   for (let attempt = 0; attempt < 400; attempt += 1) {
     const response = await inject('GET', `/api/v1/assistant/conversations/${conversationId}/generations/${generationId}`);
+    if (response.statusCode !== 200) throw new Error(`Snapshot request failed: ${response.body}`);
     const snapshot = (response.json() as { generation: AssistantGenerationSnapshot }).generation;
     if (['completed', 'failed', 'cancelled', 'interrupted'].includes(snapshot.status)) return snapshot;
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -1188,21 +1191,23 @@ describe('streamed tool steps, wrong-conversation cancel and dedup', () => {
     const finished = await waitForTerminal(conversationId, created.generation!.id);
     expect(finished.status).toBe('completed');
     expect(finished.outcome).toBe('answer');
-    // One bubble per streamed step: the narration, then the answer.
-    expect(finished.messageIds.length).toBe(2);
+    // Each successful read is durable before the next provider decision. Its separate
+    // result card survives later failures and is available in subsequent prompt history.
+    expect(finished.messageIds.length).toBe(3);
     expect((finished.messages[0] as { kind: string }).kind).toBe('text');
     expect((finished.messages[0] as { content: { text: string } }).content.text).toBe('我先查一下最近的账单。');
     expect((finished.messages[1] as { kind: string }).kind).toBe('result');
+    expect((finished.messages[2] as { kind: string }).kind).toBe('text');
     // The narration was persisted under the id the step announced, not an orphan one.
     const deltaIds = db
       .prepare("SELECT json_extract(payload_json, '$.messageId') AS id, MIN(seq) AS first FROM assistant_generation_events WHERE generation_id = ? AND type = 'text-delta' GROUP BY id ORDER BY first")
       .all(created.generation!.id) as { id: string; first: number }[];
-    expect(deltaIds.map((row) => row.id)).toEqual([...finished.messageIds]);
+    expect(deltaIds.map((row) => row.id)).toEqual([finished.messageIds[0], finished.messageIds[2]]);
     // Each bubble has exactly one `message` event and no lingering provisional snapshot.
     const messageEvents = db
       .prepare("SELECT COUNT(*) AS c FROM assistant_generation_events WHERE generation_id = ? AND type = 'message'")
       .get(created.generation!.id) as { c: number };
-    expect(messageEvents.c).toBe(2);
+    expect(messageEvents.c).toBe(3);
     expect(finished.partialMessages).toEqual([]);
     expect(providerBodies.length).toBe(2);
   });
@@ -1316,6 +1321,335 @@ describe('background history organization', () => {
         return row?.status === 'ready' ? true : null;
       });
     } finally { release(); spendingGate = undefined; }
+  });
+});
+
+describe('complete assistant business workflows', () => {
+  function persistedMessages(snapshot: AssistantGenerationSnapshot): readonly AssistantMessageDto[] {
+    return snapshot.messages as readonly AssistantMessageDto[];
+  }
+  function delivery(mode: 'stream' | 'buffered') {
+    if (mode === 'buffered') {
+      const row = db.prepare('SELECT value_json FROM settings WHERE key = ?').get('ai.provider.v1') as { value_json: string };
+      const saved = JSON.parse(row.value_json) as Record<string, unknown>;
+      saved['mode'] = 'responses';
+      db.prepare('UPDATE settings SET value_json = ? WHERE key = ?').run(JSON.stringify(saved), 'ai.provider.v1');
+    }
+    return (message: string, toolCall: { name: string; arguments: Record<string, unknown> } | null = null): Turn =>
+      mode === 'stream'
+        ? { kind: 'sse', chunks: sseEnvelope(message, { toolCall }) }
+        : bufferedEnvelope({ message, toolCall, clarification: null });
+  }
+
+  async function assertReplayFitsNativeParser(conversation: string, generationId: string): Promise<void> {
+    const replay = await inject('GET', `/api/v1/assistant/conversations/${conversation}/generations/${generationId}/events?afterSeq=0`);
+    expect(replay.statusCode).toBe(200);
+    expect(Buffer.byteLength(replay.body, 'utf8')).toBeLessThan(2 * 1024 * 1024);
+    for (const line of replay.body.split('\n')) {
+      if (line.startsWith('data:')) expect(Buffer.byteLength(line, 'utf8')).toBeLessThan(64 * 1024);
+    }
+    for (const frame of replay.body.split('\n\n')) expect(Buffer.byteLength(frame, 'utf8')).toBeLessThan(128 * 1024);
+  }
+
+  it('projects long legal read pages into durable SSE cards without exceeding native replay bounds', async () => {
+    const insert = db.prepare(`INSERT INTO transactions
+      (id,type,amount_cents,category_id,account_id,date,note,tags_json,is_refund,deleted,updated_at)
+      VALUES (?,0,100,'builtin-expense-food','builtin-default-account',?,?,'[]',0,0,?)`);
+    db.transaction(() => {
+      for (let index = 0; index < 200; index += 1) insert.run(`long-bill-${index}`, NOW - index, '账'.repeat(4000), NOW);
+    })();
+    const reply = delivery('stream');
+    const conversation = await createConversation();
+    turns.push(reply('读取第一页', { name: 'transactions.query', arguments: { limit: 100, offset: 0 } }),
+      reply('读取后续范围', { name: 'transactions.query', arguments: { limit: 100, offset: 100 } }), reply('本轮已读取两个范围，长备注仅展示摘要。'));
+    const started = await createGeneration(conversation, { version: 1, clientRequestId: 'long-read-pages', input: { type: 'text', text: '查询历史账单并保留分页信息' } });
+    const finished = await waitForTerminal(conversation, started.generation!.id);
+    expect(finished.status).toBe('completed');
+    expect(finished.error).toBeNull();
+    const results = persistedMessages(finished).flatMap((message) => message.content.result ? [message.content.result] : []);
+    expect(results).toHaveLength(2);
+    for (const [index, result] of results.entries()) {
+      const data = result.data;
+      expect(data['total']).toBe(200);
+      expect(data['offset']).toBe(index * 100);
+      expect(data['pageReducedForDisplay']).toBe(true);
+      expect(data['textProjection']).toBeDefined();
+      const items = data['items'] as readonly Record<string, unknown>[];
+      expect(items.length).toBeGreaterThan(0);
+      expect(items.length).toBeLessThan(100);
+      expect(data['limit']).toBe(items.length);
+      expect(data['nextOffset']).toBe(index * 100 + items.length);
+      expect(data['hasMore']).toBe(true);
+      expect(items[0]).toMatchObject({ amountCents: 100, noteTruncated: true, noteOriginalUnits: 4000 });
+    }
+    await assertReplayFitsNativeParser(conversation, started.generation!.id);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM assistant_pending_actions').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM transactions').get()).toEqual({ count: 200 });
+  });
+
+  it('requires a smaller write selection before persisting an oversized generation confirmation card', async () => {
+    const original = AssistantToolRegistry.prototype.prepare;
+    const prepare = vi.spyOn(AssistantToolRegistry.prototype, 'prepare').mockImplementation(async function (this: AssistantToolRegistry, ...args) {
+      const prepared = await original.apply(this, args);
+      return { ...prepared, preview: { ...prepared.preview, rows: Array.from({ length: 50 }, (_, index) => ({ id: `selected-${index}`, note: '审'.repeat(1000) })) } };
+    });
+    try {
+      const reply = delivery('stream');
+      const conversation = await createConversation();
+      turns.push(reply('请确认完整计划', { name: 'plan.save', arguments: { monthlyIncomeCents: 800000, essentialMonthlyCents: 300000, reserveBalanceCents: 600000, expectedRevision: 0 } }));
+      const started = await createGeneration(conversation, { version: 1, clientRequestId: 'oversized-confirmation', input: { type: 'text', text: '保存计划前先预览' } });
+      const finished = await waitForTerminal(conversation, started.generation!.id);
+      expect(finished.status).toBe('completed');
+      expect(finished.outcome).toBe('answer');
+      expect(finished.error).toBeNull();
+      expect(JSON.stringify(finished.messages)).toContain('分批确认');
+      expect(persistedMessages(finished).some((message) => message.content.card)).toBe(false);
+      expect(providerBodies).toHaveLength(1);
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM assistant_pending_actions').get()).toEqual({ count: 0 });
+      expect(db.prepare('SELECT value_json FROM settings WHERE key = ?').get('financial.plan.v1')).toBeUndefined();
+      expect(db.prepare('SELECT COUNT(*) AS count FROM transactions').get()).toEqual({ count: 0 });
+      await assertReplayFitsNativeParser(conversation, started.generation!.id);
+    } finally { prepare.mockRestore(); }
+  });
+
+  it.each(['stream', 'buffered'] as const)('explains the organization 500-record limit without losing the fixed outcome (%s)', async (mode) => {
+    const insert = db.prepare(`INSERT INTO transactions
+      (id,type,amount_cents,category_id,account_id,date,note,tags_json,is_refund,deleted,updated_at)
+      VALUES (?,0,100,'builtin-expense-food','builtin-default-account',?,'','[]',0,0,?)`);
+    db.transaction(() => {
+      for (let index = 0; index < 501; index += 1) insert.run(`over-cap-${index}`, NOW, NOW);
+    })();
+    const reply = delivery(mode);
+    const conversation = await createConversation();
+    turns.push(reply('开始分析这个月的账单', { name: 'spending.preview', arguments: { startDate: '2026-09-01', endDate: '2026-09-30' } }));
+    const started = await createGeneration(conversation, { version: 1, clientRequestId: `organization-over-cap-${mode}`, input: { type: 'text', text: '整理全部历史账单' } });
+    const finished = await waitForTerminal(conversation, started.generation!.id);
+    expect(finished.status).toBe('completed');
+    expect(finished.error).toBeNull();
+    expect(JSON.stringify(finished.messages)).toContain('一次最多整理 500 笔账单');
+    expect(JSON.stringify(finished.messages)).toContain('本次尚未启动新任务');
+    expect(providerBodies).toHaveLength(1);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM ai_analysis_runs').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM assistant_pending_actions').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM transactions').get()).toEqual({ count: 501 });
+    await assertReplayFitsNativeParser(conversation, started.generation!.id);
+  });
+
+  it('hands a not-ready card back to its actual running task and explains a different-range busy request', async () => {
+    db.prepare(`INSERT INTO transactions
+      (id,type,amount_cents,category_id,account_id,date,note,tags_json,is_refund,deleted,updated_at)
+      VALUES ('not-ready-bill',0,100,'builtin-expense-food','builtin-default-account',?,'','[]',0,0,?)`).run(NOW, NOW);
+    const reply = delivery('stream');
+    const conversation = await createConversation();
+    let release!: () => void;
+    spendingGate = new Promise<void>((resolve) => { release = resolve; });
+    try {
+      turns.push(reply('开始分析', { name: 'spending.preview', arguments: { startDate: '2026-09-01', endDate: '2026-09-30' } }));
+      const first = await createGeneration(conversation, { version: 1, clientRequestId: 'start-not-ready-task', input: { type: 'text', text: '分析九月账单' } });
+      const initial = await waitForTerminal(conversation, first.generation!.id);
+      const runResult = persistedMessages(initial).find((message) => message.content.result)?.content.result;
+      const run = runResult?.data['run'] as { runId: string };
+      await waitFor(async () => spendingSignal ? true : null);
+      const before = providerBodies.length;
+      turns.push(reply('读取建议', { name: 'spending.card', arguments: { runId: run.runId } }));
+      const second = await createGeneration(conversation, { version: 1, clientRequestId: 'read-not-ready-task', input: { type: 'text', text: '现在读取整理建议' } });
+      const notReady = await waitForTerminal(conversation, second.generation!.id);
+      expect(notReady.status).toBe('completed');
+      expect(notReady.outcome).toBe('answer');
+      const notReadyResult = persistedMessages(notReady).find((message) => message.content.result)?.content.result;
+      expect(notReadyResult?.toolName).toBe('spending.card');
+      expect(notReadyResult?.data['run']).toMatchObject({ runId: run.runId, status: 'running' });
+      expect(notReadyResult?.data['actions']).toBeUndefined();
+      expect(providerBodies.length - before).toBe(1);
+      const priorCalls = providerBodies.length;
+      turns.push(reply('分析另一个范围', { name: 'spending.preview', arguments: { startDate: '2026-08-01', endDate: '2026-08-31' } }));
+      const third = await createGeneration(conversation, { version: 1, clientRequestId: 'busy-different-range', input: { type: 'text', text: '也分析八月账单' } });
+      const busy = await waitForTerminal(conversation, third.generation!.id);
+      expect(busy.status).toBe('completed');
+      expect(busy.error).toBeNull();
+      expect(JSON.stringify(busy.messages)).toContain('本次请求的新范围尚未启动');
+      expect(providerBodies.length - priorCalls).toBe(1);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM ai_analysis_runs').get()).toEqual({ count: 1 });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM assistant_pending_actions').get()).toEqual({ count: 0 });
+      expect(db.prepare('SELECT COUNT(*) AS count FROM transactions').get()).toEqual({ count: 1 });
+    } finally { release(); spendingGate = undefined; }
+  });
+
+  it.each(['stream', 'buffered'] as const)('hands background organization to a durable task card without model polling (%s)', async (mode) => {
+    db.prepare(`INSERT INTO transactions
+      (id,type,amount_cents,category_id,account_id,date,note,tags_json,is_refund,deleted,updated_at)
+      VALUES ('history-bill',0,100,'builtin-expense-food','builtin-default-account',?,'','[]',0,0,?)`).run(NOW, NOW);
+    const reply = delivery(mode);
+    const conversation = await createConversation();
+    let release!: () => void;
+    spendingGate = new Promise<void>((resolve) => { release = resolve; });
+    turns.push(reply('我会先分析本月历史账单，并生成分类和标签建议。', {
+      name: 'spending.preview', arguments: { startDate: '2026-09-01', endDate: '2026-09-30' },
+    }), reply('分析仍在后台进行中，我先查询进度。', { name: 'spending.status', arguments: { runId: 'should-never-be-guessed' } }));
+    try {
+      const started = await createGeneration(conversation, { version: 1, clientRequestId: `background-${mode}`,
+        input: { type: 'text', text: '整理这个月的历史账单，先给我分类和标签建议' } });
+      const finished = await waitForTerminal(conversation, started.generation!.id);
+      expect(finished.status).toBe('completed');
+      expect(finished.outcome).toBe('answer');
+      expect(finished.error).toBeNull();
+      const result = persistedMessages(finished).find((message) => message.content.result)?.content.result;
+      expect(result?.toolName).toBe('spending.preview');
+      expect(result?.data['run']).toMatchObject({ runId: expect.any(String), status: 'running' });
+      expect(turns).toHaveLength(1);
+      await waitFor(async () => spendingSignal ? true : null);
+      expect(spendingSignal?.aborted).toBe(false);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM transactions').get()).toEqual({ count: 1 });
+      const history = await inject('GET', `/api/v1/assistant/conversations/${conversation}/messages`);
+      expect(history.json().items.some((message: { content: { result?: { data: { run?: unknown } } } }) => message.content.result?.data.run)).toBe(true);
+    } finally { release(); spendingGate = undefined; }
+  });
+
+  it.each(['stream', 'buffered'] as const)('keeps earlier read facts available through four different tools and a final answer (%s)', async (mode) => {
+    const marker = 'unique-history-note-visible-after-all-other-reads';
+    db.prepare(`INSERT INTO transactions
+      (id,type,amount_cents,category_id,account_id,date,note,tags_json,is_refund,deleted,updated_at)
+      VALUES ('marker-bill',0,100,'builtin-expense-food','builtin-default-account',?,?,'[]',0,0,?)`).run(NOW, marker, NOW);
+    const reply = delivery(mode);
+    const conversation = await createConversation();
+    turns.push(reply('查询账单', { name: 'transactions.query', arguments: { limit: 1 } }),
+      reply('查询物品', { name: 'items.read', arguments: {} }),
+      reply('查询四用途资金', { name: 'funds.read', arguments: { view: 'summary' } }),
+      reply('查询计划', { name: 'plan.read', arguments: {} }), reply('已核对账单、物品、资金和计划。'));
+    const started = await createGeneration(conversation, { version: 1, clientRequestId: `multiple-reads-${mode}`,
+      input: { type: 'text', text: '帮我核对账单、物品、四用途资金和计划情况' } });
+    const finished = await waitForTerminal(conversation, started.generation!.id);
+    expect(finished.status).toBe('completed');
+    expect(finished.error).toBeNull();
+    expect(providerBodies).toHaveLength(5);
+    expect(JSON.stringify(providerBodies[4])).toContain(marker);
+    expect(persistedMessages(finished).filter((message) => message.kind === 'result')).toHaveLength(4);
+    expect(JSON.stringify(finished.messages)).toContain(marker);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM assistant_pending_actions').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM transactions').get()).toEqual({ count: 1 });
+  });
+
+  it('prepares and confirms an independent plan only after multiple resource reads', async () => {
+    const reply = delivery('stream');
+    const conversation = await createConversation();
+    turns.push(reply('读取账户', { name: 'master-data.read', arguments: { kind: 'accounts' } }),
+      reply('读取当前计划', { name: 'plan.read', arguments: {} }),
+      reply('读取资金', { name: 'funds.read', arguments: { view: 'summary' } }),
+      reply('预览输入', { name: 'plan.preview', arguments: { monthlyIncomeCents: 800000, essentialMonthlyCents: 300000, reserveBalanceCents: 600000 } }),
+      reply('请确认计划', { name: 'plan.save', arguments: { monthlyIncomeCents: 800000, essentialMonthlyCents: 300000, reserveBalanceCents: 600000, expectedRevision: 0 } }));
+    const started = await createGeneration(conversation, { version: 1, clientRequestId: 'plan-workflow',
+      input: { type: 'text', text: '根据我的账户和资金，规划每月8000收入、3000必要支出、6000储备' } });
+    const finished = await waitForTerminal(conversation, started.generation!.id);
+    expect(finished.status).toBe('completed');
+    expect(finished.outcome).toBe('pending-confirmation');
+    const card = persistedMessages(finished).find((message) => message.content.card)?.content.card;
+    expect(card?.toolName).toBe('plan.save');
+    expect(db.prepare('SELECT value_json FROM settings WHERE key = ?').get('financial.plan.v1')).toBeUndefined();
+    expect(db.prepare('SELECT COUNT(*) AS count FROM transactions').get()).toEqual({ count: 0 });
+    const confirmed = await inject('POST', `/api/v1/assistant/actions/${card!.actionId}/confirm`, {});
+    expect(confirmed.statusCode).toBe(200);
+    expect(confirmed.json().action.status).toBe('confirmed');
+    expect(db.prepare('SELECT value_json FROM settings WHERE key = ?').get('financial.plan.v1')).toBeDefined();
+    expect(db.prepare('SELECT COUNT(*) AS count FROM transactions').get()).toEqual({ count: 0 });
+  });
+
+  it('corrects a typed bad read argument without exposing raw error values or writing the ledger', async () => {
+    const reply = delivery('buffered');
+    const secretMarker = 'synthetic-value-that-must-not-be-echoed-in-tool-errors';
+    const conversation = await createConversation();
+    turns.push(reply('查询账户', { name: 'master-data.read', arguments: { kind: secretMarker } }),
+      reply('按目录重新查询', { name: 'master-data.read', arguments: { kind: 'accounts' } }), reply('账户已读取，未修改账本。'));
+    const started = await createGeneration(conversation, { version: 1, clientRequestId: 'correct-read-args', input: { type: 'text', text: '查询账户' } });
+    const finished = await waitForTerminal(conversation, started.generation!.id);
+    expect(finished.status).toBe('completed');
+    expect(JSON.stringify(providerBodies[1])).toContain('TOOL_ARGUMENTS_INVALID');
+    expect(JSON.stringify(providerBodies[1])).not.toContain(secretMarker);
+    expect(persistedMessages(finished).filter((message) => message.kind === 'result')).toHaveLength(1);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM transactions').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM assistant_pending_actions').get()).toEqual({ count: 0 });
+  });
+
+  it('stops an identical read loop with the already-persisted facts and no extra inference', async () => {
+    const reply = delivery('stream');
+    const conversation = await createConversation();
+    turns.push(reply('读取账户', { name: 'master-data.read', arguments: { kind: 'accounts', limit: 5 } }),
+      reply('再读取账户', { name: 'master-data.read', arguments: { limit: 5, kind: 'accounts' } }), reply('不应执行这轮推理'));
+    const started = await createGeneration(conversation, { version: 1, clientRequestId: 'repeat-read', input: { type: 'text', text: '查询账户' } });
+    const finished = await waitForTerminal(conversation, started.generation!.id);
+    expect(finished.status).toBe('completed');
+    expect(finished.error).toBeNull();
+    expect(turns).toHaveLength(1);
+    expect(persistedMessages(finished).filter((message) => message.kind === 'result')).toHaveLength(1);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM transactions').get()).toEqual({ count: 0 });
+  });
+
+  it('finishes the bounded decision budget with durable facts visible even to input-only templates', async () => {
+    for (let index = 0; index < 9; index += 1) {
+      db.prepare(`INSERT INTO transactions
+        (id,type,amount_cents,category_id,account_id,date,note,tags_json,is_refund,deleted,updated_at)
+        VALUES (?,0,100,'builtin-expense-food','builtin-default-account',?,?,'[]',0,0,?)`)
+        .run(`budget-bill-${index}`, NOW - index * 1000, index === 0 ? 'first-read-marker-remains-in-custom-input' : `row-${index}`, NOW);
+    }
+    const reply = delivery('stream');
+    const conversation = await createConversation();
+    for (let offset = 0; offset < 8; offset += 1) turns.push(reply(`读取第${offset + 1}页`, { name: 'transactions.query', arguments: { limit: 1, offset } }));
+    turns.push(reply('不应发生第九次推理'));
+    const started = await createGeneration(conversation, { version: 1, clientRequestId: 'bounded-eight-reads', input: { type: 'text', text: '分批查询全部历史' } });
+    const finished = await waitForTerminal(conversation, started.generation!.id);
+    expect(finished.status).toBe('completed');
+    expect(finished.error).toBeNull();
+    expect(providerBodies).toHaveLength(8);
+    expect(turns).toHaveLength(1);
+    expect(persistedMessages(finished).filter((message) => message.kind === 'result')).toHaveLength(8);
+    const lastBody = providerBodies[7] as { messages: { role: string; content: string }[] };
+    const input = JSON.parse(lastBody.messages.find((message) => message.role === 'user')!.content) as { priorMessages: unknown[] };
+    expect(JSON.stringify(input.priorMessages)).toContain('first-read-marker-remains-in-custom-input');
+  });
+
+  it('retains a valid read card when a subsequent provider request actually fails', async () => {
+    const reply = delivery('stream');
+    const conversation = await createConversation();
+    turns.push(reply('读取账户', { name: 'master-data.read', arguments: { kind: 'accounts' } }), { kind: 'status', status: 503 });
+    const started = await createGeneration(conversation, { version: 1, clientRequestId: 'read-then-upstream-failure', input: { type: 'text', text: '查询账户' } });
+    const finished = await waitForTerminal(conversation, started.generation!.id);
+    expect(finished.status).toBe('failed');
+    expect(persistedMessages(finished).filter((message) => message.kind === 'result')).toHaveLength(1);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM transactions').get()).toEqual({ count: 0 });
+  });
+
+  it('bounds repeated invalid arguments without executing any business write', async () => {
+    const reply = delivery('buffered');
+    const conversation = await createConversation();
+    for (let index = 0; index < 4; index += 1) turns.push(reply('请核对收入', { name: 'salary.create', arguments: { amountCents: 10000 } }));
+    const started = await createGeneration(conversation, { version: 1, clientRequestId: 'bounded-argument-correction', input: { type: 'text', text: '分配收入' } });
+    const finished = await waitForTerminal(conversation, started.generation!.id);
+    expect(finished.status).toBe('completed');
+    expect(finished.error).toBeNull();
+    expect(providerBodies).toHaveLength(3);
+    expect(turns).toHaveLength(1);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM salary_records').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM assistant_pending_actions').get()).toEqual({ count: 0 });
+  });
+
+  it('applies the same 180-second total deadline to the legacy route while preserving earlier facts', async () => {
+    const reply = delivery('buffered');
+    const conversation = await createConversation();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    turns.push(reply('读取账户', { name: 'master-data.read', arguments: { kind: 'accounts' } }),
+      { kind: 'gated-envelope', gate, value: { message: '到时限后不应成为成功回答', toolCall: null } });
+    const responsePromise = inject('POST', `/api/v1/assistant/conversations/${conversation}/messages`, { text: '查询账户后核对计划' });
+    await waitFor(async () => providerBodies.length >= 2 ? true : null);
+    currentNow = NOW + 181000;
+    release();
+    const response = await responsePromise;
+    expect(response.statusCode).toBe(200);
+    const messages = response.json().items as AssistantMessageDto[];
+    expect(messages.some((message) => message.kind === 'result')).toBe(true);
+    expect(messages.at(-1)?.kind).toBe('error');
+    expect(providerBodies).toHaveLength(2);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM transactions').get()).toEqual({ count: 0 });
   });
 });
 

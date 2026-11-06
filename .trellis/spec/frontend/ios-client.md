@@ -41,6 +41,16 @@ Use the API client's per-session `ledgerRevision` publisher after actual success
 
 Historical-organization analysis is started in the background and polled: one assistant generation must never await the whole batched analysis, because the server caps a generation at `MAX_GENERATION_DEADLINE_MS` (180 s) and the second clarification turn would then fail. Template proposals are neither produced nor selectable.
 
+`AssistantSpendingRunStore` owns progress by immutable API identity and run ID. Poll only
+GET status, every three seconds for at most 300 reads; tolerate up to three consecutive
+transient failures and stop immediately for 401/403/404. Manual refresh starts a fresh
+observation ticket; cancellation/disappearance and replaced tickets reject late results.
+Validate run ownership, legal status and `0 <= completed <= eligible <= 500` before display.
+Show the actual date range and fixed safe failure cause. Opening ready suggestions is a
+read, not confirmation or new inference. Unknown server/provider messages retain the
+generic fallback; only explicitly allowlisted fixed server messages may explain a stream
+failure. Never expose raw provider response text or automatically retry a model request.
+
 Generation events follow the existing backend protocol, including UTF-16 offsets, monotonically increasing sequence, stable provisional/final message identity and snapshot reconciliation. Leaving a view unsubscribes; Stop explicitly cancels server generation. Network loss does not authorize a new inference POST.
 
 Keep POST ownership separate from the current screen's subscription: a delayed A response after A → B → A must resume the currently visible A. Definite client rejections release the draft for editing; ambiguous transport/server failures retain the original request ID and explicit retry notice across reopening. Successful list mutations invalidate reads started before their completion.
@@ -77,6 +87,9 @@ Good: the user reads history while the current stream advances and gets a jump-t
 
 - Core tests: URL/origin checks, CSRF, bodyless POST, cookie persistence/expiry, exact monetary decoding, safe errors and ownership/401 behavior.
 - Assistant tests: real wire shapes, framing/Unicode, sequence gaps, terminal replacement, same-draft identity and snapshot freshness.
+- Background tests: read-only ready handoff, transient recovery, manual observation restart,
+  missing/wrong-owner/invalid-count rejection, leaving-view cancellation and finite safe
+  error mapping without provider detail leaks.
 - Provider tests: bootstrap, secret/hidden field preservation, model selection/discovery failure and exclusivity.
 - Ledger tests: actual read DTOs, exact cents and authoritative window/fund contracts.
 - Native build/test/package on macOS; inspect the real simulator launch artifact. Large fonts, keyboard, long chats, provider latency and physical installation remain separate acceptance evidence.
