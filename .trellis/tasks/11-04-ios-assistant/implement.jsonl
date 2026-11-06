@@ -1,3 +1,8 @@
 {"file": ".trellis/spec/frontend/index.md", "reason": "Native client boundaries and accounting ownership"}
 {"file": ".trellis/spec/backend/ai-provider.md", "reason": "Saved provider configuration and model discovery contract"}
 {"file": ".trellis/spec/backend/assistant-streaming.md", "reason": "Conversation generation lifecycle and SSE contract"}
+{"file": ".trellis/tasks/11-04-ios-assistant/harness-reminders-prd.md", "reason": "Current expanded conversational capability and confirmed daily reminder requirements"}
+{"file": ".trellis/tasks/11-04-ios-assistant/harness-reminders-design.md", "reason": "Owned interaction, approval continuation, native workspace and notification architecture"}
+{"file": ".trellis/tasks/11-04-ios-assistant/research/harness-capability-audit.md", "reason": "Source-backed active capability coverage and exact native gaps"}
+{"file": ".trellis/tasks/11-04-ios-assistant/research/daily-reminder-design.md", "reason": "Official local-notification contracts, owner fences and tap-only review identity"}
+{"file": ".trellis/spec/backend/assistant-workspace.md", "reason": "Implemented workspace negotiation, durable choice/consent/replay and daily read-only contracts"}

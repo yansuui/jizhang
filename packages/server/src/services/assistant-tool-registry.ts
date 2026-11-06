@@ -1,6 +1,8 @@
 /** Allowlisted assistant tools. Adapters call domain services directly, never sibling HTTP routes. */
 import { createHash, randomUUID } from 'node:crypto';
 import { createBusinessTools, simulateAssistantWrite } from './assistant-business-tools.js';
+import { createWorkspaceTools } from './assistant-workspace-tools.js';
+import { organizationPage } from './assistant-organization-page.js';
 import { financialTransactionToken } from './financial-purpose-store.js';
 import {
   dateOnly,
@@ -61,6 +63,9 @@ export interface AssistantToolServices {
 }
 
 export interface AssistantToolContext {
+  readonly conversationId?: string | undefined;
+  readonly generationId?: string | undefined;
+  readonly capabilityCatalog?: readonly AssistantToolDefinition[] | undefined;
   readonly actorId?: string | undefined;
   readonly db: Db;
   readonly now: () => number;
@@ -347,7 +352,7 @@ function createDefinitions(): AssistantToolDefinition[] {
     { name: 'stats.monthly', access: 'read', description: '查询服务端计算的月度收入和净支出趋势。', inputSchema: { type: 'object', properties: { months: { type: 'integer', minimum: 1, maximum: 12 } } } },
     { name: 'recurring.pending', access: 'read', description: '查询待确认的周期账单。', inputSchema: { type: 'object', properties: {} } },
     { name: 'monthly.evaluate', access: 'read', description: '按需生成有证据编号的本月评价。', inputSchema: { type: 'object', properties: {} } },
-    { name: 'organization.preview', access: 'read', description: '预览可安全执行的分类和标签整理。', inputSchema: { type: 'object', properties: {} } },
+    { name: 'organization.preview', access: 'read', description: '分页预览可安全执行的分类和标签整理；hasMore时不能把本页当全部。', inputSchema: { type: 'object', properties: { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 } } } },
     { name: 'backups.list', access: 'read', description: '列出可用备份文件名。', inputSchema: { type: 'object', properties: {} } },
     { name: 'backup.export-links', access: 'read', description: '返回数据导出链接。', inputSchema: { type: 'object', properties: {} } },
     { name: 'transaction.create', access: 'write', description: '准备支出、普通收入或关联退款。退款使用 income、isRefund=true、原支出编号 refundLinkedTxIds。', inputSchema: { type: 'object', required: ['type', 'amountCents', 'categoryId', 'accountId', 'date'], properties: { type: { enum: ['expense', 'income'] }, amountCents: { type: 'integer' }, categoryId: { type: 'string' }, accountId: { type: 'string' }, date: { type: ['string', 'integer'] }, note: { type: 'string' }, tags: { type: 'array' }, isRefund: { type: 'boolean' }, refundLinkedTxIds: { type: 'array', items: { type: 'string' } }, fundPurpose: { enum: ['growth', 'reserve', 'essentials', 'joy', null] } } } },
@@ -410,7 +415,7 @@ export class AssistantToolRegistry {
     if (tool.definition.access !== 'read' || tool.read === undefined) {
       throw new AssistantValidationError('该助手工具不是只读工具。');
     }
-    return projectAssistantReadResult(await tool.read(context, args), args);
+    return projectAssistantReadResult(await tool.read({ ...context, capabilityCatalog: this.catalog() }, args), args);
   }
 
   async prepare(context: AssistantToolContext, name: string, value: unknown): Promise<AssistantPreparedTool> {
@@ -446,7 +451,7 @@ export class AssistantToolRegistry {
 
   private registerAll(): void {
     const definitions = new Map(createDefinitions().map((definition) => [definition.name, definition]));
-    for (const tool of createBusinessTools()) {
+    for (const tool of [...createBusinessTools(), ...createWorkspaceTools()]) {
       definitions.set(tool.definition.name, tool.definition);
       this.tools.set(tool.definition.name, tool);
     }
@@ -533,8 +538,11 @@ export class AssistantToolRegistry {
       },
     });
 
-    this.register(def('organization.preview'), empty, {
-      read: async (context) => toolResult('organization.preview', '这是尚未写入的整理预览。', await context.services.organization.preview()),
+    this.register(def('organization.preview'), (value) => {
+      const record = argsRecord(value); onlyKnown(record, ['offset', 'limit']);
+      return { offset: integerArg(record, 'offset', 0) ?? 0, limit: integerArg(record, 'limit', 1, 100) ?? 30 };
+    }, {
+      read: async (context, args) => organizationPage(await context.services.organization.preview({ explain: args['offset'] === 0 }), args['offset'] as number, args['limit'] as number),
     });
 
     this.register(def('backups.list'), empty, {

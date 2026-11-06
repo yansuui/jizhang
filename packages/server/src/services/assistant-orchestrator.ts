@@ -7,6 +7,7 @@ import { AccountBalanceService } from './account-balance-service.js';
 import { AiConfigService } from './ai-config-service.js';
 import { AiOrganizationService } from './ai-organization-service.js';
 import { AiProviderService, type AiCallOptions } from './ai-provider-service.js';
+import { requiresWorkspaceV1 } from './assistant-workspace-tools.js';
 import type { AiPromptContext, StoredAiProviderConfig } from './ai-types.js';
 import { AssistantConversationService } from './assistant-conversation-service.js';
 import { AssistantActionStaleError, AssistantValidationError, normalizeAssistantJson, normalizeAssistantProviderTurn, type AssistantAttachmentMetadata, type AssistantJsonObject, type AssistantMessageDto, type AssistantPendingActionDto } from './assistant-types.js';
@@ -144,6 +145,8 @@ export class AssistantOrchestrator {
     return this.registry.catalog();
   }
 
+  workspaceContext(): AssistantToolContext { return this.context; }
+
   async handleMessage(conversationId: string, userText: string, userMessageId: string, attachment?: { metadata: AssistantAttachmentMetadata; bytes: Uint8Array }): Promise<AssistantTurnResult> {
     const deadline = this.now() + MAX_GENERATION_DEADLINE_MS;
     const remaining = (): number => {
@@ -235,7 +238,7 @@ export class AssistantOrchestrator {
       const messages = assistantHistory(this.conversations.context(conversationId));
       const facts = {
         messages,
-        tools: this.registry.catalog(),
+          tools: this.registry.catalog().filter((tool) => !requiresWorkspaceV1(tool.name)),
         ...(lastResult === null ? {} : { lastToolResult: lastResult }),
         ...(toolFailure === null ? {} : { toolFailure }),
         remainingProviderSteps: MAX_GENERATION_STEPS - step,
@@ -257,7 +260,7 @@ export class AssistantOrchestrator {
       const turn = normalizeAssistantProviderTurn(raw);
       providerMessage = turn.message;
       if (turn.toolCall === null) break;
-      if (this.registry.get(turn.toolCall.name) === undefined || assistantRetiredAllocationInput(turn.toolCall.name, turn.toolCall.arguments)) {
+      if (this.registry.get(turn.toolCall.name) === undefined || assistantRetiredAllocationInput(turn.toolCall.name, turn.toolCall.arguments) || requiresWorkspaceV1(turn.toolCall.name)) {
         throw new AssistantValidationError('AI 选择了不受支持的工具或已停用的分配方式，未执行任何操作。');
       }
 

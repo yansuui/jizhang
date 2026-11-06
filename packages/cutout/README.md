@@ -10,7 +10,8 @@ when this service is stopped or not configured.
 - The Fastify app proxies every operation through authenticated, CSRF-protected item routes.
 - The worker is attached only to Compose's `cutout-internal` network. It has no published host
   port and no persistent data volume.
-- Only normalized WebP drafts up to 2 MiB are accepted. Jobs are bounded to one active worker
+- Prepared JPEG, PNG and WebP drafts up to 2 MiB are accepted and normalized with strict
+  MIME/decoded-format and pixel checks. Jobs are bounded to one active worker
   plus one waiting job, at most three retained jobs, eight candidates, and a ten-minute TTL.
 - Source images, temporary normalized PNGs, masks, and candidate files live under a 512 MiB
   `tmpfs` in Compose. They are deleted on cancel, expiry, or worker shutdown. The model

@@ -1,2 +1,6 @@
 {"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Separate source verification from native device acceptance"}
 {"file": ".trellis/spec/backend/assistant-streaming.md", "reason": "Request ownership, replay and message identity review"}
+{"file": ".trellis/tasks/11-04-ios-assistant/harness-reminders-prd.md", "reason": "Review every observable acceptance criterion and full active capability coverage"}
+{"file": ".trellis/tasks/11-04-ios-assistant/harness-reminders-implement.md", "reason": "Composed selection/revision/approval/recovery and notification verification gates"}
+{"file": ".trellis/tasks/11-04-ios-assistant/research/harness-ios-interaction-audit.md", "reason": "Prevent generic JSON, old preview and historical trace disclosure gaps"}
+{"file": ".trellis/spec/backend/assistant-workspace.md", "reason": "Verify composed workspace, legacy compatibility and dedicated native CSV boundaries"}

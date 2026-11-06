@@ -60,6 +60,7 @@ export const ASSISTANT_TOOL_NAMES = [
   'stats.query', 'planning.read', 'planning.configure', 'planning.mapping', 'planning.preview', 'planning.confirm',
   'planning.reconcile', 'planning.purpose', 'planning.refund-splits',
   'spending.preview', 'spending.card', 'spending.status', 'spending.evidence', 'spending.resume', 'spending.apply', 'spending.undo',
+  'capabilities.list', 'workspace.select', 'workspace.open', 'daily.review',
 ] as const;
 
 // Persisted historical result/progress messages still contain these names. They are

@@ -72,3 +72,15 @@ jobs:
         run: docker build -t jizhang-verification .
       - name: Exercise isolated container lifecycle and complete backup
         run: bash packages/server/scripts/check-multiuser-container.sh
+  cutout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install isolated image-service test dependencies
+        run: |
+          python3 -m venv .venv-cutout
+          .venv-cutout/bin/python -m pip install -r packages/cutout/requirements-test.txt
+      - name: Verify image formats, private jobs and lifecycle with a synthetic engine
+        working-directory: packages/cutout
+        run: ../../.venv-cutout/bin/python -m pytest tests -q

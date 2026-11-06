@@ -15,6 +15,9 @@ import { AssistantImportComparisonService } from '../services/assistant-import-c
 import { ImportBatchAnalysisRunner } from '../services/import-batch-analysis.js';
 import { ConversationActiveLock } from '../services/assistant-active-lock.js';
 import { registerImportBatchRoutes } from './import-batches.js';
+import { registerAssistantWorkspaceRoutes } from './assistant-workspace.js';
+import { AssistantWorkspaceService } from '../services/assistant-workspace-service.js';
+import { AssistantCsvImportService } from '../services/assistant-csv-import-service.js';
 import { AssistantOrchestrator } from '../services/assistant-orchestrator.js';
 import { AiConfigService } from '../services/ai-config-service.js';
 import { supportsAssistantStream } from '../services/ai-provider-service.js';
@@ -306,16 +309,23 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
 
     lifecycle.whileBusy(() => runner.hasActiveWork || batchAnalysis.hasActiveWork || AiSpendingOrganizationService.hasActiveFor(options.db));
 
-    return { now, withConversationLock, conversations, orchestrator, confirmingActions, activeLock, beginLegacyTurn, endLegacyTurn, legacyTurnActiveError, generations, runner, aiConfigService, batchAnalysis, options, trace: new AssistantTraceStore(options.db, now) };
+    const workspace = new AssistantWorkspaceService(orchestrator.workspaceContext(), conversations, generations);
+    const csvImports = new AssistantCsvImportService(orchestrator.workspaceContext());
+    return { now, withConversationLock, conversations, orchestrator, confirmingActions, activeLock, beginLegacyTurn, endLegacyTurn, legacyTurnActiveError, generations, runner, aiConfigService, batchAnalysis, options, workspace, csvImports, trace: new AssistantTraceStore(options.db, now) };
   });
 
   await registerImportBatchRoutes(app, { resolveAnalysis: (request) => getServices(request).batchAnalysis });
+  await registerAssistantWorkspaceRoutes(app, getServices);
 
   app.post<{ Params: { conversationId: string } }>(
     '/api/v1/assistant/conversations/:conversationId/generations',
     async (request, reply) => {
-      const { aiConfigService, withConversationLock, activeLock, legacyTurnActiveError, generations, now, runner } = getServices(request);
-      const body = parseCreateGenerationRequest(request.body);
+      const { aiConfigService, withConversationLock, activeLock, legacyTurnActiveError, generations, now, runner, workspace } = getServices(request);
+      const raw = record(request.body, 'body');
+      const features = raw['clientCapabilities'];
+      if (features !== undefined && (!Array.isArray(features) || features.length > 1 || features.some((v) => v !== 'workspace-v1'))) throw new AssistantValidationError('客户端能力无效。');
+      const enabled = Array.isArray(features) && features.includes('workspace-v1');
+      const body = parseCreateGenerationRequest(Object.fromEntries(Object.entries(raw).filter(([key]) => key !== 'clientCapabilities')));
       let delivery: 'stream' | 'buffered' = 'buffered';
       try {
         const stored = aiConfigService.getStoredOrThrow();
@@ -328,7 +338,7 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
       // The same lock the legacy entry point takes: one create decision at a time, so a
       // legacy `/messages` write (or an in-flight legacy provider turn) cannot interleave
       // between the active-generation check and the new generation becoming live.
-      const result = withConversationLock(() => {
+      const result = withConversationLock(() => workspace.context.db.transaction(() => {
         // A legacy turn or a merged-batch analysis also owns the conversation's provider-work
         // lock: one conversation never runs two model calls at once.
         if (
@@ -337,11 +347,16 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
         ) {
           throw legacyTurnActiveError();
         }
-        return generations.create(request.params.conversationId, body, {
+        const result = generations.create(request.params.conversationId, body, {
           delivery,
           today: dateLabel(now()),
         });
-      });
+        if (result.created && enabled) {
+          const source = body.input.sourceGenerationId ? workspace.store.binding(body.input.sourceGenerationId)?.workflow_id : undefined;
+          workspace.store.bind(request.params.conversationId, result.generation.id, body.input.text ?? '继续原任务', source);
+        } else if (!result.created && workspace.store.enabled(result.generation.id) !== enabled) throw new AssistantStreamError('ASSISTANT_REQUEST_CONFLICT', '这个请求编号的客户端能力已变化，请保持原请求重试。');
+        return result;
+      })());
       if (result.created) void runner.start(request.params.conversationId, result.generation.id);
       return reply.status(result.created ? 202 : 200).send(result);
     },
@@ -590,16 +605,17 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
   });
 
   app.post<{ Params: { id: string } }>('/api/v1/assistant/actions/:id/cancel', async (request) => {
-      const { conversations } = getServices(request);
+      const { conversations, workspace } = getServices(request);
     const pending = conversations.pending(request.params.id);
     const action = conversations.setPendingStatus(pending.id, 'cancelled', null);
     const cardMessage = conversations.messages(pending.conversationId).find((message) => message.content.card?.actionId === pending.id);
     if (cardMessage !== undefined) conversations.updateCardStatus(cardMessage.id, action.status);
+    workspace.store.reconcile(pending.conversationId);
     return { action };
   });
 
   app.delete<{ Params: { id: string } }>('/api/v1/assistant/conversations/:id', async (request) => {
-      const { generations, batchAnalysis, runner, conversations } = getServices(request);
+      const { generations, batchAnalysis, runner, conversations, workspace } = getServices(request);
     // Order matters: fence first, then abort and drain, then hide the conversation.
     // 1. The durable fence writes `interrupted` for every live generation *before* we wait
     //    on the provider, so a slow upstream can never keep the generation live after the
@@ -611,6 +627,7 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
     batchAnalysis.service.fenceArchived(request.params.id);
     await runner.cancelConversation(request.params.id);
     conversations.archive(request.params.id);
+    workspace.store.reconcile(request.params.id);
     return { ok: true };
   });
 }

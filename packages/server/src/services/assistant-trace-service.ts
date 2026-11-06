@@ -13,6 +13,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/index.js';
+import { isAssistantToolName } from './assistant-types.js';
 
 export type AssistantTraceKind = 'thinking' | 'tool' | 'result' | 'error';
 export type AssistantTraceStatus = 'running' | 'ok' | 'failed';
@@ -48,8 +49,8 @@ function toEntry(row: TraceRow): AssistantTraceEntry {
     id: row.id,
     step: row.step,
     kind: row.kind,
-    toolName: row.tool_name,
-    argumentSummary: row.argument_summary,
+    toolName: row.tool_name !== null && isAssistantToolName(row.tool_name) ? row.tool_name : null,
+    argumentSummary: safeShape(row.argument_summary),
     status: row.status,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -59,22 +60,16 @@ function toEntry(row: TraceRow): AssistantTraceEntry {
 /**
  * Renders a bounded, human-readable summary of tool arguments.
  *
- * Only *shape* and small scalars are kept: array/object values collapse to their length or
- * key count, so a long note, an action-id list or a financial payload summary cannot leak a
- * bill's contents into the trace. Strings are truncated hard.
+ * Only the number of parameters and their broad value types are kept. No argument keys,
+ * string prefixes, numeric amounts, object contents or resource IDs enter the trace.
  */
+function safeShape(value: string | null | undefined): string | null {
+  return typeof value === 'string' && /^参数\d{1,4}项 · 文本\d{1,4}项 · 数值\d{1,4}项 · 列表\d{1,4}项 · 对象\d{1,4}项$/.test(value) ? value : null;
+}
 export function summarizeToolArguments(args: unknown): string {
   if (args === null || typeof args !== 'object' || Array.isArray(args)) return '';
-  const parts: string[] = [];
-  for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
-    if (parts.length >= 6) break;
-    if (Array.isArray(value)) parts.push(`${key}[${value.length}]`);
-    else if (value !== null && typeof value === 'object') parts.push(`${key}{${Object.keys(value).length}}`);
-    else if (typeof value === 'string') parts.push(`${key}=${value.length > 40 ? `${value.slice(0, 40)}…` : value}`);
-    else if (typeof value === 'number' || typeof value === 'boolean') parts.push(`${key}=${String(value)}`);
-  }
-  const summary = parts.join(' ');
-  return summary.length > MAX_TRACE_SUMMARY_CHARS ? `${summary.slice(0, MAX_TRACE_SUMMARY_CHARS - 1)}…` : summary;
+  const values = Object.values(args as Record<string, unknown>).slice(0, 1000);
+  return `参数${values.length}项 · 文本${values.filter((v) => typeof v === 'string').length}项 · 数值${values.filter((v) => typeof v === 'number').length}项 · 列表${values.filter(Array.isArray).length}项 · 对象${values.filter((v) => v !== null && typeof v === 'object' && !Array.isArray(v)).length}项`;
 }
 
 export class AssistantTraceStore {
@@ -119,10 +114,8 @@ export class AssistantTraceStore {
         input.conversationId,
         input.step,
         input.kind,
-        input.toolName ?? null,
-        input.argumentSummary === undefined || input.argumentSummary === null || input.argumentSummary === ''
-          ? null
-          : input.argumentSummary,
+        input.toolName && isAssistantToolName(input.toolName) ? input.toolName : null,
+        safeShape(input.argumentSummary),
         at,
         at,
       );

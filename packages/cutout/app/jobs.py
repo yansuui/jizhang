@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from .engine import CandidateFile, CutoutCancelled, CutoutEngine, Sam2CutoutEngine
-from .image_io import ImageInputError, normalize_webp
+from .image_io import ImageInputError, normalize_image
 from .settings import Settings
 
 LOGGER = logging.getLogger("jizhang.cutout.jobs")
@@ -110,7 +110,7 @@ class JobManager:
             folder.mkdir(mode=0o700)
             source_path = folder / "source.png"
             try:
-                normalize_webp(data, content_type, source_path, self.settings)
+                normalize_image(data, content_type, source_path, self.settings)
             except ImageInputError as error:
                 shutil.rmtree(folder, ignore_errors=True)
                 status = 413 if len(data) > self.settings.max_input_bytes else 400

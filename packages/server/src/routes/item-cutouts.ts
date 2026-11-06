@@ -37,12 +37,12 @@ export async function registerItemCutoutRoutes(
     reply.header('Cache-Control', 'no-store');
     const contentType = request.headers['content-type']?.split(';', 1)[0]?.toLowerCase() ?? '';
     const body: unknown = request.body;
-    if (contentType !== 'image/webp') {
-      throw new ValidationError('AI 抠图输入必须为压缩后的 WebP 图片。');
+    if (!['image/webp', 'image/jpeg', 'image/png'].includes(contentType)) {
+      throw new ValidationError('AI 抠图输入必须为压缩后的 JPEG、PNG 或 WebP 图片。');
     }
     if (!Buffer.isBuffer(body)) throw new ValidationError('请发送图片二进制内容。');
     validateItemPhotoBytes(contentType, body);
-    const job = await client.createJob(body);
+    const job = await client.createJob(body, contentType);
     if (options.identityDb !== undefined) {
       try {
         options.identityDb.prepare(

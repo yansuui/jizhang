@@ -21,13 +21,17 @@ beforeEach(() => {
 describe('summarizeToolArguments', () => {
   it('collapses collections to their size so bill contents never land in a trace', () => {
     const summary = summarizeToolArguments({ actionIds: ['a', 'b', 'c'], runId: 'r1' });
-    expect(summary).toBe('actionIds[3] runId=r1');
+    expect(summary).toContain('列表1项');
+    expect(summary).not.toContain('runId');
+    expect(summary).not.toContain('r1');
     expect(summary).not.toContain('"a"');
   });
 
   it('truncates long strings and nested objects', () => {
     const summary = summarizeToolArguments({ note: 'x'.repeat(200), nested: { a: 1, b: 2 } });
-    expect(summary).toContain('nested{2}');
+    expect(summary).toContain('对象1项');
+    expect(summary).not.toContain('nested');
+    expect(summary).not.toContain('xxx');
     expect(summary.length).toBeLessThanOrEqual(200);
   });
 
@@ -47,7 +51,7 @@ describe('AssistantTraceStore', () => {
     trace.finish(id, 'ok');
     expect(trace.list('g1')).toEqual([{
       id, step: 0, kind: 'tool', toolName: 'spending.preview',
-      argumentSummary: 'startDate=2026-11-01', status: 'ok',
+      argumentSummary: null, status: 'ok',
       startedAt: 1_700_000_000_000, finishedAt: 1_700_000_001_500,
     }]);
   });

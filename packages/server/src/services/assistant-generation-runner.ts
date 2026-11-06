@@ -32,6 +32,8 @@ import { AssistantConversationService } from './assistant-conversation-service.j
 import { recoverProviderEnvelope } from './assistant-envelope-recovery.js';
 import { AssistantTraceStore, summarizeToolArguments } from './assistant-trace-service.js';
 import { AssistantGenerationService } from './assistant-generation-service.js';
+import { AssistantWorkspaceStore } from './assistant-workspace-store.js';
+import { requiresWorkspaceV1 } from './assistant-workspace-tools.js';
 import { buildAssistantContext } from './assistant-orchestrator.js';
 import {
   assistantBackgroundReply, assistantCanCorrectTool, assistantExpectedToolReply, assistantHistory, assistantReadIdentity, assistantRetiredAllocationInput,
@@ -263,7 +265,9 @@ export class AssistantGenerationRunner {
 
   /** Boot recovery: unfinished generations become interrupted; nothing is rerun. */
   recover(): number {
-    return this.generations.recoverUnfinished();
+    const recovered = this.generations.recoverUnfinished();
+    new AssistantWorkspaceStore(this.db, this.now).reconcile();
+    return recovered;
   }
 
   /** Starts the loop; the returned promise settles once a terminal status is persisted. */
@@ -366,6 +370,16 @@ export class AssistantGenerationRunner {
       // A cancelled/archived generation already owns its terminal row; writing a second
       // terminal frame there is a refused no-op, and required everywhere else.
       this.finalizeFailed(conversationId, generationId, error);
+    } finally {
+      const workspace = new AssistantWorkspaceStore(this.db, this.now);
+      const bound = workspace.binding(generationId);
+      if (bound) {
+        const snapshot = this.generations.get(conversationId, generationId);
+        const workflow = workspace.workflow(conversationId, bound.workflow_id);
+        if (snapshot.status === 'cancelled' || snapshot.status === 'interrupted') workspace.phase(generationId, 'cancelled');
+        else if (snapshot.status === 'failed') workspace.phase(generationId, 'failed');
+        else if (snapshot.status === 'completed' && snapshot.outcome !== 'pending-confirmation' && workflow?.['phase'] !== 'awaiting-selection') workspace.phase(generationId, 'completed');
+      }
     }
   }
 
@@ -381,6 +395,9 @@ export class AssistantGenerationRunner {
     const deadline = checkout + MAX_GENERATION_DEADLINE_MS;
     const userMessage = this.conversations.getMessage(row.user_message_id);
     const inputText = contextText(userMessage);
+    const workspace = new AssistantWorkspaceStore(this.db, this.now);
+    const workspaceFacts = workspace.facts(generationId);
+    const daily = workspaceFacts?.['dailyReview'];
     const today = row.today === '' ? dateLabel(checkout) : row.today;
 
     this.generations.setStatus(conversationId, generationId, 'running');
@@ -391,6 +408,14 @@ export class AssistantGenerationRunner {
     let toolCorrections = 0;
     let toolFailure: AssistantJsonObject | null = null;
     let readFactBytes = 0;
+
+    if (daily !== undefined) {
+      const result = await this.registry.read(this.toolContext, 'daily.review', daily);
+      if (!this.isLive(conversationId, generationId) || this.isArchived(conversationId)) return;
+      lastResult = result;
+      this.generations.persistTurn(conversationId, generationId, { messages: [{ id: randomUUID(), role: 'assistant', kind: 'result', content: { version: 1, generationId,
+        result: { version: 1, toolName: result.toolName, summary: result.summary, data: result.data } } }] });
+    }
 
     for (let step = 0; step < MAX_GENERATION_STEPS; step += 1) {
       if (!this.isLive(conversationId, generationId)) return;
@@ -420,6 +445,7 @@ export class AssistantGenerationRunner {
           priorMessages: messages,
           ...(lastResult === null ? {} : { previousResult: lastResult }),
           ...(toolFailure === null ? {} : { toolFailure }),
+          ...(workspaceFacts === null ? {} : { workspace: workspaceFacts }),
           today,
         }),
         categories,
@@ -430,7 +456,8 @@ export class AssistantGenerationRunner {
         feature: 'assistant',
         facts: {
           messages,
-          tools: this.registry.catalog(),
+          tools: this.registry.catalog().filter((tool) => (workspaceFacts !== null || !requiresWorkspaceV1(tool.name)) && (daily === undefined || tool.access === 'read')),
+          ...(workspaceFacts === null ? {} : { workspace: workspaceFacts }),
           ...(lastResult === null ? {} : { lastToolResult: lastResult }),
           ...(toolFailure === null ? {} : { toolFailure }),
           remainingProviderSteps: MAX_GENERATION_STEPS - step,
@@ -498,7 +525,7 @@ export class AssistantGenerationRunner {
         return;
       }
       // Unknown/retired tools remain hard failures; only known tools may correct arguments.
-      if (this.registry.get(normalizedTurn.toolCall.name) === undefined || assistantRetiredAllocationInput(normalizedTurn.toolCall.name, normalizedTurn.toolCall.arguments)) {
+      if (this.registry.get(normalizedTurn.toolCall.name) === undefined || assistantRetiredAllocationInput(normalizedTurn.toolCall.name, normalizedTurn.toolCall.arguments) || (workspaceFacts === null && requiresWorkspaceV1(normalizedTurn.toolCall.name))) {
         const rejected = this.trace.begin({ generationId, conversationId, step, kind: 'error',
           toolName: normalizedTurn.toolCall.name, argumentSummary: 'unsupported-tool' });
         this.trace.finish(rejected, 'failed');
@@ -514,6 +541,10 @@ export class AssistantGenerationRunner {
           normalizedTurn.toolCall.arguments,
         );
         if (tool.definition.access === 'write') {
+          if (daily !== undefined) {
+            this.finishTextTurn(conversationId, generationId, { message: '每日复盘只读取账本，不会生成或执行修改。', toolCall: null, clarification: null }, null, partial);
+            return;
+          }
           await this.finishWriteTurn(conversationId, generationId, normalizedTurn, tool.definition.name, args,
             row.user_message_id, partial, deadline);
           this.trace.finish(toolStep, 'ok');
@@ -536,17 +567,20 @@ export class AssistantGenerationRunner {
         toolFailure = null;
         reads.set(identity, read.result);
         const handoff = assistantBackgroundReply(read.result);
-        if (handoff !== null) {
+        const workspaceHandoff = read.result.toolName === 'workspace.select' ? '请在卡片中选择，随后继续原任务；选择不会修改账本。' : read.result.toolName === 'workspace.open' ? read.result.summary : null;
+        if (handoff !== null || workspaceHandoff !== null) {
           this.finishTextTurn(conversationId, generationId,
-            { message: handoff, toolCall: null, clarification: null }, read.result, null);
+            { message: handoff ?? workspaceHandoff ?? '', toolCall: null, clarification: null }, read.result, null);
           return;
         }
+        const resultMessageId = randomUUID();
         this.generations.persistTurn(conversationId, generationId, {
-          messages: [{ id: randomUUID(), role: 'assistant', kind: 'result', content: {
+          messages: [{ id: resultMessageId, role: 'assistant', kind: 'result', content: {
             version: 1, generationId,
             result: { version: 1, toolName: read.result.toolName, summary: read.result.summary, data: read.result.data },
           } }],
         });
+        if (workspaceFacts !== null) workspace.recordResult(resultMessageId, conversationId, tool.definition.name, args);
         readFactBytes += Buffer.byteLength(JSON.stringify(read.result), 'utf8');
         if (read.result.data['requiresNarrowerQuery'] === true || readFactBytes > MAX_ASSISTANT_READ_FACT_BYTES) {
           this.finishTextTurn(conversationId, generationId,
@@ -853,7 +887,7 @@ export class AssistantGenerationRunner {
       // the latter aborts its signal and would otherwise cancel every scheduled batch.
       const context = toolName === 'spending.preview' || toolName === 'spending.resume'
         ? this.toolContext : scope.context;
-      const result = await Promise.race([this.registry.read(context, toolName, args), scope.aborted]);
+      const result = await Promise.race([this.registry.read({ ...context, conversationId, generationId }, toolName, args), scope.aborted]);
       if (!this.isLive(conversationId, generationId) || this.isArchived(conversationId)) {
         return { dropped: true, result: null };
       }
@@ -1046,6 +1080,7 @@ export class AssistantGenerationRunner {
         }],
         transition: { status: 'completed', outcome: 'pending-confirmation', error: null },
       });
+      new AssistantWorkspaceStore(this.db, this.now).linkAction(pendingId, conversationId, generationId);
     } finally {
       scope.dispose();
     }

@@ -1,7 +1,6 @@
 /** Explicit business adapters for the assistant. No URLs, SQL or service names come from the model. */
-import { createHash, randomUUID } from 'node:crypto';
-import { dateOnly, resolveStatsWindow } from '@jizhang/shared';
-import type { Db } from '../db/index.js';
+import { randomUUID } from 'node:crypto';
+import { resolveStatsWindow } from '@jizhang/shared';
 import { FinancialFundService } from './financial-fund-service.js';
 import { FinancialGoalsService } from './financial-goals-service.js';
 import { FinancialPlanService } from './financial-plan-service.js';
@@ -12,6 +11,9 @@ import { AiSpendingOrganizationService } from './ai-spending-organization-servic
 import { AiSpendingCardNotReadyError } from './ai-types.js';
 import type { InternalTool, AssistantToolContext, AssistantToolDefinition } from './assistant-tool-registry.js';
 import { AssistantActionStaleError, AssistantValidationError, assistantJsonObject, type AssistantJsonObject, type AssistantJsonValue, type AssistantToolName } from './assistant-types.js';
+
+import { assistantBusinessFingerprint } from './assistant-business-fingerprint.js';
+export { assistantBusinessFingerprint } from './assistant-business-fingerprint.js';
 
 type Context = AssistantToolContext;
 type Args = AssistantJsonObject;
@@ -96,29 +98,6 @@ function definition(name: AssistantToolName, access: 'read' | 'write', descripti
   return { name, access, description, inputSchema: { type: 'object', properties, required, additionalProperties: false } };
 }
 
-/** Only these ledger tables participate. Auth, provider credentials, chat and run progress never do. */
-const BUSINESS_TABLES = [
-  'accounts', 'categories', 'tags', 'transactions', 'refund_links', 'salary_records', 'transfers',
-  'budget_allocations', 'budget_templates', 'recurring_rules', 'recurring_occurrences', 'asset_items',
-  'financial_config_revisions', 'financial_mapping_revisions', 'financial_periods', 'financial_period_revisions',
-  'financial_period_sources', 'financial_refund_splits', 'financial_refund_split_sets', 'financial_bill_purpose_events',
-  'financial_fund_config_revisions', 'financial_fund_grants', 'financial_fund_grant_revisions', 'financial_fund_grant_sources',
-  'financial_fund_purposes', 'financial_fund_purpose_events', 'financial_fund_migration_issues',
-  'manual_goal_openings', 'manual_goal_entries', 'manual_goal_state', 'ai_organization_audit', 'ai_organization_operations',
-] as const;
-
-/** Conservative CAS over private business facts. Stream hashing avoids a giant model-facing snapshot. */
-export function assistantBusinessFingerprint(db: Db, name: string, args: Args, now: number): string {
-  const hash = createHash('sha256').update(name).update(JSON.stringify(args));
-  if (name === 'recurring.generate') hash.update(String(dateOnly(now)));
-  for (const table of BUSINESS_TABLES) {
-    hash.update(table);
-    for (const row of db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).iterate()) hash.update(JSON.stringify(row));
-  }
-  hash.update(JSON.stringify(db.prepare("SELECT * FROM settings WHERE key IN ('financial.plan.v1','budget.cycle_start_day') ORDER BY key").all()));
-  return hash.digest('hex');
-}
-
 /**
  * Reuse domain validation and its derived preview in a rollback-only SQLite transaction.
  * Only synchronous database-only domain writers are registered here: no files/providers/jobs.
@@ -156,6 +135,20 @@ function read(name: AssistantToolName, description: string, properties: Fields, 
       return { toolName: name, summary: readSummary(name, description, data), data };
     } });
 }
+function beforeWrite(c: Context, name: string, args: Args): unknown {
+  const id = typeof args['id'] === 'string' ? args['id'] : undefined;
+  if (name === 'plan.save') return new FinancialPlanService(c.db, { now: c.now }).get();
+  if (name === 'funds.configure') return funds(c).getConfig();
+  if (id && name.startsWith('item.')) return items(c).getByIdOrThrow(id);
+  if (id && name.startsWith('recurring.')) return c.services.recurring.listRules().find((v) => v.id === id) ?? null;
+  if (id && name.startsWith('salary.')) return c.services.salaries.getByIdOrThrow(id);
+  if (id && name.startsWith('transfer.')) return c.services.transfers.getByIdOrThrow(id);
+  if (id && name.startsWith('tag.')) return c.db.prepare('SELECT id,name,parent_id AS parentId FROM tags WHERE id=? AND deleted=0').get(id) ?? null;
+  if (id && name.startsWith('goals.')) return c.db.prepare('SELECT id,goal,kind,amount_cents AS amountCents,date,note,revision FROM manual_goal_entries WHERE id=?').get(id) ?? null;
+  if (name === 'planning.configure') return planning(c).getConfig();
+  if (name === 'planning.mapping') return planning(c).getMapping();
+  return undefined;
+}
 function write(name: AssistantToolName, description: string, properties: Fields, required: readonly string[], run: Write,
   display?: (c: Context, args: Args, outcome: unknown) => Args): void {
   const def = definition(name, 'write', description, properties, required);
@@ -166,8 +159,9 @@ function write(name: AssistantToolName, description: string, properties: Fields,
       if (name === 'spending.apply' || name === 'spending.undo') spending(c);
       const args = 'operationId' in properties && !input['operationId'] ? { ...input, operationId: randomUUID() } : input;
       const fingerprint = assistantBusinessFingerprint(c.db, name, args, c.now());
+      const before = beforeWrite(c, name, args);
       const outcome = simulateAssistantWrite(c, () => run(c, args));
-      const preview = display ? display(c, args, outcome) : projectedResult({ request: args, outcome: outcome ?? null });
+      const preview = display ? display(c, args, outcome) : projectedResult({ ...(before === undefined ? {} : { before }), request: args, outcome: outcome ?? null });
       const ids = typeof args['id'] === 'string' ? [args['id']] : Array.isArray(args['actionIds']) ? args['actionIds'] as string[] : undefined;
       const result = outcome && typeof outcome === 'object' && !Array.isArray(outcome) ? outcome as Record<string, unknown> : {};
       let count = ids?.length ?? 1;

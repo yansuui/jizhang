@@ -90,8 +90,8 @@ def create_app(
     @app.post("/jobs", status_code=202)
     async def create_job(request: Request) -> Response:
         content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        if content_type != "image/webp":
-            raise CutoutServiceError(400, "CUTOUT_INVALID_IMAGE", "抠图请求必须发送 WebP 图片。")
+        if content_type not in ("image/webp", "image/jpeg", "image/png"):
+            raise CutoutServiceError(400, "CUTOUT_INVALID_IMAGE", "抠图请求必须发送 JPEG、PNG 或 WebP 图片。")
         data = await _read_limited(request, service_settings.max_input_bytes)
         return JSONResponse(
             content=jobs.create(data, content_type),

@@ -102,10 +102,10 @@ export class ItemCutoutClient {
     return this.baseUrl !== undefined;
   }
 
-  async createJob(bytes: Buffer): Promise<{ readonly jobId: string }> {
+  async createJob(bytes: Buffer, contentType = 'image/webp'): Promise<{ readonly jobId: string }> {
     const body = await this.json('jobs', {
       method: 'POST',
-      headers: { 'Content-Type': 'image/webp' },
+      headers: { 'Content-Type': contentType },
       body: bytes,
       timeoutMs: 5000,
     });

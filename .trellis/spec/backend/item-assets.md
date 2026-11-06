@@ -136,7 +136,7 @@ await api.items.create({ ...item, purchaseTransactionId: selectedExistingExpense
 
 ### 2. Signatures
 
-- `POST /api/v1/items/cutouts` accepts raw `image/webp` bytes and returns
+- `POST /api/v1/items/cutouts` accepts raw `image/webp`, `image/jpeg` or `image/png` bytes and returns
   `202 { jobId: string }`.
 - `GET /api/v1/items/cutouts/:jobId` returns `{ jobId, state, message, candidates }`, where
   `state` is `queued | running | ready | failed | cancelled`, and ready candidates contain
@@ -154,7 +154,9 @@ await api.items.create({ ...item, purchaseTransactionId: selectedExistingExpense
   CSRF header.
 - Clients call Fastify only. Fastify proxies to the Python worker on a dedicated Docker
   internal network. The worker has no published host port and accepts no client session cookies.
-- Accept only the existing prepared WebP draft (<=2 MiB, <=40 MP, longest edge <=1600 px).
+- Accept prepared JPEG/PNG/WebP drafts (<=2 MiB, <=40 MP); validate declared and decoded
+  formats before normalization. Android keeps its existing WebP preparation, while iOS
+  prepares JPEG/PNG without an external codec. The worker retains its bounded resize.
   Keep one active job plus one queued job, at most three retained results, at most eight
   candidates, and a 120-second job deadline. Expire retained results after ten minutes.
 - Store source images, normalized PNGs, masks, and candidate files only in the worker's
@@ -183,7 +185,7 @@ await api.items.create({ ...item, purchaseTransactionId: selectedExistingExpense
 | Worker queue full | `429 CUTOUT_BUSY` |
 | Missing/expired job or candidate | `404 CUTOUT_JOB_NOT_FOUND` / candidate-not-found |
 | Job result not ready | `409 CUTOUT_NOT_READY` |
-| Invalid/non-WebP input | `400 CUTOUT_INVALID_IMAGE` |
+| Invalid/mislabeled or unsupported image input | `400 CUTOUT_INVALID_IMAGE` |
 | Input exceeds 2 MiB | `413` |
 | Invalid or over-limit worker JSON/image body | `502 CUTOUT_UPSTREAM_INVALID` |
 | No useful masks | `200 ready` with an empty candidate list; preserve the original draft |

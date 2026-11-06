@@ -112,6 +112,30 @@ def test_generates_unlabelled_candidates_and_serves_private_images(tmp_path: Pat
         assert not (tmp_path / "jobs" / f"job-{job_id}").exists()
 
 
+@pytest.mark.parametrize(("image_format", "mime"), [("PNG", "image/png"), ("JPEG", "image/jpeg")])
+def test_accepts_native_photo_formats_with_existing_normalization(tmp_path: Path, image_format: str, mime: str) -> None:
+    output = io.BytesIO()
+    Image.new("RGB", (64, 48), "red").save(output, format=image_format)
+    app = create_app(settings(tmp_path), lambda _settings: FakeEngine())
+    with TestClient(app) as client:
+        response = client.post("/jobs", content=output.getvalue(), headers={"content-type": mime})
+        assert response.status_code == 202
+        job_id = response.json()["jobId"]
+        assert wait_until_ready(client, job_id)["state"] == "ready"
+        assert client.delete(f"/jobs/{job_id}").status_code == 204
+
+
+def test_rejects_mislabeled_native_photo(tmp_path: Path) -> None:
+    output = io.BytesIO()
+    Image.new("RGB", (64, 48), "red").save(output, format="JPEG")
+    app = create_app(settings(tmp_path), lambda _settings: FakeEngine())
+    with TestClient(app) as client:
+        response = client.post("/jobs", content=output.getvalue(), headers={"content-type": "image/png"})
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "CUTOUT_INVALID_IMAGE"
+        assert str(tmp_path) not in response.text
+
+
 def test_rejects_wrong_content_type_and_oversized_bytes(tmp_path: Path) -> None:
     app = create_app(settings(tmp_path, max_input_bytes=8), lambda _settings: FakeEngine())
     with TestClient(app) as client:

@@ -219,7 +219,21 @@ describe('authenticated item cutout proxy', () => {
     expect(sqliteCounts()).toEqual(before);
   });
 
-  it('rejects malformed, oversized, and non-WebP inputs before contacting inference', async () => {
+  it('accepts a bounded native PNG without changing the ledger and preserves its MIME upstream', async () => {
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP8zwACTGCSAQANHQEDgslx/wAAAABJRU5ErkJggg==', 'base64');
+    const before = sqliteCounts();
+    const response = await app.inject({
+      method: 'POST', url: '/api/v1/items/cutouts',
+      headers: { ...headers(), 'content-type': 'image/png' }, payload: png,
+    });
+    expect(response.statusCode, response.body).toBe(202);
+    const call = fetchImpl.mock.calls.find(([, init]) => init?.method === 'POST');
+    expect(call?.[1]?.headers).toEqual({ 'Content-Type': 'image/png' });
+    expect(Buffer.from(call?.[1]?.body as Uint8Array)).toEqual(png);
+    expect(sqliteCounts()).toEqual(before);
+  });
+
+  it('rejects malformed, oversized, and mislabeled inputs before contacting inference', async () => {
     const badType = await app.inject({
       method: 'POST',
       url: '/api/v1/items/cutouts',

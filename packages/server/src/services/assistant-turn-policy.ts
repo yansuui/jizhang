@@ -45,7 +45,7 @@ export function assistantCanCorrectTool(error: unknown): boolean {
   const failure = error as Error & { code?: unknown; statusCode?: unknown };
   if (![400, 404, 409].includes(Number(failure.statusCode)) || typeof failure.code !== 'string') return false;
   if (/(?:CANCEL|ABORT|TIMEOUT|BUSY|ACTIVE|AUTH|SESSION)/.test(failure.code)) return false;
-  return /^(?:ASSISTANT_INVALID|ASSISTANT_NOT_FOUND|ASSISTANT_ACTION_STALE|TRANSACTION_|ACCOUNT_|CATEGORY_|TAG_|SALARY_|TRANSFER_|RECURRING_|TEMPLATE_|ITEM_|FINANCIAL_)/.test(failure.code);
+  return /^(?:ASSISTANT_INVALID|ASSISTANT_NOT_FOUND|ASSISTANT_ACTION_STALE|ASSISTANT_WORKSPACE_INVALID|TRANSACTION_|ACCOUNT_|CATEGORY_|TAG_|SALARY_|TRANSFER_|RECURRING_|TEMPLATE_|ITEM_|FINANCIAL_)/.test(failure.code);
 }
 
 /** Expected organization states get fixed, actionable replies without retrying inference

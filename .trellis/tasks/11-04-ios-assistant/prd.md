@@ -2,6 +2,14 @@
 
 ## Goal and status
 
+**Expanded-scope planning (2026-11-06):** a conversational project workspace with
+selections, revisable/confirmed mutations, task continuation and daily reminders.
+The user confirmed 20:00 recording / 21:00 review (editable), with review generated
+only after a notification tap. See [current PRD](harness-reminders-prd.md),
+[design](harness-reminders-design.md) and [execution plan](harness-reminders-implement.md).
+The user approved this expanded scope with “实施”; implementation is active and earlier
+delivered fixes below remain.
+
 **Latest follow-up (2026-11-06, assistant):** repair frequent unfinished turns and the
 historical-organization workflow shown in the user's screenshot. The authoritative scope
 is [`assistant-reliability.md`](assistant-reliability.md); server deployment, live provider

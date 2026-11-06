@@ -37,6 +37,7 @@ import { MIGRATION_020_MANUAL_GOAL_PROGRESS } from './migrations/020-manual-goal
 import { MIGRATION_021_FOUR_PURPOSE_FUNDS, backfillFourPurposeFunds } from './migrations/021-four-purpose-funds.js';
 import { MIGRATION_022_TEMPLATE_TAGS, backfillTemplateTags } from './migrations/022-template-tags.js';
 import { MIGRATION_023_ASSISTANT_TRACE } from './migrations/023-assistant-trace.js';
+import { MIGRATION_024_ASSISTANT_WORKSPACE } from './migrations/024-assistant-workspace.js';
 
 export interface Migration {
   readonly version: number;
@@ -77,6 +78,7 @@ export const MIGRATIONS: readonly Migration[] = [
   // 23 stores bounded per-step execution metadata for a generation. It is diagnostic only:
   // it never holds model reasoning, provider bodies, prompts or credentials.
   { version: 23, name: 'assistant-trace', sql: MIGRATION_023_ASSISTANT_TRACE },
+  { version: 24, name: 'assistant-workspace', sql: MIGRATION_024_ASSISTANT_WORKSPACE },
 ];
 
 interface AppliedRow {

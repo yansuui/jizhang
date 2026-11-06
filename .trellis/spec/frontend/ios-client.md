@@ -37,6 +37,32 @@ Centred bill cards use the shared `ledgerBillDetail(api:selection:metadata:)` na
 
 Assistant confirmation/cancellation is scoped to its original conversation and persisted action ID. A late A response can update A and invalidate ledger data, but cannot replace B's messages. Validate action identity/status before publishing success. Historical suggestions require explicit selected action IDs; note-only recommendations cannot be included in apply. Import confirmation requires matching original SHA-256/size, 1–100 explicitly selected eligible rows and the frozen retry body. Never turn uncertain confirmation into a new action.
 
+Workspace-v1 adds typed resource/date selections, readable result paging, schema-driven
+draft revision and action-scoped continuation. Persist/freeze uncertain request bodies and
+IDs; compare decoded JSON meaning rather than relying on JSONEncoder key order. Repreview
+replaces an old card, and each later modification still needs its own approval. Direct
+organization selection/page/prepare never serializes a long composer prompt or calls a
+model unnecessarily. Date cards use the ledger's Gregorian/Asia-Shanghai calendar.
+
+Native workspace actions use an enum router, actual invitation permissions and the API
+identity. Binary uploads/downloads reuse the API session/no-redirect/CSRF boundary. CSV
+and merged-platform imports retain exact original files, current reviews and immutable
+confirmation retries. Pending file caches are scoped by API and conversation and cleared
+on real owner replacement/logout, not ordinary sheet/full-screen presentation. Exports use
+protected temporary files; a late response after dismissal must not create an orphan file.
+Photo/status reads need mutation tickets so old GET/404 replies cannot undo save/cancel.
+
+Daily local reminders default to device-local 20:00 recording and 21:00 review. Desired
+preferences and actual OS authorization/scheduling are separate. Install the notification
+delegate early, reconcile schedules serially, and remove owned pending/delivered requests
+on logout/401/server/account change. Payloads contain no private ledger amounts or secrets.
+A review tap freezes its delivered occurrence's Shanghai ledger day, persists the owner/
+conversation/request outbox before inference, and opens one existing generation path.
+Duplicate/uncertain taps reconcile that identity; foreground delivery/settings/startup
+never starts inference. Legacy login without immutable user ID cannot silently recover
+an identity-bound review. System permission and physical notification delivery remain
+signed-device acceptance, not claims inferred from notification mocks.
+
 Use the API client's per-session `ledgerRevision` publisher after actual successful writes. Reading or cancelling a pending draft does not change ledger state. Invalidated clients cannot broadcast updates into new sessions.
 
 Historical-organization analysis is started in the background and polled: one assistant generation must never await the whole batched analysis, because the server caps a generation at `MAX_GENERATION_DEADLINE_MS` (180 s) and the second clarification turn would then fail. Template proposals are neither produced nor selectable.
