@@ -235,6 +235,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "B944027839CA53C3467EC1CB";
 		};
+		"D26CBE9AC549C5EA8784821C" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Jizhang/Features/Bills/LedgerBillPresentation.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"47B1815949D762A2190CC06C" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "D26CBE9AC549C5EA8784821C";
+		};
 		"EB4E9F5AF62597BC69B66BF0" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -505,6 +515,26 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "5D10A26CF0BA501392A03131";
 		};
+		"FDB8877735160FE05DD86D08" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "JizhangTests/LedgerBillPresentationTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"339684911C0C404392660D4A" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "FDB8877735160FE05DD86D08";
+		};
+		"3970FCF72A734DB5E284EBE7" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "JizhangTests/LedgerBillStatisticsPreviewTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"E058F942726A7B7CEE57C96D" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "3970FCF72A734DB5E284EBE7";
+		};
 		"9CF388E4CB51230F09FACF8E" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -631,6 +661,7 @@
 				"BBF4379ABE86BD425D8EA99A",
 				"16295077E7FEF6C0D47588AB",
 				"B944027839CA53C3467EC1CB",
+				"D26CBE9AC549C5EA8784821C",
 				"EB4E9F5AF62597BC69B66BF0",
 				"035AE433C49D4492AE5FF962",
 				"0AC27B209223E240460832FB",
@@ -665,6 +696,8 @@
 				"7658D7616C01FD79A7F54799",
 				"B2599AC3949AD9D41D06A5D0",
 				"5D10A26CF0BA501392A03131",
+				"FDB8877735160FE05DD86D08",
+				"3970FCF72A734DB5E284EBE7",
 				"9CF388E4CB51230F09FACF8E",
 				"FB66042220C4A9F702D5A838",
 				"FC77BAB16FBEC07F04663E10",
@@ -731,6 +764,7 @@
 				"A899B49C90F3927C3213F792",
 				"51527AEA333E72CE91556E44",
 				"A96310C62490A517EE44B54F",
+				"47B1815949D762A2190CC06C",
 				"D6101BDC8585A18B74676635",
 				"C8E75A8BB75CE6EDBB431952",
 				"697A2FF2A4B73A973C68D09B",
@@ -765,6 +799,8 @@
 				"E0892E29697AA8611888B9B6",
 				"0E8883713811BC0050CE386C",
 				"1B60D0C79548097760EA1808",
+				"339684911C0C404392660D4A",
+				"E058F942726A7B7CEE57C96D",
 				"DA384E7C340730541A8D6252",
 				"51E7CA8058E31EECD3A7538B",
 				"3B1FA72A539BBE98FC062E3C",

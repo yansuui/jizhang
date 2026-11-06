@@ -1,21 +1,17 @@
 import SwiftUI
 
-/// 账单详情卡片：对齐 Android `TransactionDetailScreen.kt` 的居中浮动大卡片。
-///
-/// 结构：顶部「账单详情」标题 + ✕ → Hero（分类图块 / 分类名 / 备注 / 大金额）
-/// → 分隔线 + 紧凑属性列表（分类/时间/账户/备注/资金用途/状态/标签/原支出）
-/// → 底部胶囊按钮行（编辑 / 记录退款 / 删除）。
-///
-/// 这个视图只负责卡片本身。账单页与首页用 `LedgerBillDetailOverlay` 把它居中浮起；
-/// 物品详情等既有系统 sheet 入口继续通过 `LedgerBillDetailSheet` 复用同一张卡片。
+/// Shared detail content for the full-screen centred modal and existing item-detail sheets.
+/// Header and actions stay visible in portrait; long bill details scroll within the card.
 @MainActor struct LedgerBillDetailCard: View {
-    let api: APIClient
+    @ObservedObject var api: APIClient
     let transactionID: String
     let metadata: LedgerMetadata
     /// 关闭回调。为 `nil` 时不显示 ✕ 并禁用下滑关闭（由宿主容器自行关闭）。
     var onClose: (() -> Void)? = nil
     /// AI 复核等只读场景复用同一张卡片，但不暴露任何账本写操作。
     var readOnly = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     @StateObject private var resource = LedgerResource<LedgerTransaction>()
     @State private var trail: [String] = []
@@ -31,11 +27,13 @@ import SwiftUI
         VStack(spacing: 0) {
             header
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 18) {
                     if let value = resource.value {
                         hero(value)
-                        Divider().overlay(Color(uiColor: .separator).opacity(0.4))
                         attributes(value)
+                            .padding(14)
+                            .background(Color(uiColor: .systemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
+                        if !readOnly, verticalSizeClass == .compact { actionArea(value) }
                     } else if resource.loading {
                         loadingState
                     }
@@ -43,15 +41,15 @@ import SwiftUI
                         errorState(error)
                     }
                 }
-                .padding(.horizontal, 22)
-                .padding(.bottom, 20)
+                .padding(.horizontal, 18)
+                .padding(.bottom, 18)
             }
             .scrollBounceBehavior(.basedOnSize)
-            if let value = resource.value, !readOnly {
+            if let value = resource.value, !readOnly, verticalSizeClass != .compact {
                 Divider()
                 actionArea(value)
-                    .padding(.horizontal, 22)
-                    .padding(.bottom, 20)
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 16)
             }
         }
         .background(Color(uiColor: .secondarySystemGroupedBackground))
@@ -62,6 +60,7 @@ import SwiftUI
         .offset(y: dragOffset)
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(.isModal)
+        .accessibilityIdentifier("bill-detail-card")
         .sheet(item: $editSelection) { selection in
             LedgerTransactionEditor(api: api,
                                     transaction: selection.refund ? nil : selection.transaction,
@@ -112,12 +111,13 @@ import SwiftUI
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("关闭账单详情")
+                .accessibilityIdentifier("bill-detail-close")
             }
         }
         .padding(.leading, trail.isEmpty ? 20 : 2)
         .padding(.trailing, onClose == nil ? 20 : 2)
-        .padding(.top, 8)
-        .padding(.bottom, 2)
+        .padding(.top, 6)
+        .padding(.bottom, 6)
         .contentShape(Rectangle())
         .gesture(dismissDrag)
     }
@@ -143,51 +143,38 @@ import SwiftUI
 
     private func hero(_ value: LedgerTransaction) -> some View {
         let income = value.type == .income
-        let subtitle = value.note.isEmpty ? value.kindTitle : value.note
-        return VStack(spacing: 0) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(income ? AppTheme.accent.opacity(0.13) : Self.expenseTint.opacity(0.11))
-                    .frame(width: 68, height: 68)
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
                 Image(systemName: Self.categorySymbol(value, metadata: metadata))
-                    .font(.system(size: 30, weight: .semibold))
+                    .font(.system(size: 23, weight: .semibold))
                     .foregroundStyle(income ? AppTheme.accent : Self.expenseTint)
+                    .frame(width: 48, height: 48)
+                    .background(Self.amountColor(value).opacity(0.10), in: RoundedRectangle(cornerRadius: 15))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(metadata.categoryName(value.categoryId))
+                        .font(.headline)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(value.kindTitle).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
             }
-            .accessibilityHidden(true)
-
-            Text(metadata.categoryName(value.categoryId))
-                .font(.title3.weight(.bold))
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.7)
-                .padding(.top, 10)
-
-            Text(subtitle)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .padding(.top, 3)
-
             Text(value.sign + LedgerFormat.money(value.amountCents))
                 .font(.system(.largeTitle, design: .rounded).weight(.bold))
                 .monospacedDigit()
                 .foregroundStyle(Self.amountColor(value))
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
-                .padding(.top, 6)
                 .accessibilityLabel((income ? "收入 " : "支出 ") + LedgerFormat.money(value.amountCents))
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 6)
-        .padding(.bottom, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 4)
     }
 
     // MARK: - 属性列表
 
     private func attributes(_ value: LedgerTransaction) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            LedgerBillDetailRow(label: "分类", value: metadata.categoryName(value.categoryId))
             LedgerBillDetailRow(label: "时间", value: Self.detailDate(value.date))
             LedgerBillDetailRow(label: "账户", value: metadata.accountName(value.accountId))
             if !value.note.isEmpty {
@@ -253,23 +240,10 @@ import SwiftUI
 
     private func actionArea(_ value: LedgerTransaction) -> some View {
         VStack(spacing: 6) {
-            HStack(spacing: 8) {
-                capsuleButton("编辑", fill: Color(uiColor: .tertiarySystemFill), textColor: .primary) {
-                    editSelection = LedgerBillCardEdit(transaction: value, refund: false)
-                }
-                .accessibilityHint("打开账单编辑表单")
-                if value.type == .expense && !value.isRefund {
-                    capsuleButton("记录退款", fill: AppTheme.accent.opacity(0.14), textColor: AppTheme.accent) {
-                        editSelection = LedgerBillCardEdit(transaction: value, refund: true)
-                    }
-                    .accessibilityHint("为这笔支出记录一笔关联退款收入")
-                }
-                capsuleButton(deleting ? "删除中…" : "删除",
-                              fill: Self.deleteTint.opacity(0.12), textColor: Self.deleteTint) {
-                    confirmingDelete = true
-                }
-                .disabled(deleting)
-                .accessibilityHint("删除前会再次确认")
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(spacing: 8) { actionButtons(value) }
+            } else {
+                HStack(spacing: 8) { actionButtons(value) }
             }
             if let deleteError {
                 Text(deleteError)
@@ -279,7 +253,27 @@ import SwiftUI
                     .padding(.top, 2)
             }
         }
-        .padding(.top, 8)
+        .padding(.top, 12)
+    }
+
+    @ViewBuilder private func actionButtons(_ value: LedgerTransaction) -> some View {
+        capsuleButton("编辑", fill: Color(uiColor: .tertiarySystemFill), textColor: .primary) {
+            editSelection = LedgerBillCardEdit(transaction: value, refund: false)
+        }
+        .accessibilityHint("打开账单编辑表单")
+        .accessibilityIdentifier("bill-detail-edit")
+        if value.type == .expense && !value.isRefund {
+            capsuleButton("记录退款", fill: AppTheme.accent.opacity(0.14), textColor: AppTheme.accent) {
+                editSelection = LedgerBillCardEdit(transaction: value, refund: true)
+            }
+            .accessibilityHint("为这笔支出记录一笔关联退款收入")
+        }
+        capsuleButton(deleting ? "删除中…" : "删除",
+                      fill: Self.deleteTint.opacity(0.12), textColor: Self.deleteTint) {
+            confirmingDelete = true
+        }
+        .disabled(deleting)
+        .accessibilityHint("删除前会再次确认")
     }
 
     private func capsuleButton(_ title: String, fill: Color, textColor: Color,
@@ -416,21 +410,35 @@ struct LedgerBillDetailRow: View {
     let label: String
     let value: String
     var valueColor: Color = .primary
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(label)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .frame(width: 68, alignment: .leading)
-            Text(value)
-                .font(.subheadline)
-                .foregroundStyle(valueColor)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .multilineTextAlignment(.trailing)
-                .textSelection(.enabled)
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(label).font(.caption).foregroundStyle(.secondary)
+                    detail(alignment: .leading)
+                }
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(label).font(.subheadline).foregroundStyle(.secondary)
+                        .frame(width: 62, alignment: .leading)
+                    detail(alignment: .trailing)
+                }
+            }
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 7)
         .accessibilityElement(children: .combine)
+    }
+
+    private func detail(alignment: HorizontalAlignment) -> some View {
+        Text(value)
+            .font(.subheadline)
+            .foregroundStyle(valueColor)
+            .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
+            .multilineTextAlignment(alignment == .leading ? .leading : .trailing)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
     }
 }
 
@@ -446,15 +454,13 @@ private struct LedgerBillCardEdit: Identifiable {
     var id: String { transaction.id + (refund ? ":refund" : ":edit") }
 }
 
-/// 居中浮动弹层：遮罩 + 卡片。点遮罩、点 ✕、下滑标题栏都关闭。
-///
-/// 之所以不用导航推入或系统 sheet，是为了让账单页的 Tab、查询条件、页码与滚动位置
-/// 全部原地保留：浮层只是叠加在现有列表之上，关闭时视图状态没有任何重建。
+/// Full-screen dimming layer inside the native modal; only the centred card is scrollable.
 @MainActor struct LedgerBillDetailOverlay: View {
     let api: APIClient
     let transactionID: String
     let metadata: LedgerMetadata
     let onDismiss: () -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         GeometryReader { proxy in
@@ -465,12 +471,15 @@ private struct LedgerBillCardEdit: Identifiable {
                     .onTapGesture { onDismiss() }
                     .accessibilityLabel("关闭账单详情")
                     .accessibilityAddTraits(.isButton)
+                    .accessibilityIdentifier("bill-detail-backdrop")
                 LedgerBillDetailCard(api: api, transactionID: transactionID, metadata: metadata,
                                      onClose: onDismiss)
-                    .frame(maxWidth: 345, maxHeight: max(280, proxy.size.height - 96))
-                    .padding(.horizontal, 24)
+                    .frame(width: min(390, max(0, proxy.size.width - 36)),
+                           height: min(dynamicTypeSize.isAccessibilitySize ? 760 : 620,
+                                       max(220, proxy.size.height - 40)))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .accessibilityIdentifier("bill-detail-modal")
     }
 }

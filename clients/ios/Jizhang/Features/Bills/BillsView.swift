@@ -145,14 +145,15 @@ struct LedgerTransactionPage: Decodable {
 @MainActor struct BillsView: View {
     @ObservedObject var api: APIClient
     @State private var query: LedgerBillQuery
-    @StateObject private var store = LedgerBillsStore()
+    @StateObject private var store: LedgerBillsStore
     @State private var selectedBill: LedgerBillSelection?
     @State private var showingDates = false
 
     /// 默认进入「本月」；显式传入查询（账户/分类/标签入口）保留其自己的日期范围。
-    init(api: APIClient, initialQuery: LedgerBillQuery = LedgerBillDates.monthQuery(containing: Date())) {
+    init(api: APIClient, initialQuery: LedgerBillQuery = LedgerBillDates.monthQuery(containing: Date()), store: LedgerBillsStore? = nil) {
         self.api = api
         _query = State(initialValue: initialQuery)
+        _store = StateObject(wrappedValue: store ?? LedgerBillsStore())
     }
 
     private var grouped: [(String, [LedgerTransaction])] {
@@ -161,19 +162,10 @@ struct LedgerTransactionPage: Decodable {
     }
 
     var body: some View {
-        ZStack {
-            list
-            if let selection = selectedBill {
-                LedgerBillDetailOverlay(api: api, transactionID: selection.id, metadata: store.metadata,
-                                        onDismiss: dismissBill)
-                    .ignoresSafeArea()
-                    .zIndex(1)
-                    .transition(.opacity)
-            }
-        }
+        list
         .navigationTitle("账单")
         .searchable(text: $query.text, prompt: "搜索备注、分类或标签")
-        .safeAreaInset(edge: .top, spacing: 0) { filterControls }
+        .ledgerBillDetail(api: api, selection: $selectedBill, metadata: store.metadata)
         .sheet(isPresented: $showingDates) {
             LedgerBillDateFilter(query: $query)
         }
@@ -189,6 +181,12 @@ struct LedgerTransactionPage: Decodable {
 
     private var list: some View {
         List {
+            Section {
+                filterControls
+                    .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
             if store.loading && !store.hasLoaded {
                 LedgerLoadingView(title: "正在读取账单…").listRowBackground(Color.clear)
             }
@@ -205,7 +203,8 @@ struct LedgerTransactionPage: Decodable {
                 Section {
                     LedgerDaySummaryHeader(day: day, summary: store.summaries[day],
                                            summaryAvailable: store.summaryRequested)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 2, trailing: 20))
+                        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 10, trailing: 0))
+                        .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
                     ForEach(transactions) { transaction in
                         Button { selectBill(transaction.id) } label: {
@@ -236,15 +235,18 @@ struct LedgerTransactionPage: Decodable {
     }
 
     private var filterControls: some View {
-        VStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 14) {
             Picker("收支类型", selection: Binding(get: { query.type ?? -1 }, set: { query.type = $0 == -1 ? nil : $0 })) {
                 Text("全部").tag(-1)
                 Text("支出").tag(0)
                 Text("收入").tag(1)
             }.pickerStyle(.segmented)
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 16) { accountFilter; dateFilter }
-                VStack(alignment: .leading, spacing: 4) { accountFilter; dateFilter }
+                HStack(spacing: 10) {
+                    accountFilter.fixedSize(horizontal: true, vertical: false)
+                    dateFilter.fixedSize(horizontal: true, vertical: false)
+                }
+                VStack(alignment: .leading, spacing: 10) { accountFilter; dateFilter }
             }.frame(maxWidth: .infinity, alignment: .leading)
             if query.categoryId != nil || query.tag != nil {
                 HStack {
@@ -257,7 +259,11 @@ struct LedgerTransactionPage: Decodable {
                 }
             }
             dailySummaryStatus
-        }.padding(.horizontal, 20).padding(.vertical, 10).background(.bar)
+        }
+        .padding(16)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("bill-filters")
     }
 
     /// 每日合计的可用性说明：范围不满足整月/32 天时明确提示，读取失败时给出原因。
@@ -282,9 +288,10 @@ struct LedgerTransactionPage: Decodable {
                 Button(account.name) { query.accountId = account.id }
             }
         } label: {
-            Label(query.accountId.map { store.metadata.accountName($0) } ?? "全部账户", systemImage: "creditcard")
-                .font(.subheadline).lineLimit(1).frame(minHeight: 44)
-        }.accessibilityLabel("切换账户")
+            filterLabel(query.accountId.map { store.metadata.accountName($0) } ?? "全部账户", symbol: "creditcard")
+        }
+        .accessibilityLabel("切换账户")
+        .accessibilityValue(query.accountId.map { store.metadata.accountName($0) } ?? "全部账户")
     }
 
     private var dateFilter: some View {
@@ -296,9 +303,22 @@ struct LedgerTransactionPage: Decodable {
             }
             Button("选择月份或日期范围…") { showingDates = true }
         } label: {
-            Label(LedgerBillDates.title(query: query), systemImage: "calendar")
-                .font(.subheadline).lineLimit(1).frame(minHeight: 44)
+            filterLabel(LedgerBillDates.title(query: query), symbol: "calendar")
         }
+        .accessibilityLabel("筛选日期")
+        .accessibilityValue(LedgerBillDates.title(query: query))
+    }
+
+    private func filterLabel(_ title: String, symbol: String) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: symbol).font(.subheadline)
+            Text(title).font(.subheadline.weight(.medium)).lineLimit(1)
+            Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)
+        .background(Color(uiColor: .tertiarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func selectMonth(_ date: Date) {
@@ -313,9 +333,6 @@ struct LedgerTransactionPage: Decodable {
         }
     }
 
-    private func dismissBill() {
-        withAnimation(.easeOut(duration: 0.2)) { selectedBill = nil }
-    }
 }
 
 private struct LedgerBillsReadKey: Hashable { let query: LedgerBillQuery; let revision: Int }
@@ -330,31 +347,57 @@ struct LedgerDaySummaryHeader: View {
     let summary: LedgerDaySummary?
     /// 当前查询是否具备请求每日合计的条件。为 `false` 时连占位符也不显示。
     var summaryAvailable = true
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(LedgerFormat.date(dayStart, time: false))
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(LedgerFormat.date(dayStart, time: false))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 0)
+                if summaryAvailable {
+                    Text(summary.map { "\($0.count) 笔" } ?? "— 笔")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 9).padding(.vertical, 4)
+                        .background(Color(uiColor: .tertiarySystemGroupedBackground), in: Capsule())
+                }
+            }
             if summaryAvailable {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 10) { metrics }
-                    VStack(alignment: .leading, spacing: 2) { metrics }
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(spacing: 10) { metrics(intrinsicWidth: false) }
+                } else {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .top, spacing: 12) { metrics(intrinsicWidth: true) }
+                        VStack(alignment: .leading, spacing: 10) { metrics(intrinsicWidth: false) }
+                    }
                 }
             }
         }
+        .padding(14)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
+        .accessibilityIdentifier("bill-day-summary")
     }
 
-    @ViewBuilder private var metrics: some View {
-        Text("支出 " + (summary.map { LedgerFormat.money($0.expenseCents) } ?? "—"))
-            .foregroundStyle(Color(red: 0.87, green: 0.29, blue: 0.22))
-        Text("收入 " + (summary.map { LedgerFormat.money($0.incomeCents) } ?? "—"))
-            .foregroundStyle(AppTheme.accent)
-        Text((summary.map { "\($0.count)" } ?? "—") + " 笔")
-            .foregroundStyle(.secondary)
+    @ViewBuilder private func metrics(intrinsicWidth: Bool) -> some View {
+        metric("支出", amount: summary.map { LedgerFormat.money($0.expenseCents) }, symbol: "arrow.up.right", tint: Color(red: 0.87, green: 0.29, blue: 0.22), intrinsicWidth: intrinsicWidth)
+        metric("收入", amount: summary.map { LedgerFormat.money($0.incomeCents) }, symbol: "arrow.down.left", tint: AppTheme.accent, intrinsicWidth: intrinsicWidth)
+    }
+
+    private func metric(_ title: String, amount: String?, symbol: String, tint: Color, intrinsicWidth: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(title, systemImage: symbol).font(.caption).foregroundStyle(tint)
+            Text(amount ?? "—")
+                .font(.subheadline.weight(.semibold)).monospacedDigit()
+                .lineLimit(1).minimumScaleFactor(0.4)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: intrinsicWidth, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var dayStart: Int64 {

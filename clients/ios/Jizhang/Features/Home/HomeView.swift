@@ -14,18 +14,9 @@ private struct LedgerRecentData {
     @State private var selectedBill: LedgerBillSelection?
 
     var body: some View {
-        ZStack {
-            scroll
-            if let selection = selectedBill {
-                LedgerBillDetailOverlay(api: api, transactionID: selection.id,
-                                        metadata: recent.value?.metadata ?? .empty,
-                                        onDismiss: dismissBill)
-                    .ignoresSafeArea()
-                    .zIndex(1)
-                    .transition(.opacity)
-            }
-        }
+        scroll
         .navigationTitle("记账")
+        .ledgerBillDetail(api: api, selection: $selectedBill, metadata: recent.value?.metadata ?? .empty)
         .task(id: api.ledgerRevision) { await loadBalances() }
         .task(id: api.ledgerRevision) { await loadMonth() }
         .task(id: api.ledgerRevision) { await loadRecent() }
@@ -64,10 +55,6 @@ private struct LedgerRecentData {
         withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
             selectedBill = LedgerBillSelection(id: id)
         }
-    }
-
-    private func dismissBill() {
-        withAnimation(.easeOut(duration: 0.2)) { selectedBill = nil }
     }
 
     @ViewBuilder private var balanceSection: some View {
