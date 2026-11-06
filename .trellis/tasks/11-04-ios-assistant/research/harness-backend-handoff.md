@@ -98,3 +98,38 @@ stream cancellation/deadline, replay-size, original-file and conditional-undo pr
 This is synthetic-provider/private-fixture evidence. It does not establish live-model
 tool selection quality, production deployment or physical iOS notification interaction.
 Root owns full gates, inventory/spec/journal updates, source push and the verified IPA.
+# H5 native result continuation follow-up
+
+An audit found that native workspaces were reachable and successful in their own UI but
+did not return verified outcomes to the original conversational task. The additive
+`POST /conversations/:cid/workspace/native-completions` endpoint now accepts only the
+frozen source message ID and typed receipt reference documented in the wire contract.
+It verifies the owned `workspace.open` destination/item/completed source generation,
+checks authoritative CSV/batch receipts or current photo/export state, persists a bounded
+visible result plus `lastNativeOutcome`, and continues the original workflow once.
+Canonical request/receipt replay, original daily read-only authority and subsequent
+separate write approval remain enforced. No client prose/file bytes/secrets serve as proof.
+
+Additive migration025 records first CSV confirmation time atomically. Old receipts remain
+ordinary-confirm replayable; a null/older confirmation time cannot claim a new completion.
+Merged receipts use confirmed batch updated_at and conversation ownership. Photo viewed/
+saved hashes and removed absence prove current state only. Export checks prove current
+server generation only, never device storage or OS Share completion. Credential/logout/
+server-switch operations cannot resume an invalidated authentication scope.
+
+Modified product files are `db/migrate.ts`, `routes/assistant-workspace.ts`,
+`services/assistant-csv-import-service.ts`, `services/assistant-workspace-service.ts`;
+new product files are `db/migrations/025-native-completion-receipts.ts` and
+`services/assistant-native-completion.ts`. Existing applied migration024 is unchanged.
+Tests changed in `assistant-workspace-routes.test.ts` and `db.test.ts`.
+
+Focused latest evidence: **39 workspace routes +26 DB cases =65 passing**, including nine
+new native-continuation cases and the real024-to025 upgrade. These include actual CSV
+confirm -> ledger query/summary, real merged review/confirm, all four exports, photo view/
+saved/removed/current-hash mismatch, stale/null receipts, ownership/destination rejection,
+canonical replay, new consent/daily read-only and forced receipt-write rollback. Full
+server typecheck and lint pass for this follow-up. Root subsequently verified the full
+local build/lint/typecheck gate and405 shared +1380 server tests (69 suites); exact logs
+are `clients/ios/build/harness-quality/final-{build,lint,typecheck,test}.log`.
+Root owns final native collector/App/client integration, CI and IPA provenance. No live provider,
+deployment, physical phone or notification acceptance is implied by these local checks.

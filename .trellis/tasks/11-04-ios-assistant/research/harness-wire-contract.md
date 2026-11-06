@@ -130,3 +130,42 @@ Existing safe error envelope `{error:{code,message}}`; workspace invalid400,
 notfound404,stale/conflict409. Metadata-only trace strips old argument summaries at read
 boundary and never persists raw argument strings/numbers. Results stay <=40KiB, complete
 financial previews <=48KiB. These endpoints are enum/domain-specific, not generic HTTP.
+# Native completion continuation (additive H5 contract)
+
+`POST /api/v1/assistant/conversations/:cid/workspace/native-completions`
+
+```json
+{
+  "clientRequestId": "native-completion-frozen-id",
+  "sourceMessageId": "original-workspace-open-result-message-id",
+  "reference": { "kind": "csv-import", "previewId": "confirmed-preview-id" }
+}
+```
+
+`reference` is exactly one of:
+
+- `{kind:"csv-import",previewId:string}`
+- `{kind:"platform-import",batchId:string}`
+- `{kind:"item-photo",itemId:string,operation:"saved",sha256:string}`
+- `{kind:"item-photo",itemId:string,operation:"viewed",sha256:string}`
+- `{kind:"item-photo",itemId:string,operation:"removed"}`
+- `{kind:"export",exportKind:"transactions"|"salaries"|"recurring"|"transfers"}`
+
+Saved/viewed photo SHA256 is lowercase64 hexadecimal over the exact current raw image bytes.
+Removal omits sha256. Unknown fields and unlisted kinds are rejected.
+Response is the existing `{created,generation,workflow}` envelope:202 new,200 replay.
+Use normal generation/SSE recovery after accepting the response. The client calls only
+after actual native success and retains the same frozen request through uncertainty.
+
+The source must be the owned completed assistant `workspace.open` result message with
+the matching nativeAction destination/item and a durable source-generation workflow.
+CSV and batch receipts must be confirmed at or after the source message; batch ownership
+includes the conversation. Legacy CSV receipts without a confirmation timestamp remain
+ordinary import-confirm replayable but cannot claim a new native completion.
+Photo validation proves current matching bytes or current absence, not client causation.
+Export re-reads the actual allowlisted server export and proves current server generation,
+not local save or OS Share completion. Secrets/file bytes/client prose are never receipts.
+Canonical request and source/reference replay create exactly one continuation and persist
+the verified `lastNativeOutcome` in the original workflow. Later edits still need approval;
+an inherited daily-review workflow remains read-only. Credential/logout/server-switch
+flows have no native-completion reference and cannot resume across invalidated auth scope.

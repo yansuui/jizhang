@@ -101,6 +101,16 @@ Multi-user source and mocked-network coverage are tracked in [the multi-user tas
 
 The app icon reuses the existing Android brand artwork, converted to the iOS asset-catalog size; no new brand is introduced.
 
+2026-11-06 conversational workspaces and daily reminders: [native run 42233753337](https://github.com/yansuui/jizhang/actions/runs/42233753337)
+at `b5d9013` passed **214 XCTest cases, zero failures**, and Release iPhone arm64
+packaging (build **22**, Xcode 16.4). The matching backend is `d32b044`:
+[run 42229314232](https://github.com/yansuui/jizhang/actions/runs/42229314232) passed all four
+backend/Android/container/cutout jobs, including **405 shared + 1380 server tests** and
+13 private image-service tests. Upgrade the server with the app; upgrade the optional
+cutout worker for native JPEG/PNG input. See [the final verification record](../../.trellis/tasks/11-04-ios-assistant/harness-verification.md)
+for actual screenshot review, exact artifact source/checksum and the signed-device/live-provider
+acceptance boundary. Local reminder permission and physical delivery require the phone.
+
 2026-11-06 assistant reliability: [native run 42179267691](https://github.com/yansuui/jizhang/actions/runs/42179267691)
 at `d3eddc3` passed **142 XCTest cases, zero failures**, and unsigned iPhone arm64
 packaging with Xcode 16.4. Build **14** is 2,698,116 bytes, SHA-256

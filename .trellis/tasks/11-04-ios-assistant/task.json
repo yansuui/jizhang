@@ -1,8 +1,8 @@
 {
   "id": "ios-assistant",
   "name": "ios-assistant",
-  "title": "Native iOS client and simplified AI assistant",
-  "description": "Complete native iPhone bill/refund entry and filtering, existing four-purpose allocation editing, and confirmed assistant business tools and historical organization on original main.",
+  "title": "Native iOS ledger, conversational assistant and daily reminders",
+  "description": "Native iPhone ledger with conversational project capabilities, typed selections, explicit per-write approval and durable continuation, protected file/photo/account workspaces, and editable tap-authorized daily local reminders.",
   "status": "in_progress",
   "dev_type": null,
   "scope": null,
@@ -15,12 +15,12 @@
   "branch": "main",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "ebc8086e4653fec2c48a43deef09b77ff853dde6",
+  "commit": "b5d9013eda3108339b45d823da757b889ca677ed",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "Latest 2026-11-06 assistant reliability repair on original main: backend ebc8086, native 4033d26/d3eddc3. Background jobs hand off durably without model polling; successful reads persist across bounded multi-tool decisions; safe result paging/size and typed correction preserve confirmation/tenant guards. Backend CI42180534737 all3jobs passed (405 shared+1315 server, lint/types/build, Androidunit/package/lint, isolated image lifecycle). Native CI42179267691 at d3eddc3 passed142 tests and arm64 IPA packaging; ebc8086 changes no native source. Ready IPA clients/ios/build/delivery/Jizhang-iOS-assistant-reliability-d3eddc3.ipa, build14, SHA256 cb83e009bb158eba8b2356382b9597b0f27322a9728f8ac0aee58015b173dd8a. See assistant-reliability-verification.md; earlier bill UI evidence remains bill-ui-polish-verification.md. Server must be upgraded too; no production deployment/live-provider/physical-install claim. User deferred phone connection; keep broader task active for signed Keychain/login and physical acceptance. Sideloadly D:/Sideloadly/Sideloadly.exe v0.72; do not ask path again.",
+  "notes": "2026-11-06 harness/reminders delivered on original yansuui/jizhang main. Backend d32b044 passed local and exact GitHub42229314232 all four jobs:405 shared+1380 server tests, lint/types/build, Android unit/package/lint, production-container lifecycle and13 cutout tests. Final native b5d9013/run42233753337/build22 passed214 XCTest cases and Release arm64 packaging. Source/checksum/ZIP/plist/arm64/no-XCTest and actual simulator fixtures reviewed, including corrected no-write CSV preview wording. Ready IPA clients/ios/build/delivery/Jizhang-iOS-harness-b5d9013.ipa,3447263 bytes,SHA256 5e1131925243e28cb5e3e6b91ec0d39af9c6c9fa762fea8e252d3454feca4e1f. See harness-verification.md and capability-closure audit. Running server and optional cutout worker need matching upgrade; no production deployment/live-provider/physical-install claim. User deferred phone connection; keep broader task active for signed Keychain/login and physical notification/tap acceptance. Sideloadly D:/Sideloadly/Sideloadly.exe v0.72; do not ask path again.",
   "meta": {}
 }

@@ -171,3 +171,29 @@ Fixed composed assistant conversations and historical organization on original m
 ### Next Steps
 
 - Upgrade running backend to ebc8086 as well as app; live-provider interaction and physical Sideloadly signing/Keychain/login/device acceptance remain separate. User deferred phone connection; keep broader task active.
+
+
+## Session 6: Conversational assistant workspaces and daily reminders
+
+**Date**: 2026-11-06
+**Task**: Conversational assistant workspaces and daily reminders
+**Branch**: `main`
+
+### Summary
+
+Implemented negotiated project capabilities, durable typed selections and revised per-write approval, original-task continuation including verified native import/photo/export outcomes, private live activity, and editable20:00/21:00 local reminders with tap-only read-only reviews. Final backend405 shared+1380 server tests and all4 CI jobs passed; native build22/b5d9013 passed214 tests and arm64 IPA packaging. Verified exact artifact/hash/ZIP/platform and simulator fixtures; screenshot review corrected misleading preview success wording. Original main only. Keep task active for user-deferred signed-device notification/login/install acceptance; running server and optional cutout worker upgrade remain separate. See harness-verification.md.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0aa8cc0` | (see git log) |
+| `ed138fc` | (see git log) |
+| `241ac6b` | (see git log) |
+| `d32b044` | (see git log) |
+| `0e90dfa` | (see git log) |
+| `b5d9013` | (see git log) |
+
+### Status
+
+[OK] **Completed**

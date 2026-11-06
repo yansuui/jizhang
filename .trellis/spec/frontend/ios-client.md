@@ -2,7 +2,7 @@
 
 ## 1. Scope / trigger
 
-Applies to `clients/ios`, its Xcode project and `.github/workflows/ios.yml`. The approved continuation includes bill/refund editing, account/date filters, four-purpose allocation editing and explicit AI action execution. See `clients/ios/README.md` for supported and deferred behavior; native multi-file import and physical-device acceptance remain separate.
+Applies to `clients/ios`, its Xcode project and `.github/workflows/ios.yml`. The approved continuation includes bill/refund editing, account/date filters, four-purpose allocation editing, conversational workspaces, native multi-file import and daily local reminders. See `clients/ios/README.md` for supported behavior; physical-device acceptance remains separate.
 
 ## 2. Signatures
 
@@ -131,7 +131,42 @@ Good: the user reads history while the current stream advances and gets a jump-t
 - Ledger tests: actual read DTOs, exact cents and authoritative window/fund contracts.
 - Native build/test/package on macOS; inspect the real simulator launch artifact. Large fonts, keyboard, long chats, provider latency and physical installation remain separate acceptance evidence.
 
-## 7. Wrong vs correct
+## 7. Conversational and native-workspace ownership
+
+Negotiate `clientCapabilities: ["workspace-v1"]` for the additive typed selection,
+revision and continuation protocol. Resource choices preserve server IDs across pages;
+revision replaces the previous immutable action, and every write requires its own
+visible confirmation. Read-only daily scope is enforced by the server workflow too.
+Native destinations use `NativeWorkspaceRoute`, never model URLs. Passwords, keys,
+invitation plaintext and file bytes stay in native forms rather than conversation facts.
+Shared import counters use neutral labels (insert/skip/ignore counts), because the same
+DTO appears in rollback previews and actual results. Before confirmation, identify the
+CSV result as an estimate with no write; after confirmation, label the retained preview
+as historical. Past-tense success text requires the actual confirmed receipt.
+
+CSV/platform import stores retain their frozen request and file identity per API owner,
+conversation and source message. Clear these caches on actual API replacement/logout;
+view disappearance also occurs during ordinary modal presentation. Binary download and
+photo operations use request tickets so late results cannot recreate dismissed files or
+overwrite a later save/cancellation.
+
+Successful source-bound native operations return only typed receipt identifiers.
+`NativeWorkspaceCompletionRelay` keeps the latest receipt for that same source until
+the root workspace actually dismisses; owner replacement clears it. The Assistant then
+posts `workspace/native-completions` using a canonical stable request ID and adopts the
+returned generation in the original conversation. Uncertain submission retains that
+request, and opening a capability without a conversation source never creates inference.
+Server receipt verification establishes current authoritative state, not device sharing
+or client causation. Credential/logout/server-switch actions end their auth scope instead.
+
+Daily reminders are local notifications: editable 20:00/21:00 defaults, actual permission
+state and active immutable owner scheduling. Only a notification tap authorizes review;
+startup/foreground/reconnection do not. Persist the owner/date/request outbox before
+submission. `NativePresentationGate` retains FIFO intents until the true presenter is
+available and acknowledges only actual destination appearance. Multiple delivery dates
+must retain separate tap authority and serialize their conversation/generation handoff.
+
+## 8. Wrong vs correct
 
 - Wrong: defaulting a failed balance response to zero. Correct: typed decoding and visible error/retry.
 - Wrong: persisting a new login cookie before validating its response. Correct: validate response shape, then retain the accepted session.

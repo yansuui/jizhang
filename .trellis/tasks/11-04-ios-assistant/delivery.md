@@ -1,5 +1,12 @@
 # Current delivery — original repository/main
 
+Latest 2026-11-06 conversational workspace and daily-reminder implementation: see
+[harness-verification.md](./harness-verification.md) for final server/native source,
+executed checks and the verified IPA. This supersedes the reliability-only package
+below. The running server must be upgraded too; the optional cutout service must also
+be upgraded for native JPEG/PNG input. Physical signing/notifications/live providers
+remain separate acceptance.
+
 Latest 2026-11-06 assistant reliability repair: see
 [assistant-reliability-verification.md](./assistant-reliability-verification.md) for
 the server repair, native run and latest verified IPA. Both server and app need the
