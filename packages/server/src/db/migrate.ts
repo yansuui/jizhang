@@ -36,6 +36,7 @@ import { MIGRATION_019_FINANCIAL_EXECUTION } from './migrations/019-financial-ex
 import { MIGRATION_020_MANUAL_GOAL_PROGRESS } from './migrations/020-manual-goal-progress.js';
 import { MIGRATION_021_FOUR_PURPOSE_FUNDS, backfillFourPurposeFunds } from './migrations/021-four-purpose-funds.js';
 import { MIGRATION_022_TEMPLATE_TAGS, backfillTemplateTags } from './migrations/022-template-tags.js';
+import { MIGRATION_023_ASSISTANT_TRACE } from './migrations/023-assistant-trace.js';
 
 export interface Migration {
   readonly version: number;
@@ -73,6 +74,9 @@ export const MIGRATIONS: readonly Migration[] = [
   // 22 retires the allocation-template surface without deleting its rows: each template
   // name is folded into the tag catalog so the meaning survives as a bill label.
   { version: 22, name: 'template-tags', sql: MIGRATION_022_TEMPLATE_TAGS, run: backfillTemplateTags },
+  // 23 stores bounded per-step execution metadata for a generation. It is diagnostic only:
+  // it never holds model reasoning, provider bodies, prompts or credentials.
+  { version: 23, name: 'assistant-trace', sql: MIGRATION_023_ASSISTANT_TRACE },
 ];
 
 interface AppliedRow {

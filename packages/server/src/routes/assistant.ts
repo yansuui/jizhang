@@ -9,6 +9,7 @@ import { AssistantActionStaleError, AssistantError, AssistantValidationError, ty
 import { AiSpendingOrganizationService } from '../services/ai-spending-organization-service.js';
 import { AssistantGenerationService, parseCreateGenerationRequest } from '../services/assistant-generation-service.js';
 import { AssistantGenerationRunner } from '../services/assistant-generation-runner.js';
+import { AssistantTraceStore } from '../services/assistant-trace-service.js';
 import { AssistantStreamError, SSE_HEARTBEAT_MS, type AssistantStreamEvent } from '../services/assistant-stream-types.js';
 import { AssistantImportComparisonService } from '../services/assistant-import-comparison-service.js';
 import { ImportBatchAnalysisRunner } from '../services/import-batch-analysis.js';
@@ -305,7 +306,7 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
 
     lifecycle.whileBusy(() => runner.hasActiveWork || batchAnalysis.hasActiveWork || AiSpendingOrganizationService.hasActiveFor(options.db));
 
-    return { now, withConversationLock, conversations, orchestrator, confirmingActions, activeLock, beginLegacyTurn, endLegacyTurn, legacyTurnActiveError, generations, runner, aiConfigService, batchAnalysis, options };
+    return { now, withConversationLock, conversations, orchestrator, confirmingActions, activeLock, beginLegacyTurn, endLegacyTurn, legacyTurnActiveError, generations, runner, aiConfigService, batchAnalysis, options, trace: new AssistantTraceStore(options.db, now) };
   });
 
   await registerImportBatchRoutes(app, { resolveAnalysis: (request) => getServices(request).batchAnalysis });
@@ -365,6 +366,24 @@ export async function registerAssistantRoutes(app: FastifyInstance, options: Ass
       const { generations } = getServices(request);
       reply.header('Cache-Control', 'no-store');
       return { generation: generations.get(request.params.conversationId, request.params.generationId) };
+    },
+  );
+
+  /**
+   * Diagnostic step trace for one generation.
+   *
+   * Ownership is enforced by `generations.get`, which scopes the generation to this
+   * conversation and the caller's ledger; a foreign or unknown id therefore cannot read a
+   * trace. The payload is metadata only (see `assistant-trace-service.ts`).
+   */
+  app.get<{ Params: { conversationId: string; generationId: string } }>(
+    '/api/v1/assistant/conversations/:conversationId/generations/:generationId/trace',
+    async (request, reply) => {
+      const { generations, trace } = getServices(request);
+      reply.header('Cache-Control', 'no-store');
+      const { generationId } = request.params;
+      generations.get(request.params.conversationId, generationId);
+      return { items: trace.list(generationId) };
     },
   );
 

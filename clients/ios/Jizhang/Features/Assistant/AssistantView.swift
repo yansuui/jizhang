@@ -429,6 +429,14 @@ private struct AssistantMessageBubble: View {
                         .font(.caption).foregroundStyle(.secondary)
                     DisclosureGroup("查看导入记录") { AssistantPreviewValues(value: message.content.importBatch ?? .null) }
                 }
+                // Diagnostic timeline for this reply. Rendered only when the server recorded a
+                // generation id, so historical messages without a trace stay unchanged.
+                if let generationID = message.content.generationId, !generationID.isEmpty {
+                    AssistantTraceView(api: api, conversationID: message.conversationId,
+                                       generationID: generationID,
+                                       autoExpand: message.content.error != nil)
+                        .id("\(api.identity):\(generationID)")
+                }
                 if let clarification = message.content.clarification, clarification.isValid {
                     Text(clarification.question).font(.headline)
                     ForEach(clarification.options) { option in

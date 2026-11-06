@@ -53,6 +53,17 @@ failure. Never expose raw provider response text or automatically retry a model 
 
 Generation events follow the existing backend protocol, including UTF-16 offsets, monotonically increasing sequence, stable provisional/final message identity and snapshot reconciliation. Leaving a view unsubscribes; Stop explicitly cancels server generation. Network loss does not authorize a new inference POST.
 
+`AssistantTraceStore` reads the diagnostic trace of one generation
+(`GET /assistant/conversations/:id/generations/:id/trace`) and `AssistantTraceView` renders it
+as a collapsed timeline under the bubble. The trace is metadata only — step ordinal, kind,
+tool name, argument summary, status, duration — and must never be presented as model reasoning.
+It is collapsed by default and expanded automatically when the reply carries an error, because
+that is the moment the user needs to know where the reply stopped. A trace read failure is
+swallowed: diagnostics must never displace the conversation, replace a message or trigger a
+retry. The view is keyed by API identity plus generation id so switching accounts or
+conversations cannot show a foreign trace. Android renders no trace in this iteration, so new
+message/trace data must stay additive and ignorable by older clients.
+
 Keep POST ownership separate from the current screen's subscription: a delayed A response after A → B → A must resume the currently visible A. Definite client rejections release the draft for editing; ambiguous transport/server failures retain the original request ID and explicit retry notice across reopening. Successful list mutations invalidate reads started before their completion.
 
 Provider forms read saved configuration before allowing a save. Blank key preserves stored secret. Hidden/redacted settings must not be overwritten by empty defaults. Discovery uses saved connection metadata; initial disabled-connection bootstrap is an explicit user action. Selection edits a draft. Save, model fetch and test are mutually exclusive; testing is never an automatic side effect.

@@ -30,6 +30,7 @@ import { AiProviderService, AiProviderStream, type AiCallOptions } from './ai-pr
 import type { AiPromptContext, StoredAiProviderConfig } from './ai-types.js';
 import { AssistantConversationService } from './assistant-conversation-service.js';
 import { recoverProviderEnvelope } from './assistant-envelope-recovery.js';
+import { AssistantTraceStore, summarizeToolArguments } from './assistant-trace-service.js';
 import { AssistantGenerationService } from './assistant-generation-service.js';
 import { buildAssistantContext } from './assistant-orchestrator.js';
 import {
@@ -222,6 +223,8 @@ export class AssistantGenerationRunner {
   };
   private readonly stepDelayMs: number;
   private readonly runs = new Map<string, ActiveRun>();
+  /** Diagnostic per-step trace; never holds model reasoning or provider payloads. */
+  private readonly trace: AssistantTraceStore;
   private closing = false;
   private readonly appConfig: AppConfig;
   private readonly fetchImpl: typeof fetch;
@@ -253,6 +256,7 @@ export class AssistantGenerationRunner {
     this.toolContext = built.context;
     this.aiConfig = built.config;
     this.providerTransport = built.provider as unknown as AssistantGenerationRunner['providerTransport'];
+    this.trace = new AssistantTraceStore(db, now);
   }
 
   get hasActiveWork(): boolean { return this.runs.size > 0; }
@@ -338,6 +342,13 @@ export class AssistantGenerationRunner {
 
   private finalizeFailed(conversationId: string, generationId: string, error: unknown): void {
     const mapped = toStreamError(error);
+    // Record the failure itself so the trace explains *why* the turn ended, not only which
+    // tool ran last. The mapped sentence is a fixed server-owned string, never a provider body.
+    const failureStep = this.trace.begin({ generationId, conversationId, step: MAX_GENERATION_STEPS, kind: 'error',
+      argumentSummary: mapped.code });
+    this.trace.finish(failureStep, 'failed');
+    // Any step still open (a Stop mid-tool, an unexpected throw) must not claim to be in flight.
+    this.trace.closeOpenSteps(generationId, 'failed');
     // `persistTurn` refuses a generation that already reached a terminal status, so this
     // can never resurrect a cancelled or archived turn.
     this.generations.finalize(conversationId, generationId, {
@@ -481,14 +492,22 @@ export class AssistantGenerationRunner {
 
       const normalizedTurn = turn;
       if (normalizedTurn.toolCall === null) {
+        const answerStep = this.trace.begin({ generationId, conversationId, step, kind: 'result' });
+        this.trace.finish(answerStep, 'ok');
         this.finishTextTurn(conversationId, generationId, normalizedTurn, null, partial);
         return;
       }
       // Unknown/retired tools remain hard failures; only known tools may correct arguments.
       if (this.registry.get(normalizedTurn.toolCall.name) === undefined || assistantRetiredAllocationInput(normalizedTurn.toolCall.name, normalizedTurn.toolCall.arguments)) {
+        const rejected = this.trace.begin({ generationId, conversationId, step, kind: 'error',
+          toolName: normalizedTurn.toolCall.name, argumentSummary: 'unsupported-tool' });
+        this.trace.finish(rejected, 'failed');
         throw new AssistantValidationError('AI 选择了不受支持的工具或已停用的分配方式，未执行任何操作。');
       }
 
+      const toolStep = this.trace.begin({ generationId, conversationId, step, kind: 'tool',
+        toolName: normalizedTurn.toolCall.name,
+        argumentSummary: summarizeToolArguments(normalizedTurn.toolCall.arguments) });
       try {
         const { tool, arguments: args } = this.registry.parseArguments(
           normalizedTurn.toolCall.name,
@@ -497,16 +516,22 @@ export class AssistantGenerationRunner {
         if (tool.definition.access === 'write') {
           await this.finishWriteTurn(conversationId, generationId, normalizedTurn, tool.definition.name, args,
             row.user_message_id, partial, deadline);
+          this.trace.finish(toolStep, 'ok');
           return;
         }
         const identity = assistantReadIdentity(tool.definition.name, args);
         if (reads.has(identity)) {
+          this.trace.finish(toolStep, 'ok');
           this.finishTextTurn(conversationId, generationId,
             { message: ASSISTANT_REPEATED_READ_REPLY, toolCall: null, clarification: null }, null, partial);
           return;
         }
         const read = await this.readTool(conversationId, generationId, normalizedTurn, tool.definition.name, args, partial, deadline);
-        if (read.dropped || read.result === null) return;
+        if (read.dropped || read.result === null) {
+          this.trace.finish(toolStep, 'failed');
+          return;
+        }
+        this.trace.finish(toolStep, 'ok');
         lastResult = read.result;
         toolFailure = null;
         reads.set(identity, read.result);
@@ -529,19 +554,28 @@ export class AssistantGenerationRunner {
           return;
         }
       } catch (error) {
-        if (!this.isLive(conversationId, generationId) || this.isArchived(conversationId)) return;
+        if (!this.isLive(conversationId, generationId) || this.isArchived(conversationId)) {
+          this.trace.finish(toolStep, 'failed');
+          return;
+        }
         const expectedReply = assistantExpectedToolReply(error);
         if (expectedReply !== null) {
+          this.trace.finish(toolStep, 'failed');
           this.finishTextTurn(conversationId, generationId,
             { message: expectedReply, toolCall: null, clarification: null }, null, partial);
           return;
         }
         if (error instanceof AssistantPreviewTooLargeError) {
+          this.trace.finish(toolStep, 'failed');
           this.finishTextTurn(conversationId, generationId,
             { message: ASSISTANT_PREVIEW_TOO_LARGE_REPLY, toolCall: null, clarification: null }, null, partial);
           return;
         }
-        if (!assistantCanCorrectTool(error)) throw error;
+        if (!assistantCanCorrectTool(error)) {
+          this.trace.finish(toolStep, 'failed');
+          throw error;
+        }
+        this.trace.finish(toolStep, 'failed');
         toolCorrections += 1;
         if (toolCorrections > MAX_ASSISTANT_TOOL_CORRECTIONS) {
           this.finishTextTurn(conversationId, generationId,
