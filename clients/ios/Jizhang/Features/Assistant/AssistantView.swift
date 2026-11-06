@@ -26,8 +26,15 @@ struct AssistantView: View {
     @State private var query = ""
     @State private var openedConversation: AssistantConversation?
     @State private var archiveTarget: AssistantConversation?
+    @State private var showingCapabilities = false
+    let launch: AssistantLaunchIntent?
+    let onLaunchCheckpoint: ((AssistantLaunchIntent, DailyReviewCheckpoint) -> Bool)?
 
-    init(api: APIClient) { _store = StateObject(wrappedValue: AssistantStore(api: api)) }
+    init(api: APIClient, launch: AssistantLaunchIntent? = nil,
+         onLaunchCheckpoint: ((AssistantLaunchIntent, DailyReviewCheckpoint) -> Bool)? = nil) {
+        _store = StateObject(wrappedValue: AssistantStore(api: api))
+        self.launch = launch; self.onLaunchCheckpoint = onLaunchCheckpoint
+    }
 
     var body: some View {
         List {
@@ -49,6 +56,7 @@ struct AssistantView: View {
                             .font(.subheadline).foregroundStyle(AppTheme.accent)
                     }
                 }
+                Button("助手能做什么", systemImage: "square.grid.2x2") { showingCapabilities = true }
             }
             if let error = store.listError {
                 Section {
@@ -112,6 +120,15 @@ struct AssistantView: View {
         .navigationDestination(item: $openedConversation) { conversation in
             AssistantChatView(store: store, conversation: conversation)
         }
+        .sheet(isPresented: $showingCapabilities) {
+            NavigationStack { AssistantCapabilityView(assistant: store) { item in
+                Task { if let conversation = await store.beginCapability(item) { openedConversation = conversation } }
+            } }
+        }
+        .task(id: launch?.presentationID) {
+            guard let launch, let onLaunchCheckpoint else { return }
+            if let conversation = await store.launchDailyReview(launch, checkpoint: onLaunchCheckpoint), !Task.isCancelled { openedConversation = conversation }
+        }
         .confirmationDialog("归档这段对话？", isPresented: Binding(get: { archiveTarget != nil }, set: { if !$0 { archiveTarget = nil } }), titleVisibility: .visible) {
             Button("归档对话", role: .destructive) {
                 guard let target = archiveTarget else { return }
@@ -121,7 +138,7 @@ struct AssistantView: View {
             Button("取消", role: .cancel) { archiveTarget = nil }
         } message: { Text("对话会从列表移除，正在进行的回复也会停止。账本数据不受影响。") }
         .refreshable { await store.loadConversations(); await store.loadProviderStatus() }
-        .task { await store.loadConversations(); await store.loadProviderStatus() }
+        .task { await store.loadConversations(); await store.loadProviderStatus(); await store.loadCapabilities() }
     }
 
     private func create() {
@@ -169,6 +186,8 @@ private struct AssistantChatView: View {
     @State private var dragging = false
     @State private var hasNewContent = false
     @State private var actionReview: AssistantActionReview?
+    @State private var draftRevision: AssistantActionReview?
+    @State private var showingCapabilities = false
     @State private var pickingFile = false
     @State private var fileError: String?
     private var state: AssistantThread { store.thread(conversation.id) }
@@ -196,6 +215,14 @@ private struct AssistantChatView: View {
                 Text(notice).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 8)
             }
+            if let request = state.workflow?["originalRequest"].stringValue {
+                DisclosureGroup("当前任务") { Text(request).font(.caption).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                    .font(.caption.weight(.medium)).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.vertical, 6)
+            }
+            if let generation = state.generation, state.isGenerating {
+                AssistantTraceView(api: store.api, conversationID: conversation.id, generationID: generation.id,
+                    autoExpand: false, active: true).padding(.horizontal, 20).padding(.vertical, 8)
+            }
             timeline
         }
         .background(Color(uiColor: .systemGroupedBackground))
@@ -205,6 +232,7 @@ private struct AssistantChatView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Button("助手能做什么", systemImage: "square.grid.2x2") { showingCapabilities = true }
                     Button("刷新对话", systemImage: "arrow.clockwise") { Task { await store.open(conversation.id) } }
                         .disabled(state.sending || state.stopping || state.actingID != nil)
                     Button("整理历史账单", systemImage: "wand.and.stars") {
@@ -220,6 +248,17 @@ private struct AssistantChatView: View {
         .onDisappear { store.leave(conversation.id) }
         .sheet(item: $actionReview) { review in
             NavigationStack { AssistantActionReviewView(store: store, conversationID: conversation.id, review: review) }
+        }
+        .sheet(item: $draftRevision) { review in
+            NavigationStack { AssistantDraftRevisionView(assistant: store, conversationID: conversation.id, card: review.card) }
+        }
+        .sheet(isPresented: $showingCapabilities) {
+            NavigationStack { AssistantCapabilityView(assistant: store) { item in
+                if let name = item["name"].stringValue {
+                    store.setDraft("请帮我使用「\(AssistantToolPresentation.title(name))」（\(name)），缺少信息时用选择卡询问，修改前先展示预览。", for: conversation.id)
+                    Task { await store.sendText(in: conversation.id) }
+                }
+            } }
         }
         .fileImporter(isPresented: $pickingFile, allowedContentTypes: [.commaSeparatedText, UTType(filenameExtension: "xlsx") ?? .data]) { result in
             do {
@@ -243,10 +282,13 @@ private struct AssistantChatView: View {
                             welcome
                         }
                         ForEach(state.messages) { message in
-                            AssistantMessageBubble(api: store.api, message: message, mayAnswer: store.canAnswer(message, in: conversation.id),
+                            AssistantMessageBubble(api: store.api, assistant: store, message: message,
+                                showsTrace: !(state.isGenerating && message.content.generationId == state.generation?.id) && message.id == state.messages.last(where: { $0.content.generationId == message.content.generationId })?.id,
+                                mayAnswer: store.canAnswer(message, in: conversation.id),
                                 mayConfirm: message.content.card.map { store.canAct(on: $0, in: conversation.id) } ?? false,
                                 mayCancel: message.content.card.map { store.canAct(on: $0, in: conversation.id, confirm: false) } ?? false,
                                 onReview: { card in actionReview = AssistantActionReview(card: card) },
+                                onRevise: { card in draftRevision = AssistantActionReview(card: card) },
                                 onCancel: { card in Task { await store.performAction(card, in: conversation.id, confirm: false) } },
                                 onSuggestion: { text in store.useSuggestion(text, in: conversation.id); composerFocused = true }) { option in
                                 Task { await store.answer(option, message: message, in: conversation.id) }
@@ -388,15 +430,24 @@ struct AssistantNotice: View {
 
 private struct AssistantMessageBubble: View {
     let api: APIClient
+    @ObservedObject var assistant: AssistantStore
     let message: AssistantMessage
+    let showsTrace: Bool
     let mayAnswer: Bool
     let mayConfirm: Bool
     let mayCancel: Bool
     let onReview: (JSONValue) -> Void
+    let onRevise: (JSONValue) -> Void
     let onCancel: (JSONValue) -> Void
     let onSuggestion: (String) -> Void
     let onOption: (AssistantClarification.Option) -> Void
     private var user: Bool { message.role == "user" }
+    @Environment(\.openJizhangWorkspace) private var openWorkspace
+    private var importRoute: NativeWorkspaceRoute? {
+        let batch = message.content.importBatch
+        let id = batch?["batchId"].stringValue ?? batch?["id"].stringValue
+        return NativeWorkspaceRoute(value: .object(["destination": .string("platform-import"), "conversationId": .string(message.conversationId), "batchId": id.map(JSONValue.string) ?? .null]))
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -410,14 +461,7 @@ private struct AssistantMessageBubble: View {
                 if let card = message.content.card { actionCard(card) }
                 if let result = message.content.result, let summary = result["summary"].stringValue, !summary.isEmpty {
                     Label(summary, systemImage: "doc.text.magnifyingglass").font(.subheadline).textSelection(.enabled)
-                    if let runID = result["data"]["run"]["runId"].stringValue, !runID.isEmpty {
-                        AssistantSpendingRunStatus(api: api, runID: runID, initial: result["data"]["run"], onSuggestion: onSuggestion)
-                            .id("\(api.identity):\(runID)")
-                    } else if result["data"]["actions"].arrayValue != nil, result["data"]["runId"].stringValue != nil {
-                        AssistantSpendingReview(card: result["data"], onSuggestion: onSuggestion)
-                    } else if result["data"].objectValue?.isEmpty == false {
-                        DisclosureGroup("查看明细") { AssistantPreviewValues(value: result["data"], context: result["toolName"].stringValue ?? "").padding(.top, 8) }
-                    }
+                    AssistantWorkspaceResultCard(assistant: assistant, conversationID: message.conversationId, messageID: message.id, result: result)
                 }
                 if let attachment = message.content.attachment {
                     Label(attachment["fileName"].stringValue ?? "附件", systemImage: "doc")
@@ -425,13 +469,16 @@ private struct AssistantMessageBubble: View {
                 }
                 if message.content.importBatch != nil {
                     Label("账单导入记录", systemImage: "tray.and.arrow.down").font(.subheadline.weight(.medium))
-                    Text("这是一份多文件合并导入记录。可查看下方状态；上传单个账单可在本机逐条审核导入。")
+                    Text("打开导入工作区，核对文件、冲突和所选记录后再确认。")
                         .font(.caption).foregroundStyle(.secondary)
+                    if let route = importRoute {
+                        Button("打开导入工作区") { openWorkspace?(route) }.buttonStyle(.bordered).disabled(openWorkspace == nil)
+                    }
                     DisclosureGroup("查看导入记录") { AssistantPreviewValues(value: message.content.importBatch ?? .null) }
                 }
                 // Diagnostic timeline for this reply. Rendered only when the server recorded a
                 // generation id, so historical messages without a trace stay unchanged.
-                if let generationID = message.content.generationId, !generationID.isEmpty {
+                if showsTrace, let generationID = message.content.generationId, !generationID.isEmpty {
                     AssistantTraceView(api: api, conversationID: message.conversationId,
                                        generationID: generationID,
                                        autoExpand: message.content.error != nil)
@@ -481,10 +528,16 @@ private struct AssistantMessageBubble: View {
             }
             if pending {
                 Text("尚未修改账本，请核对后确认。").font(.caption).foregroundStyle(.secondary)
-                HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 10) {
                     Button("查看并确认") { onReview(card) }.buttonStyle(.borderedProminent).disabled(!mayConfirm)
-                    Button("取消草案", role: .cancel) { onCancel(card) }.buttonStyle(.bordered).disabled(!mayCancel)
+                    HStack(spacing: 12) {
+                        Button("调整草案") { onRevise(card) }.buttonStyle(.bordered).disabled(!mayConfirm)
+                        Button("取消草案", role: .cancel) { onCancel(card) }.buttonStyle(.bordered).disabled(!mayCancel)
+                    }
                 }.font(.subheadline)
+            } else if card["status"].stringValue == "confirmed", assistant.workspaceCapabilities != nil {
+                Button("继续原任务") { Task { await assistant.continueConfirmed(card, in: message.conversationId) } }
+                    .font(.subheadline).disabled(assistant.thread(message.conversationId).composerLocked)
             }
         }.padding(13).background(AppTheme.accent.opacity(0.05), in: RoundedRectangle(cornerRadius: 14))
     }

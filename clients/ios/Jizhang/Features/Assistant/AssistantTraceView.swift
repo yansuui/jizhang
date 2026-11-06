@@ -82,7 +82,7 @@ struct AssistantTraceItems: Decodable { let items: [AssistantTraceEntry] }
     var isEmpty: Bool { entries.isEmpty }
     var hasFailure: Bool { entries.contains(where: \.isFailed) }
 
-    func load() async {
+    @discardableResult func load() async -> Bool {
         let current = UUID()
         ticket = current
         loading = true
@@ -91,12 +91,24 @@ struct AssistantTraceItems: Decodable { let items: [AssistantTraceEntry] }
             let path = AssistantPath.conversation(conversationID)
                 + "/generations/\(AssistantPath.segment(generationID))/trace"
             let response: AssistantTraceItems = try await api.request(path)
-            guard ticket == current, !Task.isCancelled else { return }
+            guard ticket == current, !Task.isCancelled else { return false }
             entries = response.items
             loaded = true
+            return true
         } catch {
             // Diagnostics are optional: keep whatever was already shown and stop loading.
-            guard ticket == current, !Task.isCancelled else { return }
+            return false
+        }
+    }
+
+    /// A bounded metadata read loop. It never retries a model request.
+    func observe(active: Bool, interval: Duration = .seconds(2), maximumReads: Int = 120) async {
+        var failures = 0
+        for index in 0..<max(1, maximumReads) {
+            guard !Task.isCancelled else { return }
+            if await load() { failures = 0 } else { failures += 1 }
+            guard active, failures < 3, index + 1 < maximumReads, !Task.isCancelled else { return }
+            do { try await Task.sleep(for: interval) } catch { return }
         }
     }
 }
@@ -108,11 +120,13 @@ struct AssistantTraceItems: Decodable { let items: [AssistantTraceEntry] }
 struct AssistantTraceView: View {
     @StateObject private var store: AssistantTraceStore
     @State private var expanded: Bool
+    private let active: Bool
 
-    init(api: APIClient, conversationID: String, generationID: String, autoExpand: Bool) {
+    init(api: APIClient, conversationID: String, generationID: String, autoExpand: Bool, active: Bool = false) {
         _store = StateObject(wrappedValue: AssistantTraceStore(
             api: api, conversationID: conversationID, generationID: generationID))
         _expanded = State(initialValue: autoExpand)
+        self.active = active
     }
 
     var body: some View {
@@ -142,14 +156,12 @@ struct AssistantTraceView: View {
                                 .frame(width: 14, alignment: .center)
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 5) {
-                                    Text(entry.title).font(.caption.weight(.medium))
+                                    Text(entry.kind == "tool" ? entry.toolName.map(AssistantToolPresentation.title) ?? "工具调用" : entry.title).font(.caption.weight(.medium))
                                     Text(entry.statusLabel).font(.caption2)
                                         .foregroundStyle(entry.isFailed ? Color.orange : Color.secondary)
                                 }
-                                if let detail = entry.detail {
-                                    Text(detail).font(.caption2).foregroundStyle(.tertiary)
-                                        .lineLimit(2).textSelection(.enabled)
-                                }
+                                // Older servers stored arbitrary argument prefixes. Never
+                                // publish those legacy values in the activity surface.
                             }
                             Spacer(minLength: 0)
                         }
@@ -159,11 +171,12 @@ struct AssistantTraceView: View {
                 .transition(.opacity)
             }
         }
-        .task { await store.load() }
+        .task(id: active) { await store.observe(active: active) }
+        .onChange(of: store.hasFailure) { _, failed in if failed { expanded = true } }
     }
 
     private var summary: String {
-        if store.entries.isEmpty { return store.loading ? "正在读取执行步骤…" : "无执行步骤记录" }
+        if store.entries.isEmpty { return active ? "正在处理请求…" : (store.loading ? "正在读取执行步骤…" : "无执行步骤记录") }
         let failed = store.entries.filter(\.isFailed).count
         return failed > 0 ? "执行步骤 · \(store.entries.count) 步 · \(failed) 步失败"
                           : "执行步骤 · \(store.entries.count) 步"

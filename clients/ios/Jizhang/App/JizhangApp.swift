@@ -11,13 +11,20 @@ enum AppTheme {
 @main
 @MainActor
 struct JizhangApp: App {
+    @UIApplicationDelegateAdaptor(JizhangNotificationDelegate.self) private var notificationDelegate
     @StateObject private var session = AppSession()
+    @StateObject private var reminders = DailyReminderStore.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             Group {
                 if let api = session.api, let user = session.user {
-                    MainTabView(api: api, user: user, onLogout: { Task { await session.signOut() } })
+                    MainTabView(api: api, user: user, onLogout: {
+                        NativeWorkspaceSessions.clear(apiIdentity: api.identity)
+                        reminders.deactivate()
+                        Task { await session.signOut() }
+                    })
                         .id(api.identity)
                         .disabled(session.isBusy)
                         .overlay {
@@ -31,8 +38,19 @@ struct JizhangApp: App {
                     LoginView(session: session)
                 }
             }
+            .environmentObject(reminders)
             .tint(AppTheme.accent)
-            .task { await session.restore() }
+            .task {
+                await session.restore()
+                reminders.updateSession(api: session.api, user: session.user)
+            }
+            .onChange(of: session.api?.identity) { old, _ in
+                if let old { NativeWorkspaceSessions.clear(apiIdentity: old) }
+                reminders.updateSession(api: session.api, user: session.user)
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { Task { await reminders.refresh() } }
+            }
         }
     }
 }
@@ -42,23 +60,70 @@ private struct MainTabView: View {
     let api: APIClient
     let user: AuthenticatedUser
     let onLogout: () -> Void
+    @EnvironmentObject private var reminders: DailyReminderStore
+    private enum Tab: Hashable { case home, bills, plan, assistant, my }
+    @State private var selectedTab = Tab.home
     @State private var recording = false
+    @State private var workspace: NativeWorkspaceRoute?
+    @State private var pendingRecording: DailyRecordingIntent?
+    @State private var pendingReview: AssistantLaunchIntent?
+    @State private var presentedReview: UUID?
+
+    private var assistantLaunch: AssistantLaunchIntent? {
+        guard selectedTab == .assistant, !recording, workspace == nil,
+              reminders.reviewLaunch?.presentationID == presentedReview else { return nil }
+        return reminders.reviewLaunch
+    }
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             NavigationStack { HomeView(api: api).toolbar { recordButton } }
                 .tabItem { Label("首页", systemImage: "house") }
+                .tag(Tab.home)
             NavigationStack { BillsView(api: api).toolbar { recordButton } }
                 .tabItem { Label("账单", systemImage: "list.bullet.rectangle") }
+                .tag(Tab.bills)
             NavigationStack { PlanView(api: api).toolbar { recordButton } }
                 .tabItem { Label("计划", systemImage: "chart.pie") }
-            NavigationStack { AssistantView(api: api) }
+                .tag(Tab.plan)
+            NavigationStack {
+                AssistantView(api: api, launch: assistantLaunch, onLaunchCheckpoint: reminders.checkpoint)
+            }
                 .tabItem { Label("AI 助手", systemImage: "sparkles") }
+                .tag(Tab.assistant)
             NavigationStack { MyView(api: api, user: user, onLogout: onLogout) }
                 .tabItem { Label("我的", systemImage: "person.crop.circle") }
+                .tag(Tab.my)
         }
-        .sheet(isPresented: $recording) {
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let notice = reminders.notice {
+                HStack(alignment: .top, spacing: 12) {
+                    Label(notice, systemImage: "bell.badge").font(.footnote)
+                    Spacer(minLength: 0)
+                    Button { reminders.clearNotice() } label: { Image(systemName: "xmark") }
+                        .accessibilityLabel("关闭提醒提示")
+                }
+                .padding(12)
+                .background(.regularMaterial)
+            }
+        }
+        .environment(\.openJizhangWorkspace, { route in
+            guard reminders.owner?.apiIdentity == api.identity else { return }
+            workspace = route
+        })
+        .environment(\.jizhangCanManageInvitations, user.canManageInvitations)
+        .sheet(isPresented: $recording, onDismiss: applyPendingNotification) {
             LedgerTransactionEditor(api: api, onSaved: { recording = false })
+        }
+        .sheet(item: $workspace, onDismiss: applyPendingNotification) { route in
+            NativeWorkspaceView(api: api, user: user, route: route, onLogout: onLogout)
+                .environmentObject(reminders)
+        }
+        .onChange(of: reminders.recordingLaunch?.id) { _, _ in queueRecording() }
+        .onChange(of: reminders.reviewLaunch?.presentationID) { _, _ in queueReview() }
+        .task {
+            if reminders.reviewLaunch != nil { queueReview() }
+            else { queueRecording() }
         }
     }
 
@@ -68,6 +133,31 @@ private struct MainTabView: View {
             Button { recording = true } label: {
                 Label("记一笔", systemImage: "plus.circle.fill")
             }.accessibilityLabel("记一笔收入或支出")
+        }
+    }
+
+    private func queueRecording() {
+        guard let intent = reminders.recordingLaunch, intent.apiIdentity == api.identity else { return }
+        pendingRecording = intent; pendingReview = nil
+        applyPendingNotification()
+    }
+
+    private func queueReview() {
+        guard let intent = reminders.reviewLaunch, intent.apiIdentity == api.identity else { return }
+        pendingReview = intent; pendingRecording = nil
+        applyPendingNotification()
+    }
+
+    private func applyPendingNotification() {
+        guard !recording, workspace == nil, reminders.owner?.apiIdentity == api.identity else { return }
+        if let intent = pendingReview, intent.apiIdentity == api.identity {
+            pendingReview = nil
+            presentedReview = intent.presentationID
+            selectedTab = .assistant
+        } else if let intent = pendingRecording, intent.apiIdentity == api.identity {
+            pendingRecording = nil
+            selectedTab = .home
+            recording = true
         }
     }
 }

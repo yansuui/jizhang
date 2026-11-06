@@ -7,6 +7,122 @@ import XCTest
 /// They support visual review; they do not claim live-provider or physical-device acceptance.
 final class ScreenPreviewTests: XCTestCase {
     @MainActor
+    func testAssistantPagedAccountSelectionAtCompactWidth() async throws {
+        let ready = expectation(description: "Authoritative account selection page loaded")
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CoreMockURLProtocol.self]
+        let api = try APIClient(baseURL: ServerAddress.parse("https://example.com"), credentialStore: CoreMemoryCredentialStore(),
+                                restoreSession: false, configuration: config)
+        defer { api.invalidate(); CoreMockURLProtocol.setHandler(nil) }
+        let names = ["日常账户", "日常账户", "工资账户", "备用金", "储蓄账户", "现金", "旅行账户"]
+        let object: [String: Any] = ["id": "account-choice-preview", "version": 1, "type": "selection", "kind": "account",
+            "title": "选择这笔午餐支出的支付账户", "status": "pending", "multiple": false, "expiresAt": 4102444800000,
+            "items": names.enumerated().map { index, name in
+                ["id": "account-\(index)", "title": name, "subtitle": "测试账本 · 账户 \(index + 1)"]
+            }, "page": ["offset": 0, "limit": 7, "total": 18, "hasMore": true]]
+        let value = try JSONValue.decodeData(JSONSerialization.data(withJSONObject: object))
+        CoreMockURLProtocol.setHandler { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/api/v1/assistant/conversations/selection-preview/workspace/interactions/account-choice-preview")
+            let response = try XCTUnwrap(HTTPURLResponse(url: XCTUnwrap(request.url), statusCode: 200,
+                httpVersion: nil, headerFields: ["Content-Type": "application/json"]))
+            ready.fulfill()
+            return (response, try JSONSerialization.data(withJSONObject: ["interaction": object]))
+        }
+        try await capture("assistant-account-selection-paged-compact", ready: ready) {
+            ScrollView {
+                AssistantSelectionCard(api: api, conversationID: "selection-preview", value: value, enabled: true,
+                                       onGeneration: { _ in XCTFail("A read-only preview must not create a generation") })
+                    .padding()
+            }.navigationTitle("AI 助手")
+        }
+    }
+
+    @MainActor
+    func testDailyReminderSettingsAtCompactWidth() async throws {
+        let ready = expectation(description: "Authorized reminder fixture scheduled")
+        let suite = "reminder-preview-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CoreMockURLProtocol.self]
+        let api = try APIClient(baseURL: ServerAddress.parse("https://example.com"), credentialStore: CoreMemoryCredentialStore(),
+                                restoreSession: false, configuration: config)
+        defer { api.invalidate() }
+        let user = try JSONDecoder().decode(AuthenticatedUser.self,
+            from: Data(#"{"id":"reminder-preview-owner","username":"界面预览","expiresAt":4102444800000}"#.utf8))
+        let center = ReminderCenterFixture()
+        let store = DailyReminderStore(center: center, preferences: preferences,
+                                      outbox: ReminderOutboxFixture(preferences: preferences))
+        store.updateSession(api: api, user: user)
+        await store.waitForScheduling()
+        XCTAssertEqual(store.scheduledKinds, Set([.recording, .review]))
+        XCTAssertEqual(center.permissionRequests, 0)
+        ready.fulfill()
+        try await capture("daily-reminders-authorized-compact", ready: ready) {
+            DailyReminderSettingsView().environmentObject(store)
+        }
+    }
+
+    @MainActor
+    func testDailyReminderPermissionDeniedAtLargeText() async throws {
+        let ready = expectation(description: "Denied permission fixture ready")
+        let suite = "reminder-denied-preview-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CoreMockURLProtocol.self]
+        let api = try APIClient(baseURL: ServerAddress.parse("https://example.com"), credentialStore: CoreMemoryCredentialStore(),
+                                restoreSession: false, configuration: config)
+        defer { api.invalidate() }
+        let user = try JSONDecoder().decode(AuthenticatedUser.self,
+            from: Data(#"{"id":"reminder-preview-owner","username":"界面预览","expiresAt":4102444800000}"#.utf8))
+        let center = ReminderCenterFixture(); center.permission = .denied
+        let store = DailyReminderStore(center: center, preferences: preferences,
+                                      outbox: ReminderOutboxFixture(preferences: preferences))
+        store.updateSession(api: api, user: user)
+        await store.waitForScheduling()
+        XCTAssertTrue(store.scheduledKinds.isEmpty)
+        XCTAssertTrue(center.pending.isEmpty)
+        ready.fulfill()
+        try await capture("daily-reminders-denied-large-dark", ready: ready) {
+            DailyReminderSettingsView().environmentObject(store)
+                .environment(\.dynamicTypeSize, .xxxLarge).preferredColorScheme(.dark)
+        }
+    }
+
+    @MainActor
+    func testNativeCSVImportPreviewAtCompactWidth() async throws {
+        let ready = expectation(description: "Read-only CSV preview loaded")
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CoreMockURLProtocol.self]
+        let api = try APIClient(baseURL: ServerAddress.parse("https://example.com"), credentialStore: CoreMemoryCredentialStore(),
+                                restoreSession: false, configuration: config)
+        defer { NativeWorkspaceSessions.clear(apiIdentity: api.identity); api.invalidate(); CoreMockURLProtocol.setHandler(nil) }
+        CoreMockURLProtocol.setHandler { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/v1/assistant/data-import/preview")
+            let response = try XCTUnwrap(HTTPURLResponse(url: XCTUnwrap(request.url), statusCode: 200,
+                httpVersion: nil, headerFields: ["Content-Type": "application/json"]))
+            let value: [String: Any] = ["preview": ["id": "csv-preview", "kind": "transactions",
+                "expiresAt": 4102444800000, "columns": ["账户", "分类", "金额", "备注"],
+                "rows": [["日常账户", "餐饮", "35.00", "午餐"], ["日常账户", "交通", "6.00", "地铁"]],
+                "totalRows": 2, "rowsOmitted": false, "result": ["inserted": 2, "skipped": 0]]]
+            return (response, try JSONSerialization.data(withJSONObject: value))
+        }
+        let store = NativeWorkspaceSessions.csv(api)
+        store.choose(NativeBillFile(name: "账单预览.csv", bytes: Data("account,category,amount,note\nfixture,food,35.00,lunch\n".utf8)))
+        await store.prepare()
+        XCTAssertNotNil(store.preview)
+        XCTAssertNil(store.result)
+        XCTAssertEqual(api.ledgerRevision, 0)
+        ready.fulfill()
+        try await capture("native-csv-import-review-compact", ready: ready) {
+            NativeCSVImportView(api: api)
+        }
+    }
+
+    @MainActor
     func testBackgroundSpendingTaskCardAtCompactWidth() async throws {
         let ready = expectation(description: "Read-only background progress loaded")
         let config = URLSessionConfiguration.ephemeral

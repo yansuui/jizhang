@@ -26,6 +26,12 @@ import Combine
                 NavigationLink { ProviderSettingsView(api: api) } label: {
                     menuRow("助手配置", subtitle: "服务地址、密钥与模型", symbol: "sparkles")
                 }
+                NavigationLink { DailyReminderSettingsView() } label: {
+                    menuRow("每日提醒", subtitle: "记账与复盘时间", symbol: "bell")
+                }
+                NavigationLink { NativePasswordView(api: api, onLogout: onLogout) } label: {
+                    menuRow("修改密码", symbol: "key")
+                }
             }
             if user.canManageInvitations {
                 Section("账号管理") {
@@ -60,13 +66,15 @@ import Combine
             }
             Section {
                 NavigationLink {
-                    LedgerAvailabilityView(title: "导入与导出", symbol: "square.and.arrow.down", message: "导入文件、导出账本与批量整理将在后续版本提供。")
-                } label: { menuRow("导入与导出", subtitle: "后续版本提供", symbol: "square.and.arrow.down") }
+                    NativeCSVImportView(api: api)
+                } label: { menuRow("导入账本 CSV", symbol: "square.and.arrow.down") }
                 NavigationLink {
-                    LedgerAvailabilityView(title: "备份与恢复", symbol: "externaldrive", message: "创建、下载和恢复备份暂未在 iOS 开放。")
-                } label: { menuRow("备份与恢复", subtitle: "后续版本提供", symbol: "externaldrive") }
+                    NativeBatchImportView(api: api, conversationID: nil, batchID: nil)
+                } label: { menuRow("微信 / 支付宝文件", subtitle: "多文件融合与审核", symbol: "doc.on.doc") }
+                NavigationLink { NativeExportView(api: api) } label: { menuRow("导出 CSV", symbol: "square.and.arrow.up") }
+                NavigationLink { NativeBackupView(api: api) } label: { menuRow("备份", symbol: "externaldrive") }
             } header: { Text("数据管理") } footer: {
-                Text("账本功能先提供浏览，新增、修改与确认可继续使用现有客户端。AI 对话与助手配置已开放。")
+                Text("可通过 AI 对话查询和准备修改，确认后执行。文件与照片在专用页面核对。")
             }
             Section {
                 Button("退出登录", role: .destructive) { confirmingLogout = true }

@@ -101,8 +101,11 @@ import Combine
                         }
                     }
                 }
-                if item.photoUrl != nil {
-                    Section { Label("已保存物品照片，照片预览将在后续版本提供。", systemImage: "photo").font(.footnote).foregroundStyle(.secondary) }
+                Section("物品照片") {
+                    NavigationLink(item.photoUrl == nil ? "添加物品照片" : "查看或更换照片") {
+                        NativeItemPhotoView(api: api, itemID: itemID, cutout: false)
+                    }
+                    NavigationLink("生成抠图候选") { NativeItemPhotoView(api: api, itemID: itemID, cutout: true) }
                 }
             } else if resource.loading { LedgerLoadingView() }
             if let error = resource.error {

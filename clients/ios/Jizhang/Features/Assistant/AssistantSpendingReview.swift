@@ -34,12 +34,17 @@ enum AssistantSpendingSelection {
 @MainActor struct AssistantSpendingRunStatus: View {
     @StateObject private var store: AssistantSpendingRunStore
     let onSuggestion: (String) -> Void
+    let assistant: AssistantStore?
+    let conversationID: String?
+    let messageID: String?
     @State private var showingReview = false
     @State private var refreshTicket = UUID()
 
-    init(api: APIClient, runID: String, initial: JSONValue, onSuggestion: @escaping (String) -> Void) {
-        _store = StateObject(wrappedValue: AssistantSpendingRunStore(api: api, runID: runID, initial: initial))
+    init(api: APIClient, runID: String, initial: JSONValue, assistant: AssistantStore? = nil,
+         conversationID: String? = nil, messageID: String? = nil, onSuggestion: @escaping (String) -> Void) {
+        _store = StateObject(wrappedValue: AssistantSpendingRunStore(api: api, runID: runID, initial: initial, conversationID: conversationID))
         self.onSuggestion = onSuggestion
+        self.assistant = assistant; self.conversationID = conversationID; self.messageID = messageID
     }
 
     var body: some View {
@@ -62,8 +67,8 @@ enum AssistantSpendingSelection {
                 Text(store.failureText)
                 if store.run["canResume"].boolValue == true {
                     Button("继续未完成的分析") {
-                        onSuggestion("请继续历史账单整理任务 \(store.runID)，只处理未完成批次。")
-                    }.buttonStyle(.bordered)
+                        Task { await store.resume(); refreshTicket = UUID() }
+                    }.buttonStyle(.bordered).disabled(store.opening)
                 }
             } else if store.status == "cancelled" {
                 Text("这次整理已停止，账本没有被整理任务修改。")
@@ -83,10 +88,13 @@ enum AssistantSpendingSelection {
             NavigationStack {
                 ScrollView {
                     if let card = store.card {
-                        AssistantSpendingReview(card: card) { prompt in
-                            showingReview = false
-                            onSuggestion(prompt)
-                        }.padding()
+                        if let assistant, let conversationID, let messageID {
+                            AssistantOrganizationCard(assistant: assistant, conversationID: conversationID, messageID: messageID, initial: card).padding()
+                        } else {
+                            AssistantSpendingReview(card: card) { prompt in
+                                showingReview = false; onSuggestion(prompt)
+                            }.padding()
+                        }
                     }
                 }
                 .navigationTitle("整理建议")

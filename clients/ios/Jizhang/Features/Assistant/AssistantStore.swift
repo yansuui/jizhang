@@ -5,7 +5,10 @@ struct AssistantSubmission: Equatable {
     let requestID: String
     let input: JSONValue
     let draftText: String?
-    var body: JSONValue { .object(["version": .integer(1), "clientRequestId": .string(requestID), "input": input]) }
+    var pathSuffix: String = "/generations"
+    var explicitBody: JSONValue? = nil
+    var body: JSONValue { explicitBody ?? .object(["version": .integer(1), "clientRequestId": .string(requestID),
+        "input": input, "clientCapabilities": .array([.string("workspace-v1")])]) }
 }
 
 struct AssistantThread {
@@ -26,6 +29,7 @@ struct AssistantThread {
     var uncertainActionConfirm: Bool?
     var actionNotice: String?
     var pendingFileSubmission: AssistantFileSubmission?
+    var workflow: JSONValue?
 
     var messages: [AssistantMessage] { generation?.merged(with: history) ?? history.filter(\.isVisible) }
     var isGenerating: Bool { generation.map { !$0.status.isTerminal } ?? false }
@@ -39,6 +43,8 @@ struct AssistantThread {
         case .accepted: return "正在连接 AI"
         case .running: return generation.delivery == .stream ? "正在回复" : "正在准备完整回复"
         case .completed:
+            if workflow?["phase"].stringValue == "awaiting-selection" { return "等待你的选择" }
+            if workflow?["phase"].stringValue == "awaiting-confirmation" { return "等待确认修改" }
             switch generation.outcome {
             case .awaitingChoice: return "等待你的选择"
             case .pendingConfirmation: return messages.contains { $0.content.card?["status"].stringValue == "pending" } ? "草案已生成，尚未执行" : nil
@@ -63,11 +69,19 @@ final class AssistantStore: ObservableObject {
     @Published private(set) var listError: String?
     @Published private(set) var providerEnabled: Bool?
     @Published private(set) var confirmationBodies: [String: JSONValue] = [:]
+    @Published private(set) var workspaceCapabilities: JSONValue?
+    @Published private(set) var workspaceError: String?
+    @Published private(set) var workspaceBusy = Set<String>()
+    @Published private(set) var workspacePendingBodies: [String: JSONValue] = [:]
     private var billFiles: [String: AssistantBillFile] = [:]
     private var listTicket = UUID()
     private var selectionTicket = UUID()
     private var visibleConversationID: String?
     private var streamTask: Task<Void, Never>?
+    private var dailyLaunchJobs: [String: Task<AssistantConversation?, Never>] = [:]
+    private var dailyAccepted: [String: (AssistantGenerationSnapshot) -> Bool] = [:]
+    private var dailyUncertain: [String: () -> Void] = [:]
+    private var dailyWillSubmit: [String: () -> Bool] = [:]
 
     init(api: APIClient) { self.api = api }
     deinit { streamTask?.cancel() }
@@ -181,6 +195,7 @@ final class AssistantStore: ObservableObject {
             if let snapshot = latest.items.first { try install(snapshot, conversation: id) }
             update(id) { $0.loading = false }
             if thread(id).isGenerating { listen(id, selection: selection) }
+            await refreshWorkspaceState(in: id)
         } catch {
             guard !Task.isCancelled, accepts(id, selection), threads[id]?.readTicket == read else { return }
             update(id) { $0.notice = error.localizedDescription; $0.reconnectNeeded = $0.isGenerating }
@@ -227,8 +242,13 @@ final class AssistantStore: ObservableObject {
         await submit(submission, in: id)
     }
 
-    private func submit(_ submission: AssistantSubmission, in id: String) async {
+    private func submit(_ submission: AssistantSubmission, in id: String,
+                        onAccepted: ((AssistantGenerationSnapshot) -> Bool)? = nil,
+                        onUncertain: (() -> Void)? = nil) async {
         guard !thread(id).sending else { return }
+        if let willSubmit = dailyWillSubmit[submission.requestID], !willSubmit() { return }
+        let acceptedObserver = onAccepted ?? dailyAccepted[submission.requestID]
+        let uncertainObserver = onUncertain ?? dailyUncertain[submission.requestID]
         if visibleConversationID == id {
             streamTask?.cancel()
             streamTask = nil
@@ -244,8 +264,16 @@ final class AssistantStore: ObservableObject {
             }
         }
         do {
-            let response: AssistantGenerationResponse = try await api.request(AssistantPath.conversation(id) + "/generations", method: "POST", body: submission.body)
+            let response: AssistantGenerationResponse = try await api.request(AssistantPath.conversation(id) + submission.pathSuffix, method: "POST", body: submission.body)
             guard threads[id]?.pendingSubmission?.requestID == submission.requestID else { return }
+            try response.generation.validate(conversation: id)
+            if let acceptedObserver, !acceptedObserver(response.generation) {
+                update(id) { $0.notice = "回复已生成，但本机任务状态尚未保存。请刷新核对或重试同一个请求。" }
+                return
+            }
+            dailyAccepted.removeValue(forKey: submission.requestID)
+            dailyUncertain.removeValue(forKey: submission.requestID)
+            dailyWillSubmit.removeValue(forKey: submission.requestID)
             try install(response.generation, conversation: id)
             update(id) {
                 $0.pendingSubmission = nil
@@ -276,9 +304,69 @@ final class AssistantStore: ObservableObject {
                 }
                 update(id) { $0.notice = apiError.localizedDescription }
             } else {
+                uncertainObserver?()
                 update(id) { $0.notice = "发送结果待核对。\(error.localizedDescription) 重试会使用同一个请求编号，避免重复提问。" }
             }
         }
+    }
+
+    /// Notification intent has already been persisted by the account-owned outbox.
+    /// The tap authorizes this one read-only request; ordinary reopen only reconciles.
+    func launchDailyReview(_ intent: AssistantLaunchIntent,
+                           checkpoint: @escaping (AssistantLaunchIntent, DailyReviewCheckpoint) -> Bool) async -> AssistantConversation? {
+        if let current = dailyLaunchJobs[intent.id] { return await current.value }
+        let job = Task<AssistantConversation?, Never> { [weak self] in
+            guard let self else { return nil }
+            return await self.performDailyReviewLaunch(intent, checkpoint: checkpoint)
+        }
+        dailyLaunchJobs[intent.id] = job
+        let result = await job.value
+        dailyLaunchJobs.removeValue(forKey: intent.id)
+        return result
+    }
+
+    private func performDailyReviewLaunch(_ intent: AssistantLaunchIntent,
+                           checkpoint: @escaping (AssistantLaunchIntent, DailyReviewCheckpoint) -> Bool) async -> AssistantConversation? {
+        guard intent.apiIdentity == api.identity,
+              !intent.clientRequestID.isEmpty, intent.clientRequestID.utf16.count <= 120,
+              TimeZone(identifier: intent.timeZone) != nil,
+              intent.date.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil else { return nil }
+        let conversation: AssistantConversation
+        if let id = intent.conversationID {
+            conversation = conversations.first(where: { $0.id == id }) ?? AssistantConversation(
+                id: id, title: "每日复盘 · \(intent.date)", archived: false, createdAt: 0, updatedAt: 0)
+        } else {
+            guard intent.mayStart, let created = await createConversation() else { return nil }
+            conversation = created
+        }
+        guard checkpoint(intent, .conversation(conversation.id)), intent.apiIdentity == api.identity else {
+            listError = "每日复盘的状态未能保存，尚未发起分析。请重试通知或检查本机存储。"
+            return nil
+        }
+        await open(conversation.id)
+        guard visibleConversationID == conversation.id, !Task.isCancelled else { return nil }
+        if let known = thread(conversation.id).generation {
+            _ = checkpoint(intent, .accepted(known.id))
+            return conversation
+        }
+        let text = "请复盘 \(intent.date)，账本时区为 \(intent.timeZone)。请读取服务端这一天的完整收入、支出、退款、工资、分类与账户汇总，指出需要核对的记录。只读分析，不修改任何账本或设置。"
+        let submission = AssistantSubmission(requestID: intent.clientRequestID,
+            input: .object(["type": .string("text"), "text": .string(text)]), draftText: nil,
+            pathSuffix: "/workspace/daily-review", explicitBody: .object(["clientRequestId": .string(intent.clientRequestID),
+                "date": .string(intent.date), "timeZone": .string(intent.timeZone)]))
+        dailyAccepted[submission.requestID] = { checkpoint(intent, .accepted($0.id)) }
+        dailyUncertain[submission.requestID] = { _ = checkpoint(intent, .uncertain(conversation.id)) }
+        dailyWillSubmit[submission.requestID] = { checkpoint(intent, .submitting(conversation.id)) }
+        if intent.mayStart {
+            guard thread(conversation.id).loaded else { return conversation }
+            await submit(submission, in: conversation.id)
+        } else {
+            update(conversation.id) {
+                $0.pendingSubmission = submission
+                $0.notice = "每日复盘的发送结果尚待核对。可刷新对话，或显式重试同一个请求；不会自动重新调用模型。"
+            }
+        }
+        return conversation
     }
 
     func stop(in id: String) async {
@@ -303,6 +391,103 @@ final class AssistantStore: ObservableObject {
     }
 
     func reconnect(in id: String) async { await open(id) }
+
+    func loadCapabilities() async {
+        do {
+            let value: JSONValue = try await api.request("/assistant/workspace/capabilities")
+            guard !Task.isCancelled, value["version"].intValue == 1, value["items"].arrayValue != nil else { return }
+            workspaceCapabilities = value; workspaceError = nil
+        } catch { if !Task.isCancelled { workspaceError = "功能目录暂时无法读取，可重试或直接发送问题。" } }
+    }
+
+    func beginCapability(_ item: JSONValue) async -> AssistantConversation? {
+        guard let name = item["name"].stringValue,
+              workspaceCapabilities?["items"].arrayValue?.contains(where: { $0["name"].stringValue == name }) == true,
+              let conversation = await createConversation() else { return nil }
+        await open(conversation.id)
+        setDraft("请帮我使用「\(AssistantToolPresentation.title(name))」功能（\(name)）。请先读取所需事实，缺少信息时用选择卡询问；涉及修改先给我预览，等待我确认。", for: conversation.id)
+        await sendText(in: conversation.id)
+        return conversation
+    }
+
+    func acceptWorkspaceGeneration(_ snapshot: AssistantGenerationSnapshot, in id: String) {
+        do {
+            try snapshot.validate(conversation: id)
+            try install(snapshot, conversation: id)
+            if visibleConversationID == id, thread(id).isGenerating { listen(id, selection: selectionTicket) }
+            Task { await refreshWorkspaceState(in: id) }
+        } catch { update(id) { $0.actionNotice = "任务状态需要重新核对，请刷新对话。" } }
+    }
+
+    private func refreshWorkspaceState(in id: String) async {
+        guard workspaceCapabilities != nil else { return }
+        let generation = thread(id).generation?.id
+        do {
+            let response: JSONValue = try await api.request(AssistantWorkspacePath.base(id))
+            guard !Task.isCancelled, thread(id).generation?.id == generation else { return }
+            if response["workflow"] == .null { update(id) { $0.workflow = nil } }
+            else if response["workflow"]["version"].intValue == 1, response["workflow"]["id"].stringValue != nil {
+                update(id) { $0.workflow = response["workflow"] }
+            }
+        } catch { /* Workflow diagnostics cannot displace durable messages. */ }
+    }
+
+    func reviseDraft(_ card: JSONValue, in id: String, arguments: JSONValue) async -> Bool {
+        guard let actionID = card["actionId"].stringValue, canAct(on: card, in: id) else { return false }
+        let key = "revise:" + actionID
+        return await workspaceMutation(key: key, in: id, path: "/actions/" + AssistantPath.segment(actionID) + "/revise",
+            fields: ["arguments": arguments])
+    }
+
+    func prepareOrganization(in id: String, messageID: String, runID: String?, selected: Set<String>) async -> Bool {
+        guard visibleConversationID == id, !thread(id).composerLocked, !selected.isEmpty, selected.count <= 100 else { return false }
+        let key = "organization:" + messageID
+        var fields: [String: JSONValue] = ["kind": .string(runID == nil ? "structural" : "spending"),
+            "actionIds": .array(selected.sorted().map(JSONValue.string))]
+        if let runID { fields["runId"] = .string(runID) } else { fields["previewMessageId"] = .string(messageID) }
+        return await workspaceMutation(key: key, in: id, path: "/organization/prepare", fields: fields)
+    }
+
+    private func workspaceMutation(key: String, in id: String, path: String, fields: [String: JSONValue]) async -> Bool {
+        guard !workspaceBusy.contains(key), visibleConversationID == id else { return false }
+        var fields = fields; fields["clientRequestId"] = .string(UUID().uuidString)
+        let body = workspacePendingBodies[key] ?? .object(fields)
+        workspacePendingBodies[key] = body; workspaceBusy.insert(key)
+        defer { workspaceBusy.remove(key) }
+        do {
+            let response: AssistantWorkspaceMutationResponse = try await api.request(AssistantWorkspacePath.base(id) + path, method: "POST", body: body)
+            guard response.action.conversationId == id, response.action.status == "pending", !response.action.id.isEmpty else { throw AssistantProtocolError.invalidSnapshot }
+            try validateHistory(response.messages, conversation: id)
+            guard response.messages.contains(where: { $0.content.card?["actionId"].stringValue == response.action.id && $0.content.card?["status"].stringValue == "pending" }) else { throw AssistantProtocolError.invalidSnapshot }
+            applyHistory(response.messages, in: id)
+            await refreshWorkspaceState(in: id)
+            workspacePendingBodies.removeValue(forKey: key)
+            update(id) { $0.actionNotice = "新草案已准备好。请核对修改内容，再确认执行。" }
+            return true
+        } catch {
+            if let failure = error as? APIError, (400..<500).contains(failure.status), failure.status != 408 { workspacePendingBodies.removeValue(forKey: key) }
+            update(id) { $0.actionNotice = workspacePendingBodies[key] == nil ? error.localizedDescription : "草案结果待核对。再次操作会重试相同请求；请先刷新查看已有内容。" }
+            return false
+        }
+    }
+
+    func continueConfirmed(_ card: JSONValue, in id: String) async {
+        guard workspaceCapabilities != nil, visibleConversationID == id, !thread(id).composerLocked,
+              let actionID = card["actionId"].stringValue else { return }
+        let key = "continue:" + actionID
+        guard !workspaceBusy.contains(key) else { return }
+        let body = workspacePendingBodies[key] ?? .object(["clientRequestId": .string("continue-" + actionID)])
+        workspacePendingBodies[key] = body; workspaceBusy.insert(key)
+        defer { workspaceBusy.remove(key) }
+        do {
+            let response: AssistantWorkspaceGenerationResponse = try await api.request(AssistantWorkspacePath.base(id) + "/actions/" + AssistantPath.segment(actionID) + "/continue", method: "POST", body: body)
+            workspacePendingBodies.removeValue(forKey: key)
+            acceptWorkspaceGeneration(response.generation, in: id)
+        } catch {
+            if let failure = error as? APIError, failure.status == 404 { workspacePendingBodies.removeValue(forKey: key); return }
+            update(id) { $0.actionNotice = "账本操作已确认，后续回复尚待核对。可点「继续原任务」重试同一个续接请求。" }
+        }
+    }
 
     func canAct(on card: JSONValue, in id: String, confirm: Bool = true) -> Bool {
         let state = thread(id)
@@ -333,10 +518,12 @@ final class AssistantStore: ObservableObject {
                 $0.history = AssistantActionResponse.updating($0.messages, actionID: actionID, status: response.action.status)
                 $0.uncertainActionID = nil
                 $0.uncertainActionConfirm = nil
+                $0.actingID = nil
                 $0.actionNotice = response.action.status == "confirmed" ? "已执行，账本已更新。" : "已取消，账本没有改动。"
             }
             if response.action.status == "confirmed" { api.notifyLedgerChanged() }
             if visibleConversationID == id { await refreshHistory(id, selection: selectionTicket) }
+            if response.action.status == "confirmed" { await continueConfirmed(card, in: id) }
         } catch {
             guard threads[id]?.actingID == actionID else { return }
             if let apiError = error as? APIError, (400..<500).contains(apiError.status), apiError.status != 408 {
@@ -437,6 +624,7 @@ final class AssistantStore: ObservableObject {
             guard accepts(id, selection), threads[id]?.readTicket == read, !Task.isCancelled else { return }
             try validateHistory(response.items, conversation: id)
             applyHistory(response.items, in: id)
+            await refreshWorkspaceState(in: id)
         } catch {
             guard accepts(id, selection), threads[id]?.readTicket == read, !Task.isCancelled else { return }
             update(id) { $0.notice = "回复已保留，历史同步失败，请刷新核对。" }
@@ -451,10 +639,14 @@ final class AssistantStore: ObservableObject {
             if let resolved {
                 $0.uncertainActionID = nil
                 $0.uncertainActionConfirm = nil
+                $0.actingID = nil
                 $0.actionNotice = resolved["status"].stringValue == "confirmed" ? "已核实：操作已执行，账本已更新。" : "草案已关闭，请查看最新记录。"
             }
         }
-        if resolved?["status"].stringValue == "confirmed" { api.notifyLedgerChanged() }
+        if let resolved, resolved["status"].stringValue == "confirmed" {
+            api.notifyLedgerChanged()
+            Task { await continueConfirmed(resolved, in: id) }
+        }
     }
 
     private func listen(_ id: String, selection: UUID) {

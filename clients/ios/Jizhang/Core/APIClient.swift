@@ -1,6 +1,12 @@
 import Combine
 import Foundation
 
+struct APIBinaryResponse {
+    let data: Data
+    let mimeType: String
+    let status: Int
+}
+
 enum APIRequestBuilder {
     static func make(baseURL: URL, path: String, method: String = "GET", body: JSONValue? = nil,
                      cookie: SessionCookie? = nil) throws -> URLRequest {
@@ -110,6 +116,43 @@ final class APIClient: ObservableObject {
         } catch {
             throw APIError.transport(error)
         }
+    }
+
+    /// Files use the same authenticated, no-redirect session and owner fences as JSON.
+    /// Callers supply an allowlisted route; no cookie is handed to a system browser.
+    func binary(_ path: String, method: String = "GET", body: Data? = nil,
+                contentType: String? = nil, accept: String = "application/octet-stream",
+                maximumBytes: Int = 32 * 1_024 * 1_024) async throws -> APIBinaryResponse {
+        do {
+            try requireCurrent()
+            guard maximumBytes > 0 else { throw APIError.invalidResponse }
+            var request = try APIRequestBuilder.make(baseURL: baseURL, path: path, method: method, cookie: cookie)
+            request.setValue(accept, forHTTPHeaderField: "Accept")
+            request.httpBody = body
+            if let contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
+            let (data, response) = try await session.data(for: request)
+            try requireCurrent()
+            let http = try checkedResponse(response)
+            try checkStatus(http.statusCode, data: data)
+            guard data.count <= maximumBytes else { throw APIError.invalidResponse }
+            try captureCookie(http)
+            let type = http.value(forHTTPHeaderField: "Content-Type")?.lowercased()
+                .components(separatedBy: ";").first?.trimmingCharacters(in: .whitespaces) ?? ""
+            return APIBinaryResponse(data: data, mimeType: type, status: http.statusCode)
+        } catch { throw APIError.transport(error) }
+    }
+
+    func rawJSON<Response: Decodable>(_ path: String, method: String = "POST", body: Data,
+                                      contentType: String) async throws -> Response {
+        do {
+            let response = try await binary(path, method: method, body: body, contentType: contentType,
+                                            accept: "application/json", maximumBytes: maximumJSONResponseBytes)
+            guard response.mimeType == "application/json" ||
+                    (response.mimeType.hasPrefix("application/") && response.mimeType.hasSuffix("+json")) else {
+                throw APIError.invalidResponse
+            }
+            return try JSONDecoder().decode(Response.self, from: response.data)
+        } catch { throw APIError.transport(error) }
     }
 
     /// The feature owns the returned task and must cancel it when leaving a conversation.

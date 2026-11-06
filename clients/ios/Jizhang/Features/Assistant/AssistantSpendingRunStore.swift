@@ -5,6 +5,7 @@ import Combine
 @MainActor final class AssistantSpendingRunStore: ObservableObject {
     let api: APIClient
     let runID: String
+    let conversationID: String?
     @Published private(set) var run: JSONValue
     @Published private(set) var card: JSONValue?
     @Published private(set) var error: String?
@@ -13,10 +14,12 @@ import Combine
     private let pollInterval: Duration
     private let maximumReads: Int
     private var observation = UUID()
+    private var resumeRequestID = UUID().uuidString
 
-    init(api: APIClient, runID: String, initial: JSONValue,
+    init(api: APIClient, runID: String, initial: JSONValue, conversationID: String? = nil,
          pollInterval: Duration = .seconds(3), maximumReads: Int = 300) {
         self.api = api; self.runID = runID
+        self.conversationID = conversationID
         self.pollInterval = pollInterval; self.maximumReads = max(1, maximumReads)
         run = Self.valid(initial, for: runID) ? initial : .null
     }
@@ -74,7 +77,12 @@ import Combine
         opening = true
         defer { opening = false }
         do {
-            let value: JSONValue = try await api.request("/ai/organization-runs/" + LedgerURL.segment(runID) + "/card")
+            let value: JSONValue
+            if let conversationID {
+                let response: JSONValue = try await api.request(AssistantWorkspacePath.base(conversationID) + "/organization/card", method: "POST",
+                    body: .object(["runId": .string(runID), "offset": .integer(0), "limit": .integer(30)]))
+                value = response["result"]["data"]
+            } else { value = try await api.request("/ai/organization-runs/" + LedgerURL.segment(runID) + "/card") }
             guard !Task.isCancelled else { return false }
             guard value["runId"].stringValue == runID, value["status"].stringValue == "ready",
                   value["actions"].arrayValue != nil else { throw LedgerDataError.invalidResponse }
@@ -84,6 +92,17 @@ import Combine
             if !Task.isCancelled { self.error = "建议暂时无法读取，请重试查看。" }
             return false
         }
+    }
+
+    func resume() async {
+        guard !opening, run["canResume"].boolValue == true else { return }
+        opening = true; defer { opening = false }
+        do {
+            let value: JSONValue = try await api.request("/ai/organization-runs/" + LedgerURL.segment(runID) + "/resume", method: "POST",
+                body: .object(["clientRequestId": .string(resumeRequestID)]))
+            guard !Task.isCancelled, Self.valid(value, for: runID) else { return }
+            run = value; error = nil; resumeRequestID = UUID().uuidString
+        } catch { if !Task.isCancelled { self.error = "继续分析的结果待核对，可刷新进度或重试相同请求。" } }
     }
 
     private static func valid(_ value: JSONValue, for id: String) -> Bool {

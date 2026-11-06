@@ -47,7 +47,13 @@ enum AssistantPreviewFormat {
         "status": "状态", "transactionId": "账单编号", "source": "来源", "description": "说明",
         "targetAmountCents": "目标金额", "monthlyAmountCents": "每月金额", "remainingCents": "剩余金额",
         "runId": "整理批次", "operationId": "操作编号", "id": "编号", "value": "内容",
-        "inserted": "已新增", "skipped": "已跳过", "ignored": "已忽略", "selected": "已选择"
+        "inserted": "已新增", "skipped": "已跳过", "ignored": "已忽略", "selected": "已选择",
+        "initialBalanceCents": "初始余额", "fromAccountId": "转出账户", "toAccountId": "转入账户",
+        "parentId": "上级分类", "enabled": "启用", "active": "有效", "cycleStartDay": "周期起始日",
+        "salaryCents": "分配收入", "targetCents": "目标金额", "openingCents": "期初金额",
+        "limit": "本页条数", "offset": "起始位置", "nextOffset": "后续位置", "hasMore": "还有后续记录",
+        "startMonth": "开始月份", "month": "月份", "effectiveMonth": "生效月份", "interval": "间隔",
+        "frequency": "频率", "dayOfMonth": "每月日期", "dayOfWeek": "每周日期"
     ]
     static func label(_ key: String) -> String { labels[key] ?? key }
     static func scalar(_ value: JSONValue, key: String, context: String = "") -> String? {
