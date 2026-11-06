@@ -45,7 +45,9 @@ import UniformTypeIdentifiers
                     Text(jobTitle)
                     if store.running { ProgressView() }
                     Button("刷新进度") { Task { await store.refreshJob(); refresh = UUID() } }.disabled(store.busy)
-                    if store.running { Button("取消抠图", role: .destructive) { Task { await store.cancelJob() } }.disabled(store.busy) }
+                    if store.running || store.job["state"].stringValue == "ready" {
+                        Button(store.running ? "取消抠图" : "清理候选", role: .destructive) { Task { await store.cancelJob() } }.disabled(store.busy)
+                    }
                     ForEach(store.job["candidates"].arrayValue ?? [], id: \.candidateIdentity) { candidate in
                         if let id = candidate["id"].stringValue {
                             VStack(alignment: .leading, spacing: 9) {

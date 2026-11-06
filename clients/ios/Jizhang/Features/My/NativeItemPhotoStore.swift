@@ -81,6 +81,14 @@ struct NativePhotoPayload {
             try Task.checkCancellation()
             readTicket = UUID()
             existing = draft.image; self.draft = nil; notice = "照片已保存。"; api.notifyLedgerChanged()
+            if let completedJob = jobID, job["state"].stringValue == "ready" {
+                // The photo write is complete; candidate cleanup must not undo its success.
+                jobReadTicket = UUID()
+                do {
+                    _ = try await api.binary("/items/cutouts/" + LedgerURL.segment(completedJob), method: "DELETE")
+                    if jobID == completedJob { job = .null }
+                } catch { /* Private worker TTL remains the fallback cleanup. */ }
+            }
         } catch { if !Task.isCancelled { self.error = "照片保存结果未确认，可保留同一预览重试。" } }
     }
     func remove() async {

@@ -13,6 +13,9 @@ final class AssistantWorkspaceTests: XCTestCase {
         (try XCTUnwrap(HTTPURLResponse(url: XCTUnwrap(request.url), statusCode: 200, httpVersion: nil,
             headerFields: ["Content-Type": "application/json"])), try JSONSerialization.data(withJSONObject: value))
     }
+    private static func json(_ value: [String: Any]) throws -> JSONValue {
+        try JSONDecoder().decode(JSONValue.self, from: JSONSerialization.data(withJSONObject: value))
+    }
     private static func body(_ request: URLRequest) throws -> [String: Any] {
         let data: Data
         if let bytes = request.httpBody { data = bytes }
@@ -56,7 +59,7 @@ final class AssistantWorkspaceTests: XCTestCase {
             return try Self.reply(request, ["generation": Self.generation()])
         }
         let api = try client(); defer { api.invalidate() }
-        let selection = AssistantSelectionStore(api: api, conversationID: "chat", value: try JSONValue.decodeData(Self.interaction()))
+        let selection = AssistantSelectionStore(api: api, conversationID: "chat", value: try Self.json(Self.interaction()))
         selection.choose("account-7"); await selection.page(8); selection.choose("account-8")
         XCTAssertEqual(selection.selected, ["account-7", "account-8"])
         XCTAssertEqual(selection.value["items"].arrayValue?.count, 8)
@@ -75,7 +78,7 @@ final class AssistantWorkspaceTests: XCTestCase {
             return try Self.reply(request, ["generation": Self.generation()])
         }
         let api = try client(); defer { api.invalidate() }
-        let selection = AssistantSelectionStore(api: api, conversationID: "chat", value: try JSONValue.decodeData(Self.interaction()))
+        let selection = AssistantSelectionStore(api: api, conversationID: "chat", value: try Self.json(Self.interaction()))
         selection.choose("account-1")
         let first = await selection.answer(); XCTAssertNil(first)
         selection.choose("account-2")
@@ -89,7 +92,7 @@ final class AssistantWorkspaceTests: XCTestCase {
     @MainActor func testForeignSelectionResponseCannotBecomeTheOwningGeneration() async throws {
         CoreMockURLProtocol.setHandler { try Self.reply($0, ["generation": Self.generation("foreign")]) }
         let api = try client(); defer { api.invalidate() }
-        let selection = AssistantSelectionStore(api: api, conversationID: "chat", value: try JSONValue.decodeData(Self.interaction()))
+        let selection = AssistantSelectionStore(api: api, conversationID: "chat", value: try Self.json(Self.interaction()))
         selection.choose("account-1")
         let result = await selection.answer()
         XCTAssertNil(result); XCTAssertNotNil(selection.error)
@@ -97,8 +100,8 @@ final class AssistantWorkspaceTests: XCTestCase {
     }
 
     func testDraftRevisionPreservesOpaqueFactsAndExactCents() throws {
-        let original = try JSONValue.decodeData(["amountCents": 2800, "note": "午餐", "expectedRevision": 4, "operationId": "immutable"])
-        let schema = try JSONValue.decodeData(["properties": ["amountCents": ["type": "integer"], "note": ["type": "string"], "expectedRevision": ["type": "integer"]]])
+        let original = try Self.json(["amountCents": 2800, "note": "午餐", "expectedRevision": 4, "operationId": "immutable"])
+        let schema = try Self.json(["properties": ["amountCents": ["type": "integer"], "note": ["type": "string"], "expectedRevision": ["type": "integer"]]])
         let result = try AssistantDraftEditing.arguments(original: original, schema: schema,
             edits: ["amountCents": "3500", "note": "午餐和饮料", "expectedRevision": "99", "operationId": "changed", "unknown": "1"])
         XCTAssertEqual(result["amountCents"].intValue, 3500)
@@ -229,7 +232,7 @@ final class AssistantWorkspaceTests: XCTestCase {
         }
         let api = try client(); defer { api.invalidate() }
         var value = Self.interaction(); value["kind"] = "date-range"
-        let selection = AssistantSelectionStore(api: api, conversationID: "chat", value: try JSONValue.decodeData(value))
+        let selection = AssistantSelectionStore(api: api, conversationID: "chat", value: try Self.json(value))
         let calendar = LedgerBillDates.calendar
         selection.from = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 11, day: 1, hour: 12)))
         selection.to = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 12)))
@@ -242,7 +245,7 @@ final class AssistantWorkspaceTests: XCTestCase {
         for kind in ["item", "recurring", "recurring-occurrence", "goal", "fund-source", "transfer", "trash"] {
             var value = Self.interaction(); value["kind"] = kind
             value["items"] = [["id": "source-identity", "title": "同名资源", "facts": ["expectedRevision": 4]]]
-            let selection = AssistantSelectionStore(api: api, conversationID: "chat", value: try JSONValue.decodeData(value))
+            let selection = AssistantSelectionStore(api: api, conversationID: "chat", value: try Self.json(value))
             selection.choose("source-identity")
             XCTAssertEqual(selection.value["kind"].stringValue, kind)
             XCTAssertEqual(selection.selected, ["source-identity"])
