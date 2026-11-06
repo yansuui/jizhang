@@ -13,7 +13,8 @@ final class LedgerBillPresentationTests: XCTestCase {
     @MainActor
     func testModalCoversTabBarRoutesTouchesAndPreservesUnderlyingScroll() async throws {
         let ready = expectation(description: "Modal detail requested")
-        let api = try client(ready: ready); defer { api.invalidate() }
+        let pageReads = BillFirstPageReads()
+        let api = try client(ready: ready, pageReads: pageReads); defer { api.invalidate() }
         let state = BillPresentationState()
         try await withWindow(state: state, api: api) { window, host in
             try await self.waitUntil { state.store.hasLoaded && !state.store.loading }
@@ -46,7 +47,9 @@ final class LedgerBillPresentationTests: XCTestCase {
             state.selection = nil
             try await self.waitUntil { host.presentedViewController == nil }
             try await Task.sleep(for: .milliseconds(250))
+            try await self.waitUntil { !state.store.loading }
             XCTAssertEqual(state.tab, 0)
+            XCTAssertEqual(pageReads.count, 1, "Closing a bill must not silently fetch page one again")
             XCTAssertEqual(state.store.items.count, 55, "Closing a bill must not reset the real Bills store to page one")
             XCTAssertTrue(self.views(host.view, of: UIScrollView.self).contains { $0 === scroll }, "Dismissing must retain the original scroll view")
             XCTAssertEqual(scroll.contentOffset.y, offset.y, accuracy: 1)
@@ -77,7 +80,7 @@ final class LedgerBillPresentationTests: XCTestCase {
     }
 
     @MainActor
-    private func client(ready: XCTestExpectation) throws -> APIClient {
+    private func client(ready: XCTestExpectation, pageReads: BillFirstPageReads? = nil) throws -> APIClient {
         CoreMockURLProtocol.setHandler { request in
             XCTAssertEqual(request.httpMethod, "GET", "Presenting a bill must never write accounting data")
             let response = try XCTUnwrap(HTTPURLResponse(url: XCTUnwrap(request.url), statusCode: 200,
@@ -92,6 +95,7 @@ final class LedgerBillPresentationTests: XCTestCase {
             if path.hasSuffix("/transactions") {
                 let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
                 let offset = Int(query.first { $0.name == "offset" }?.value ?? "0") ?? 0
+                if offset == 0 { pageReads?.record() }
                 let rows = (offset..<min(offset + 50, 55)).map { index -> [String: Any] in
                     var value = row; value["id"] = "bill-\(index)"; return value
                 }
@@ -150,6 +154,13 @@ final class LedgerBillPresentationTests: XCTestCase {
         attachment.lifetime = .keepAlways
         add(attachment)
     }
+}
+
+private final class BillFirstPageReads {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+    func record() { lock.lock(); defer { lock.unlock() }; value += 1 }
 }
 
 @MainActor private final class BillPresentationState: ObservableObject {
