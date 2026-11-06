@@ -29,6 +29,7 @@ import type { Db } from '../db/index.js';
 import { AiProviderService, AiProviderStream, type AiCallOptions } from './ai-provider-service.js';
 import type { AiPromptContext, StoredAiProviderConfig } from './ai-types.js';
 import { AssistantConversationService } from './assistant-conversation-service.js';
+import { recoverProviderEnvelope } from './assistant-envelope-recovery.js';
 import { AssistantGenerationService } from './assistant-generation-service.js';
 import { buildAssistantContext } from './assistant-orchestrator.js';
 import {
@@ -742,7 +743,20 @@ export class AssistantGenerationRunner {
       try {
         envelope = JSON.parse(envelopeText) as unknown;
       } catch {
-        throw new AssistantStreamError('ASSISTANT_STREAM_BOUNDS', 'AI 返回内容无法识别，本次生成未产生结果。');
+        // The model was asked for a JSON object, but a gateway or the model itself may still
+        // wrap it in a Markdown fence or surround it with prose. Recovering the shape keeps a
+        // decided tool call alive instead of losing the whole reply; an unrecoverable body
+        // still fails below with the same bounded error.
+        const recovered = recoverProviderEnvelope(envelopeText);
+        if (recovered === null) {
+          throw new AssistantStreamError('ASSISTANT_STREAM_BOUNDS', 'AI 返回内容无法识别，本次生成未产生结果。');
+        }
+        if (recovered.text !== undefined) {
+          // Plain prose: no tool call and no clarification can be honoured, so this is only
+          // ever an ordinary answer. The user still sees the model's actual words.
+          return { message: takeUtf16Units(recovered.text, MAX_DISPLAY_CHARS_PER_TURN), toolCall: null, clarification: null };
+        }
+        envelope = recovered.object;
       }
       // The same ceiling the transport used applies to the authoritative envelope, so the
       // configured total timeout also covers the body, not only time-to-headers.

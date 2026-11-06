@@ -42,6 +42,14 @@ Migration011 adds `assistant_generations` and `assistant_generation_events`; exi
   unknown tools, retired allocation arguments, authentication, cancellation and deadlines
   remain hard boundaries. Expected organization capacity/busy/not-ready states use fixed
   actionable replies without another inference or raw error disclosure.
+- A reply that is not a bare JSON object is repaired by `assistant-envelope-recovery.ts`
+  before it can fail the turn: one surrounding Markdown fence is stripped, then the outermost
+  balanced `{...}` is extracted (string literals and escapes respected), and only then is the
+  object validated by the usual `normalizeAssistantProviderTurn`. Brace-free prose becomes an
+  ordinary answer (`toolCall: null`, never a card or clarification). Text that still contains a
+  brace, or that parses as a non-object JSON value (`[1,2]`, `"x"`, `42`), is never shown as
+  prose — it keeps the bounded `INVALID_ENVELOPE` failure, so a truncated object can never be
+  presented as a finished answer.
 
 ## 4. Validation & Error Matrix
 | Condition | Behavior |
@@ -54,12 +62,16 @@ Migration011 adds `assistant_generations` and `assistant_generation_events`; exi
 | Malformed/truncated provider stream or deadline |Safe failed terminal, no unvalidated card |
 | Client connection lost |Close subscription; same generation GET/replay, never automatic model POST |
 | Explicit Stop/restart/archive |Cancelled/interrupted, no late card or automatic rerun |
+| Envelope wrapped in a Markdown fence |Fence stripped, object validated normally (no new card without confirmation) |
+| Object surrounded by prose |Outermost balanced object extracted and validated |
+| Brace-free prose reply |Ordinary answer with `toolCall: null`; no card, no clarification |
+| Truncated object, or non-object JSON (`[1,2]`, `"x"`, `42`) |Bounded `INVALID_ENVELOPE`; never shown as prose |
 
 ## 5. Good / Base / Bad Cases
 Good: delayed mock upstream has not completed, client already receives prose; validated question later appears, click continues without ledger change. Base: unsupported provider stays buffered and labeled. Bad: generated answer labeled booked, raw JSON streamed, old cancelled request aborts a different conversation, or a parser waits for stream EOF to emit a completed event.
 
 ## 6. Tests Required
-Server `assistant-stream.test.ts`, `assistant-stream-routes.test.ts`, `assistant-generation-persistence.test.ts`: incremental-before-finish, Unicode/framing/size, auth/CSRF, ownership/dedup/replay/cancel/archive/restart, atomic rollback, terminal reservation, slow subscribers, malformed legacy input recovery, nested read-tool and write-tool prepare cancellation/deadline regressions (verifying scoped abort/deadline cut nested requests before atomic commit), tokenizer regressions for valid empty containers (`[]`/`{}` across chunk splits) and illegal trailing commas (verifying arrays and objects reject trailing commas without fallback), and unchanged ledger. Socket-only incremental acceptance uses an ephemeral loopback port with cleanup; ordinary route tests use inject. This is a narrow transport-test exception, never production-provider evidence.
+Server `assistant-stream.test.ts`, `assistant-stream-routes.test.ts`, `assistant-generation-persistence.test.ts`: incremental-before-finish, Unicode/framing/size, auth/CSRF, ownership/dedup/replay/cancel/archive/restart, atomic rollback, terminal reservation, slow subscribers, malformed legacy input recovery, nested read-tool and write-tool prepare cancellation/deadline regressions (verifying scoped abort/deadline cut nested requests before atomic commit), tokenizer regressions for valid empty containers (`[]`/`{}` across chunk splits) and illegal trailing commas (verifying arrays and objects reject trailing commas without fallback), and unchanged ledger. `assistant-envelope-recovery.test.ts` covers fence stripping, balanced-object extraction (braces inside strings, escaped quotes, truncation), prose-only answers, and the refusal of truncated or non-object JSON. Socket-only incremental acceptance uses an ephemeral loopback port with cleanup; ordinary route tests use inject. This is a narrow transport-test exception, never production-provider evidence.
 Android SSE controlled-source/socket cancellation, strict DTO/reducer, seq/gap/identity/ABA, stale confirmed card, EOF/choice uncertainty/scroll helpers; full unit/lint/build. Actual New API/Caddy/Huawei timing, large-font/IME/back/reading/reconnect remain device acceptance until tested.
 
 Composed real-route regressions also cover four reads then answer/plan preview, seven
