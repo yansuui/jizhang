@@ -47,7 +47,7 @@ enum AssistantPreviewFormat {
         "status": "状态", "transactionId": "账单编号", "source": "来源", "description": "说明",
         "targetAmountCents": "目标金额", "monthlyAmountCents": "每月金额", "remainingCents": "剩余金额",
         "runId": "整理批次", "operationId": "操作编号", "id": "编号", "value": "内容",
-        "inserted": "已新增", "skipped": "已跳过", "ignored": "已忽略", "selected": "已选择",
+        "inserted": "新增数量", "skipped": "跳过数量", "ignored": "忽略数量", "selected": "已选择",
         "initialBalanceCents": "初始余额", "fromAccountId": "转出账户", "toAccountId": "转入账户",
         "parentId": "上级分类", "enabled": "启用", "active": "有效", "cycleStartDay": "周期起始日",
         "salaryCents": "分配收入", "targetCents": "目标金额", "openingCents": "期初金额",

@@ -30,7 +30,7 @@ import UniformTypeIdentifiers
                 }
             }
             if let preview = store.preview {
-                Section("预览与影响") {
+                Section(store.result == nil ? "预计导入结果（尚未写入）" : "导入前预览") {
                     Text("源文件共 \(preview["totalRows"].intValue.map(String.init) ?? "未知") 行")
                     AssistantPreviewValues(value: preview["result"])
                     if preview["rowsOmitted"].boolValue == true {
