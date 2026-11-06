@@ -89,7 +89,8 @@ enum AssistantSpendingSelection {
                 ScrollView {
                     if let card = store.card {
                         if let assistant, let conversationID, let messageID {
-                            AssistantOrganizationCard(assistant: assistant, conversationID: conversationID, messageID: messageID, initial: card).padding()
+                            AssistantOrganizationCard(assistant: assistant, conversationID: conversationID, messageID: messageID, initial: card,
+                                onPrepared: { showingReview = false }).padding()
                         } else {
                             AssistantSpendingReview(card: card) { prompt in
                                 showingReview = false; onSuggestion(prompt)

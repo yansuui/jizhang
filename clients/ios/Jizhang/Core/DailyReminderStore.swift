@@ -10,6 +10,8 @@ import Foundation
     @Published private(set) var scheduledKinds = Set<DailyReminderKind>()
     @Published private(set) var notice: String?
     @Published private(set) var reviewLaunch: AssistantLaunchIntent?
+    // In-memory tap receipts permit queued days independently; startup never restores them.
+    @Published private(set) var authorizedReviewLaunches: [String: AssistantLaunchIntent] = [:]
     @Published private(set) var recordingLaunch: DailyRecordingIntent?
     @Published private(set) var owner: DailyReminderOwner?
 
@@ -56,6 +58,7 @@ import Foundation
             preferences = loadPreferences(next.key)
             scheduledKinds = []
             reviewLaunch = nil; recordingLaunch = nil; lastRecordingDelivery = nil
+            authorizedReviewLaunches = [:]
             notice = nil
         }
         requestReconciliation()
@@ -68,6 +71,7 @@ import Foundation
     func deactivate() {
         owner = nil; scheduledKinds = []
         reviewLaunch = nil; recordingLaunch = nil
+        authorizedReviewLaunches = [:]
         pendingDelivery = nil; lastRecordingDelivery = nil
         notice = nil
         requestReconciliation()
@@ -148,7 +152,9 @@ import Foundation
                     conversationID: nil, generationID: nil, state: .requested)
             } catch { notice = "复盘请求暂时无法恢复，请在助手选择日期继续。"; return }
             guard saveOutbox(entry) else { notice = "无法保存复盘请求，请稍后重试。"; return }
-            reviewLaunch = entry.launch(for: owner)
+            let launch = entry.launch(for: owner)
+            authorizedReviewLaunches[entry.id] = launch
+            reviewLaunch = launch
         }
     }
 
@@ -156,16 +162,19 @@ import Foundation
     @discardableResult
     func checkpoint(_ intent: AssistantLaunchIntent, _ checkpoint: DailyReviewCheckpoint) -> Bool {
         guard let owner, owner.key + "." + intent.date == intent.id, owner.apiIdentity == intent.apiIdentity,
+              let authorized = authorizedReviewLaunches[intent.id],
+              authorized.apiIdentity == intent.apiIdentity, authorized.clientRequestID == intent.clientRequestID,
+              authorized.date == intent.date, authorized.timeZone == intent.timeZone,
               var entry = try? loadOutbox(intent.id), entry.clientRequestID == intent.clientRequestID,
               entry.timeZone == intent.timeZone else { return false }
         switch checkpoint {
         case .conversation(let id):
-            guard reviewLaunch?.id == intent.id, !id.isEmpty,
+            guard !id.isEmpty,
                   entry.conversationID == nil || entry.conversationID == id else { return false }
             entry.conversationID = id
             if entry.state == .requested { entry.state = .bound }
         case .submitting(let id):
-            guard reviewLaunch?.id == intent.id, entry.conversationID == id,
+            guard entry.conversationID == id,
                   entry.state != .accepted else { return false }
             entry.state = .submitting
         case .accepted(let id):
@@ -177,9 +186,9 @@ import Foundation
             entry.state = .uncertain
         }
         guard saveOutbox(entry) else { return false }
-        if let current = reviewLaunch, current.id == intent.id {
-            reviewLaunch = entry.launch(for: owner, presentationID: current.presentationID)
-        }
+        let updated = entry.launch(for: owner, presentationID: authorized.presentationID)
+        authorizedReviewLaunches[intent.id] = updated
+        if reviewLaunch?.id == intent.id { reviewLaunch = updated }
         return true
     }
 

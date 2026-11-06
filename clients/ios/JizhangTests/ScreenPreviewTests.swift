@@ -286,6 +286,8 @@ final class ScreenPreviewTests: XCTestCase {
             let path = try XCTUnwrap(request.url?.path)
             let object: [String: Any]
             switch path {
+            case "/api/v1/assistant/workspace/capabilities":
+                object = ["version": 1, "items": [[String: Any]](), "nativeActions": [[String: Any]]()]
             case "/api/v1/ai/config":
                 object = [
                     "configured": true, "enabled": true, "encryptionKeyConfigured": true,
@@ -311,7 +313,7 @@ final class ScreenPreviewTests: XCTestCase {
             let data = try JSONSerialization.data(withJSONObject: object)
             let response = try XCTUnwrap(HTTPURLResponse(url: XCTUnwrap(request.url), statusCode: 200,
                 httpVersion: nil, headerFields: ["Content-Type": "application/json"]))
-            onResponse()
+            if path != "/api/v1/assistant/workspace/capabilities" { onResponse() }
             return (response, data)
         }
         return try APIClient(baseURL: URL(string: "https://preview.example")!,

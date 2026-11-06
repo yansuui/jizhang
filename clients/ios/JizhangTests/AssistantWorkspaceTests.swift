@@ -47,6 +47,16 @@ final class AssistantWorkspaceTests: XCTestCase {
          "content": ["version": 1, "card": ["version": 1, "actionId": actionID, "toolName": "transaction.create", "status": status,
             "writes": true, "fingerprint": "guard", "summary": "支出", "values": ["amountCents": 2800], "preview": [:], "warnings": []]]]
     }
+    private static func nativeSource(toolName: String = "workspace.open") -> [String: Any] {
+        ["id": "native-source", "conversationId": "chat", "role": "assistant", "kind": "result", "createdAt": 1,
+         "content": ["version": 1, "result": ["version": 1, "toolName": toolName, "summary": "打开导入工作区",
+             "data": ["nativeAction": ["destination": "data-import"]]]]]
+    }
+    private static func completion(apiIdentity: UUID) throws -> NativeWorkspaceCompletion {
+        try XCTUnwrap(NativeWorkspaceCompletion(apiIdentity: apiIdentity,
+            route: NativeWorkspaceRoute(destination: .dataImport, conversationID: "chat", sourceMessageID: "native-source"),
+            reference: .object(["kind": .string("csv-import"), "previewId": .string("verified-preview")])))
+    }
 
     @MainActor func testSelectionKeepsAuthoritativeIDsAcrossPagesAndDoesNotWriteLedger() async throws {
         let requests = WorkspaceRequestCapture()
@@ -136,7 +146,7 @@ final class AssistantWorkspaceTests: XCTestCase {
         let new = try XCTUnwrap(store.thread("chat").messages.last?.content.card)
         XCTAssertTrue(store.canAct(on: new, in: "chat"))
         XCTAssertEqual(api.ledgerRevision, 0)
-        XCTAssertFalse(requests.paths.contains(where: { $0.hasSuffix("/confirm") || $0.hasSuffix("/generations") }))
+        XCTAssertFalse(requests.postPaths.contains(where: { $0.hasSuffix("/confirm") || $0.hasSuffix("/generations") }))
     }
 
     @MainActor func testOrganizationPreparationUsesTypedSelectionWithoutModelRequest() async throws {
@@ -154,11 +164,33 @@ final class AssistantWorkspaceTests: XCTestCase {
         }
         let api = try client(); defer { api.invalidate() }
         let store = AssistantStore(api: api); await store.open("chat")
-        let prepared = await store.prepareOrganization(in: "chat", messageID: "result", runID: "run", selected: ["action-b"])
+        var callbackCount = 0
+        let prepared = await store.prepareOrganization(in: "chat", messageID: "result", runID: "run", selected: ["action-b"], onPrepared: {
+            XCTAssertEqual(store.thread("chat").messages.last?.content.card?["actionId"].stringValue, "prepared")
+            XCTAssertEqual(api.ledgerRevision, 0)
+            callbackCount += 1
+        })
         XCTAssertTrue(prepared)
+        XCTAssertEqual(callbackCount, 1)
         XCTAssertEqual(api.ledgerRevision, 0)
         XCTAssertEqual(requests.methods.filter { $0 == "POST" }.count, 1)
-        XCTAssertFalse(requests.paths.contains(where: { $0.hasSuffix("/generations") }))
+        XCTAssertFalse(requests.postPaths.contains(where: { $0.hasSuffix("/generations") }))
+    }
+
+    @MainActor func testOrganizationSheetCallbackWaitsForValidatedOwningDraft() async throws {
+        CoreMockURLProtocol.setHandler { request in
+            if request.url?.path.hasSuffix("/organization/prepare") == true {
+                return try Self.reply(request, ["messages": [], "action": ["id": "missing", "conversationId": "chat", "status": "pending"]])
+            }
+            return try Self.reply(request, ["items": []])
+        }
+        let api = try client(); defer { api.invalidate() }
+        let store = AssistantStore(api: api); await store.open("chat")
+        var dismissed = false
+        let prepared = await store.prepareOrganization(in: "chat", messageID: "result", runID: "run", selected: ["action-b"], onPrepared: { dismissed = true })
+        XCTAssertFalse(prepared)
+        XCTAssertFalse(dismissed)
+        XCTAssertEqual(api.ledgerRevision, 0)
     }
 
     @MainActor func testDailyReviewLaunchUsesFrozenReadOnlyEndpointAndPersistsBeforeInference() async throws {
@@ -292,6 +324,82 @@ final class AssistantWorkspaceTests: XCTestCase {
         XCTAssertTrue(requests.methods.allSatisfy { $0 == "GET" })
         XCTAssertEqual(api.ledgerRevision, 0)
     }
+
+    @MainActor func testNativeCompletionDuplicatesPostOnceAndDoNotNavigateTheOtherConversation() async throws {
+        let requests = WorkspaceRequestCapture()
+        CoreMockURLProtocol.setHandler { request in
+            requests.record(request)
+            if request.url?.path.hasSuffix("/native-completions") == true {
+                let body = try Self.body(request)
+                XCTAssertEqual(body["sourceMessageId"] as? String, "native-source")
+                XCTAssertEqual((body["reference"] as? [String: String])?["previewId"], "verified-preview")
+                return try Self.reply(request, ["generation": Self.generation()])
+            }
+            if request.url?.path.hasSuffix("/chat/messages") == true { return try Self.reply(request, ["items": [Self.nativeSource()]]) }
+            return try Self.reply(request, ["items": []])
+        }
+        let api = try client(); defer { api.invalidate() }
+        let store = AssistantStore(api: api); await store.open("other")
+        let completion = try Self.completion(apiIdentity: api.identity)
+        let first = Task { await store.continueNativeCompletion(completion) }
+        let duplicate = Task { await store.continueNativeCompletion(completion) }
+        await first.value; await duplicate.value
+        await store.continueNativeCompletion(completion)
+        XCTAssertEqual(requests.postPaths.filter { $0.hasSuffix("/native-completions") }.count, 1)
+        XCTAssertEqual(store.selectedID, "other")
+        XCTAssertNil(store.thread("other").generation)
+        XCTAssertEqual(store.thread("chat").generation?.conversationId, "chat")
+        XCTAssertEqual(api.ledgerRevision, 0)
+    }
+
+    @MainActor func testForeignNativeCompletionCannotReadOrPost() async throws {
+        let requests = WorkspaceRequestCapture()
+        CoreMockURLProtocol.setHandler { request in requests.record(request); return try Self.reply(request, ["items": []]) }
+        let api = try client(); defer { api.invalidate() }
+        let store = AssistantStore(api: api)
+        await store.continueNativeCompletion(try Self.completion(apiIdentity: UUID()))
+        XCTAssertEqual(requests.count, 0)
+        XCTAssertTrue(store.workspacePendingBodies.isEmpty)
+        XCTAssertEqual(api.ledgerRevision, 0)
+    }
+
+    @MainActor func testNativeCompletionUncertaintyKeepsReceiptAndStableRequestForExplicitRetry() async throws {
+        let bodies = WorkspaceBodyCapture()
+        CoreMockURLProtocol.setHandler { request in
+            if request.url?.path.hasSuffix("/native-completions") == true {
+                let count = bodies.add(try Self.body(request))
+                if count == 1 { throw URLError(.networkConnectionLost) }
+                return try Self.reply(request, ["generation": Self.generation()])
+            }
+            return try Self.reply(request, ["items": [Self.nativeSource()]])
+        }
+        let api = try client(); defer { api.invalidate() }
+        let store = AssistantStore(api: api)
+        let completion = try Self.completion(apiIdentity: api.identity)
+        await store.continueNativeCompletion(completion)
+        XCTAssertEqual(bodies.count, 1)
+        XCTAssertEqual(store.workspacePendingBodies["native:" + completion.clientRequestID], completion.body)
+        XCTAssertTrue(store.hasPendingNativeCompletion(conversationID: "chat", messageID: "native-source"))
+        await store.retryNativeCompletion(conversationID: "chat", messageID: "native-source")
+        XCTAssertEqual(bodies.count, 2)
+        XCTAssertEqual(bodies.encoded.first, bodies.encoded.last)
+        XCTAssertFalse(store.hasPendingNativeCompletion(conversationID: "chat", messageID: "native-source"))
+        XCTAssertEqual(api.ledgerRevision, 0)
+    }
+
+    @MainActor func testNativeCompletionRequiresTheActualWorkspaceSourceBeforeInference() async throws {
+        let requests = WorkspaceRequestCapture()
+        CoreMockURLProtocol.setHandler { request in
+            requests.record(request)
+            return try Self.reply(request, ["items": [Self.nativeSource(toolName: "stats.monthly")]])
+        }
+        let api = try client(); defer { api.invalidate() }
+        let store = AssistantStore(api: api)
+        await store.continueNativeCompletion(try Self.completion(apiIdentity: api.identity))
+        XCTAssertTrue(requests.postPaths.isEmpty)
+        XCTAssertNil(store.thread("chat").generation)
+        XCTAssertEqual(api.ledgerRevision, 0)
+    }
 }
 
 private final class WorkspaceRequestCapture: @unchecked Sendable {
@@ -300,6 +408,7 @@ private final class WorkspaceRequestCapture: @unchecked Sendable {
     func record(_ request: URLRequest) { lock.withLock { values.append(request) } }
     var count: Int { lock.withLock { values.count } }
     var paths: [String] { lock.withLock { values.map { $0.url?.path ?? "" } } }
+    var postPaths: [String] { lock.withLock { values.filter { $0.httpMethod == "POST" }.map { $0.url?.path ?? "" } } }
     var methods: [String] { lock.withLock { values.map { $0.httpMethod ?? "" } } }
 }
 private final class WorkspaceBodyCapture: @unchecked Sendable {

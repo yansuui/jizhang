@@ -14,6 +14,22 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(NativeWorkspaceRoute(value: .object(["destination": .string("password")]))?.destination, .password)
     }
 
+    func testNativeCompletionRequiresSourceAndCanonicalizesOnlyVerifiedReferences() throws {
+        let owner = UUID()
+        let route = NativeWorkspaceRoute(destination: .dataExport, conversationID: "conversation", sourceMessageID: "source")
+        let first: JSONValue = .object(["kind": .string("export"), "exportKind": .string("transactions")])
+        let second: JSONValue = .object(["exportKind": .string("transactions"), "kind": .string("export")])
+        let a = try XCTUnwrap(NativeWorkspaceCompletion(apiIdentity: owner, route: route, reference: first))
+        let b = try XCTUnwrap(NativeWorkspaceCompletion(apiIdentity: owner, route: route, reference: second))
+        XCTAssertEqual(a.clientRequestID, b.clientRequestID)
+        XCTAssertEqual(a.apiIdentity, owner)
+        XCTAssertEqual(a.body["sourceMessageId"].stringValue, "source")
+        XCTAssertNil(NativeWorkspaceCompletion(apiIdentity: owner,
+            route: NativeWorkspaceRoute(destination: .dataExport), reference: first))
+        XCTAssertNil(NativeWorkspaceCompletion(apiIdentity: owner, route: route,
+            reference: .object(["kind": .string("password"), "password": .string("must-never-travel")])))
+    }
+
     @MainActor func testBinaryUploadKeepsCSRFAndRealBodyWithoutJSONConversion() async throws {
         let payload = Data([0, 255, 1, 2])
         CoreMockURLProtocol.setHandler { request in

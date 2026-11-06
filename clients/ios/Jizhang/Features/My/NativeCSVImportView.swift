@@ -5,7 +5,12 @@ import UniformTypeIdentifiers
     @StateObject private var store: NativeCSVImportStore
     @State private var picking = false
     @State private var fileError: String?
-    init(api: APIClient) { _store = StateObject(wrappedValue: NativeWorkspaceSessions.csv(api)) }
+    @Environment(\.recordJizhangNativeResult) private var recordResult
+    private let sourceMessageID: String?
+    init(api: APIClient, sourceMessageID: String? = nil) {
+        self.sourceMessageID = sourceMessageID
+        _store = StateObject(wrappedValue: NativeWorkspaceSessions.csv(api, sourceMessageID: sourceMessageID))
+    }
     var body: some View {
         List {
             Section("通用账本 CSV") {
@@ -20,7 +25,9 @@ import UniformTypeIdentifiers
                     Text("\(file.bytes.count) 字节").font(.caption).foregroundStyle(.secondary)
                     Button("验证并生成导入预览") { Task { await store.prepare() } }.disabled(!store.mayChoose || store.result != nil)
                 }
-                NavigationLink("导入微信 / 支付宝多文件") { NativeBatchImportView(api: store.api, conversationID: nil, batchID: nil) }
+                if sourceMessageID == nil {
+                    NavigationLink("导入微信 / 支付宝多文件") { NativeBatchImportView(api: store.api, conversationID: nil, batchID: nil) }
+                }
             }
             if let preview = store.preview {
                 Section("预览与影响") {
@@ -55,6 +62,8 @@ import UniformTypeIdentifiers
             if let error = store.error ?? fileError { Text(error).foregroundStyle(.red) }
         }
         .navigationTitle("导入账本 CSV")
+        .onAppear { reportResult() }
+        .onChange(of: store.result) { _, _ in reportResult() }
         .fileImporter(isPresented: $picking, allowedContentTypes: [.commaSeparatedText], allowsMultipleSelection: false) { result in
             do {
                 guard let url = try result.get().first else { return }
@@ -65,10 +74,15 @@ import UniformTypeIdentifiers
             }
         }
     }
+    private func reportResult() {
+        guard store.result != nil, let id = store.preview?["id"].stringValue else { return }
+        recordResult?(.object(["kind": .string("csv-import"), "previewId": .string(id)]))
+    }
 }
 
 @MainActor struct NativeExportView: View {
     @StateObject private var store: NativeExportStore
+    @Environment(\.recordJizhangNativeResult) private var recordResult
     init(api: APIClient) { _store = StateObject(wrappedValue: NativeExportStore(api: api)) }
     private let kinds = [("transactions", "全部收支账单"), ("salaries", "工资与分配记录"),
                          ("recurring", "周期账单规则"), ("transfers", "账户转账")]
@@ -87,5 +101,10 @@ import UniformTypeIdentifiers
                 }
             }
         }.navigationTitle("导出账本").onAppear { store.activate() }.onDisappear { store.stop() }
+            .onChange(of: store.file) { _, value in
+                if value != nil, let kind = store.lastKind {
+                    recordResult?(.object(["kind": .string("export"), "exportKind": .string(kind)]))
+                }
+            }
     }
 }

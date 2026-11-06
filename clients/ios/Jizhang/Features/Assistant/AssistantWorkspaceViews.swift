@@ -103,6 +103,7 @@ struct AssistantWorkspaceResultCard: View {
     private var nativeRoute: NativeWorkspaceRoute? {
         guard var action = data["nativeAction"].objectValue else { return nil }
         action["conversationId"] = .string(conversationID)
+        if page.result["toolName"].stringValue == "workspace.open" { action["sourceMessageId"] = .string(messageID) }
         return NativeWorkspaceRoute(value: .object(action))
     }
     var body: some View {
@@ -122,6 +123,13 @@ struct AssistantWorkspaceResultCard: View {
             if let route = nativeRoute {
                     Button("打开相关功能", systemImage: "arrow.up.forward.app") { openWorkspace?(route) }
                         .buttonStyle(.bordered).disabled(openWorkspace == nil || (route.destination == .invitations && !canManageInvitations))
+            }
+            if let notice = assistant.nativeCompletionNotices[AssistantStore.nativeSourceKey(conversationID: conversationID, messageID: messageID)] {
+                Text(notice).font(.caption).foregroundStyle(.secondary)
+                if assistant.hasPendingNativeCompletion(conversationID: conversationID, messageID: messageID) {
+                    Button("继续原任务") { Task { await assistant.retryNativeCompletion(conversationID: conversationID, messageID: messageID) } }
+                        .buttonStyle(.bordered).disabled(assistant.thread(conversationID).isGenerating)
+                }
             }
         }
     }
@@ -168,12 +176,14 @@ struct AssistantOrganizationCard: View {
     @ObservedObject var assistant: AssistantStore
     let conversationID: String
     let messageID: String
+    let onPrepared: (() -> Void)?
     @State private var card: JSONValue
     @State private var selected = Set<String>()
     @State private var loading = false
     @State private var error: String?
-    init(assistant: AssistantStore, conversationID: String, messageID: String, initial: JSONValue) {
+    init(assistant: AssistantStore, conversationID: String, messageID: String, initial: JSONValue, onPrepared: (() -> Void)? = nil) {
         self.assistant = assistant; self.conversationID = conversationID; self.messageID = messageID
+        self.onPrepared = onPrepared
         _card = State(initialValue: initial)
     }
     private var runID: String? { card["runId"].stringValue }
@@ -217,7 +227,7 @@ struct AssistantOrganizationCard: View {
                 }
             }
             Button {
-                Task { _ = await assistant.prepareOrganization(in: conversationID, messageID: messageID, runID: runID, selected: selected) }
+                Task { _ = await assistant.prepareOrganization(in: conversationID, messageID: messageID, runID: runID, selected: selected, onPrepared: onPrepared) }
             } label: { HStack { if assistant.workspaceBusy.contains(key) { ProgressView() }; Text("为所选 \(selected.count) 项生成确认草案") } }
                 .buttonStyle(.bordered).disabled(selected.isEmpty || expired || assistant.thread(conversationID).composerLocked || assistant.workspaceBusy.contains(key))
             if expired { Text("建议已过期，请重新分析后再选择。").font(.caption).foregroundStyle(.secondary) }

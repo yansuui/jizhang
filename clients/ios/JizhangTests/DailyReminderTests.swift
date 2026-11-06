@@ -182,6 +182,7 @@ final class DailyReminderTests: XCTestCase {
         let restored = DailyReminderStore(center: ReminderCenterFixture(), preferences: storage, outbox: ReminderOutboxFixture(preferences: storage))
         restored.updateSession(api: apiB, user: currentUser)
         XCTAssertNil(restored.reviewLaunch)
+        XCTAssertTrue(restored.authorizedReviewLaunches.isEmpty)
         restored.receive(delivery)
         let recovered = try XCTUnwrap(restored.reviewLaunch)
         XCTAssertEqual(recovered.apiIdentity, apiB.identity)
@@ -189,6 +190,48 @@ final class DailyReminderTests: XCTestCase {
         XCTAssertEqual(recovered.conversationID, "daily-b")
         XCTAssertFalse(recovered.mayStart)
         await restored.waitForScheduling()
+    }
+
+    @MainActor func testQueuedReviewDaysKeepIndependentTapReceiptsAndCannotResumeFromStartupAlone() async throws {
+        let (storage, name) = preferences(); defer { storage.removePersistentDomain(forName: name) }
+        let api = try client(); defer { api.invalidate() }
+        let currentUser = try user()
+        let store = DailyReminderStore(center: ReminderCenterFixture(), preferences: storage,
+                                      outbox: ReminderOutboxFixture(preferences: storage))
+        store.updateSession(api: api, user: currentUser)
+        let owner = try XCTUnwrap(store.owner)
+        let dayA = DailyReminderDelivery(ownerKey: owner.key, kind: .review, deliveredAt: date("2026-11-05T13:00:00Z"))
+        let dayB = DailyReminderDelivery(ownerKey: owner.key, kind: .review, deliveredAt: date("2026-11-06T13:00:00Z"))
+        store.receive(dayA)
+        let first = try XCTUnwrap(store.reviewLaunch)
+        store.receive(dayB)
+        let second = try XCTUnwrap(store.reviewLaunch)
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(store.authorizedReviewLaunches.count, 2)
+        XCTAssertTrue(store.checkpoint(first, .conversation("day-a-conversation")))
+        XCTAssertTrue(store.checkpoint(first, .submitting("day-a-conversation")))
+        XCTAssertTrue(store.checkpoint(first, .accepted("day-a-generation")))
+        XCTAssertEqual(store.reviewLaunch, second, "Completing an earlier queued day must not replace the newer tap route")
+        XCTAssertEqual(store.authorizedReviewLaunches[first.id]?.conversationID, "day-a-conversation")
+        XCTAssertEqual(store.authorizedReviewLaunches[first.id]?.mayStart, false)
+        let changedRequest = AssistantLaunchIntent(id: second.id, apiIdentity: second.apiIdentity,
+            date: second.date, timeZone: second.timeZone, clientRequestID: "different-request",
+            conversationID: nil, mayStart: true)
+        XCTAssertFalse(store.checkpoint(changedRequest, .conversation("must-not-bind")))
+
+        let reopened = DailyReminderStore(center: ReminderCenterFixture(), preferences: storage,
+                                         outbox: ReminderOutboxFixture(preferences: storage))
+        reopened.updateSession(api: api, user: currentUser)
+        XCTAssertTrue(reopened.authorizedReviewLaunches.isEmpty)
+        XCTAssertNil(reopened.reviewLaunch)
+        XCTAssertFalse(reopened.checkpoint(first, .conversation("day-a-conversation")))
+        reopened.receive(dayA)
+        let recovered = try XCTUnwrap(reopened.reviewLaunch)
+        XCTAssertEqual(recovered.clientRequestID, first.clientRequestID)
+        XCTAssertEqual(recovered.conversationID, "day-a-conversation")
+        XCTAssertFalse(recovered.mayStart)
+        await store.waitForScheduling()
+        await reopened.waitForScheduling()
     }
 
     @MainActor func testOldSessionCannotCheckpointIntoReplacementOwner() async throws {

@@ -129,6 +129,11 @@ struct AssistantView: View {
             guard let launch, let onLaunchCheckpoint else { return }
             if let conversation = await store.launchDailyReview(launch, checkpoint: onLaunchCheckpoint), !Task.isCancelled { openedConversation = conversation }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .jizhangNativeWorkspaceCompleted).receive(on: RunLoop.main)) { notification in
+            guard let completion = notification.object as? NativeWorkspaceCompletion,
+                  completion.apiIdentity == store.api.identity else { return }
+            Task { await store.continueNativeCompletion(completion) }
+        }
         .confirmationDialog("归档这段对话？", isPresented: Binding(get: { archiveTarget != nil }, set: { if !$0 { archiveTarget = nil } }), titleVisibility: .visible) {
             Button("归档对话", role: .destructive) {
                 guard let target = archiveTarget else { return }

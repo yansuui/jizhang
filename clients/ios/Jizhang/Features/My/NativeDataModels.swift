@@ -17,7 +17,11 @@ enum NativeDataError: LocalizedError {
 struct NativeBillFile: Identifiable, Equatable {
     let name: String
     let bytes: Data
-    var id: String { SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() }
+    let id: String
+    init(name: String, bytes: Data) {
+        self.name = name; self.bytes = bytes
+        id = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    }
     var upload: JSONValue { .object(["fileName": .string(name), "source": .string("auto"), "fileBase64": .string(bytes.base64EncodedString())]) }
     static func read(_ url: URL, limit: Int = 5 * 1_024 * 1_024) throws -> Self {
         let accessed = url.startAccessingSecurityScopedResource()
@@ -34,20 +38,21 @@ struct NativeBillFile: Identifiable, Equatable {
 /// Pending files and uncertain receipts survive sheet reopening within one API owner.
 /// The authenticated feature tree clears this cache on disappearance/account replacement.
 @MainActor enum NativeWorkspaceSessions {
-    private static var csvStores: [UUID: NativeCSVImportStore] = [:]
+    private static var csvStores: [String: NativeCSVImportStore] = [:]
     private static var batchStores: [String: NativeBatchImportStore] = [:]
     private static var photoStores: [String: NativeItemPhotoStore] = [:]
-    static func csv(_ api: APIClient) -> NativeCSVImportStore {
-        if let store = csvStores[api.identity] { return store }
-        let store = NativeCSVImportStore(api: api); csvStores[api.identity] = store; return store
+    static func csv(_ api: APIClient, sourceMessageID: String? = nil) -> NativeCSVImportStore {
+        let key = api.identity.uuidString + ":" + (sourceMessageID ?? "standalone")
+        if let store = csvStores[key] { return store }
+        let store = NativeCSVImportStore(api: api, sourceMessageID: sourceMessageID); csvStores[key] = store; return store
     }
-    static func batch(_ api: APIClient, conversationID: String?, batchID: String?) -> NativeBatchImportStore {
+    static func batch(_ api: APIClient, conversationID: String?, batchID: String?, sourceMessageID: String? = nil) -> NativeBatchImportStore {
         if let batchID, let store = batchStores.values.first(where: {
             $0.api.identity == api.identity && $0.conversationID == conversationID && $0.batchID == batchID
         }) { return store }
-        let key = api.identity.uuidString + ":" + (conversationID ?? "standalone") + ":" + (batchID ?? "new")
+        let key = api.identity.uuidString + ":" + (conversationID ?? "standalone") + ":" + (batchID ?? "new") + ":" + (sourceMessageID ?? "")
         if let store = batchStores[key] { return store }
-        let store = NativeBatchImportStore(api: api, conversationID: conversationID, batchID: batchID)
+        let store = NativeBatchImportStore(api: api, conversationID: conversationID, batchID: batchID, sourceMessageID: sourceMessageID)
         batchStores[key] = store; return store
     }
     static func photo(_ api: APIClient, itemID: String) -> NativeItemPhotoStore {
@@ -56,7 +61,7 @@ struct NativeBillFile: Identifiable, Equatable {
         let store = NativeItemPhotoStore(api: api, itemID: itemID); photoStores[key] = store; return store
     }
     static func clear(apiIdentity: UUID) {
-        csvStores.removeValue(forKey: apiIdentity)
+        csvStores = csvStores.filter { !$0.key.hasPrefix(apiIdentity.uuidString + ":") }
         batchStores = batchStores.filter { !$0.key.hasPrefix(apiIdentity.uuidString + ":") }
         photoStores = photoStores.filter { !$0.key.hasPrefix(apiIdentity.uuidString + ":") }
     }
@@ -72,7 +77,8 @@ struct NativeBillFile: Identifiable, Equatable {
     @Published private(set) var busy = false
     @Published private(set) var uncertain = false
     private var previewRequestID = UUID().uuidString
-    init(api: APIClient) { self.api = api }
+    private let sourceMessageID: String?
+    init(api: APIClient, sourceMessageID: String? = nil) { self.api = api; self.sourceMessageID = sourceMessageID }
     var mayChoose: Bool { !busy && !uncertain }
     func setKind(_ value: String) {
         guard mayChoose, ["transactions", "transfers"].contains(value), value != kind else { return }
@@ -82,7 +88,10 @@ struct NativeBillFile: Identifiable, Equatable {
     func choose(_ file: NativeBillFile) {
         guard mayChoose else { return }
         self.file = file; preview = nil; result = nil; error = nil
-        previewRequestID = UUID().uuidString
+        if let sourceMessageID {
+            previewRequestID = "csv-" + SHA256.hash(data: Data((sourceMessageID + ":" + kind + ":" + file.id).utf8))
+                .map { String(format: "%02x", $0) }.joined()
+        } else { previewRequestID = UUID().uuidString }
     }
     func prepare() async {
         guard !busy, !uncertain, let file, file.bytes.count <= 2 * 1_024 * 1_024,
@@ -133,6 +142,7 @@ struct NativeBillFile: Identifiable, Equatable {
     @Published private(set) var busy = false
     @Published private(set) var file: URL?
     @Published private(set) var error: String?
+    private(set) var lastKind: String?
     private var active = false
     private var ticket = UUID()
     init(api: APIClient, directory: URL = FileManager.default.temporaryDirectory) {
@@ -159,7 +169,7 @@ struct NativeBillFile: Identifiable, Equatable {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let destination = folder.appendingPathComponent("jizhang-" + kind + ".csv")
             try response.data.write(to: destination, options: [.atomic, .completeFileProtection])
-            clean(); file = destination; created = nil
+            clean(); lastKind = kind; file = destination; created = nil
         } catch {
             if let created { try? FileManager.default.removeItem(at: created) }
             if !Task.isCancelled, active, ticket == operation { self.error = error.localizedDescription }

@@ -5,12 +5,22 @@ import SwiftUI
     let user: AuthenticatedUser
     let route: NativeWorkspaceRoute
     let onLogout: () -> Void
+    var onCompletion: ((NativeWorkspaceCompletion) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
+    @State private var completed = false
     var body: some View {
         NavigationStack {
             content
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+                .toolbar { ToolbarItem(placement: .cancellationAction) {
+                    Button(completed && route.sourceMessageID != nil ? "完成并继续对话" : "完成") { dismiss() }
+                } }
         }
+        .environment(\.recordJizhangNativeResult, { reference in
+            guard let completion = NativeWorkspaceCompletion(apiIdentity: api.identity, route: route, reference: reference) else { return }
+            completed = true
+            // App retains this receipt and publishes only after the actual sheet dismissal.
+            onCompletion?(completion)
+        })
     }
     @ViewBuilder private var content: some View {
         switch route.destination {
@@ -19,8 +29,8 @@ import SwiftUI
             if user.canManageInvitations { InvitationManagementView(api: api, user: user) }
             else { ContentUnavailableView("当前账号没有邀请码管理权限", systemImage: "lock") }
         case .password: NativePasswordView(api: api, onLogout: onLogout)
-        case .dataImport: NativeCSVImportView(api: api)
-        case .platformImport: NativeBatchImportView(api: api, conversationID: route.conversationID, batchID: route.batchID)
+        case .dataImport: NativeCSVImportView(api: api, sourceMessageID: route.sourceMessageID)
+        case .platformImport: NativeBatchImportView(api: api, conversationID: route.conversationID, batchID: route.batchID, sourceMessageID: route.sourceMessageID)
         case .dataExport: NativeExportView(api: api)
         case .itemPhoto, .itemCutout:
             if let item = route.itemID {

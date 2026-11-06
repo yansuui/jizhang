@@ -9,8 +9,9 @@ import UniformTypeIdentifiers
     @State private var removeIndex: Int64?
     @State private var duplicateRow: NativeDuplicateSelection?
     @State private var refresh = UUID()
-    init(api: APIClient, conversationID: String?, batchID: String?) {
-        _store = StateObject(wrappedValue: NativeWorkspaceSessions.batch(api, conversationID: conversationID, batchID: batchID))
+    @Environment(\.recordJizhangNativeResult) private var recordResult
+    init(api: APIClient, conversationID: String?, batchID: String?, sourceMessageID: String? = nil) {
+        _store = StateObject(wrappedValue: NativeWorkspaceSessions.batch(api, conversationID: conversationID, batchID: batchID, sourceMessageID: sourceMessageID))
     }
     var body: some View {
         List {
@@ -46,6 +47,8 @@ import UniformTypeIdentifiers
             if store.mutationPending { Button("重试原文件变更") { Task { await store.retryMutation() } }.disabled(store.busy) }
         }
         .navigationTitle("微信 / 支付宝导入")
+        .onAppear { reportResult() }
+        .onChange(of: store.result) { _, _ in reportResult() }
         .task { if store.batchID != nil { await store.refresh() } }
         .task(id: (store.batchID ?? "") + refresh.uuidString) {
             for _ in 0..<200 {
@@ -79,6 +82,10 @@ import UniformTypeIdentifiers
                 removeIndex = nil
             }
         } message: { Text("原有选择和审核预览将失效，需要重新核对。") }
+    }
+    private func reportResult() {
+        guard store.result != nil, let id = store.batchID else { return }
+        recordResult?(.object(["kind": .string("platform-import"), "batchId": .string(id)]))
     }
 
     private var fileSection: some View {

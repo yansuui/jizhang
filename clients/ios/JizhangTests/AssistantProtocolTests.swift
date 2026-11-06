@@ -157,6 +157,7 @@ final class AssistantProtocolTests: XCTestCase {
         let pending = AssistantSubmission(requestID: "same-id", input: .object(["type": .string("text"), "text": .string("看看预算")]), draftText: "看看预算")
         XCTAssertEqual(pending.body["clientRequestId"].stringValue, "same-id")
         XCTAssertEqual(pending.body["input"]["text"].stringValue, "看看预算")
-        XCTAssertEqual(pending.body.objectValue?.count, 3)
+        XCTAssertEqual(pending.body["clientCapabilities"].arrayValue, [.string("workspace-v1")])
+        XCTAssertEqual(pending.body.objectValue?.count, 4)
     }
 }

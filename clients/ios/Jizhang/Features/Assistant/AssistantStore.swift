@@ -73,6 +73,8 @@ final class AssistantStore: ObservableObject {
     @Published private(set) var workspaceError: String?
     @Published private(set) var workspaceBusy = Set<String>()
     @Published private(set) var workspacePendingBodies: [String: JSONValue] = [:]
+    @Published private(set) var nativeCompletionNotices: [String: String] = [:]
+    @Published private(set) var nativeCompletionRetries: [String: NativeWorkspaceCompletion] = [:]
     private var billFiles: [String: AssistantBillFile] = [:]
     private var listTicket = UUID()
     private var selectionTicket = UUID()
@@ -82,6 +84,7 @@ final class AssistantStore: ObservableObject {
     private var dailyAccepted: [String: (AssistantGenerationSnapshot) -> Bool] = [:]
     private var dailyUncertain: [String: () -> Void] = [:]
     private var dailyWillSubmit: [String: () -> Bool] = [:]
+    private var completedNativeRequests = Set<String>()
 
     init(api: APIClient) { self.api = api }
     deinit { streamTask?.cancel() }
@@ -439,13 +442,15 @@ final class AssistantStore: ObservableObject {
             fields: ["arguments": arguments])
     }
 
-    func prepareOrganization(in id: String, messageID: String, runID: String?, selected: Set<String>) async -> Bool {
+    func prepareOrganization(in id: String, messageID: String, runID: String?, selected: Set<String>, onPrepared: (() -> Void)? = nil) async -> Bool {
         guard visibleConversationID == id, !thread(id).composerLocked, !selected.isEmpty, selected.count <= 100 else { return false }
         let key = "organization:" + messageID
         var fields: [String: JSONValue] = ["kind": .string(runID == nil ? "structural" : "spending"),
             "actionIds": .array(selected.sorted().map(JSONValue.string))]
         if let runID { fields["runId"] = .string(runID) } else { fields["previewMessageId"] = .string(messageID) }
-        return await workspaceMutation(key: key, in: id, path: "/organization/prepare", fields: fields)
+        let prepared = await workspaceMutation(key: key, in: id, path: "/organization/prepare", fields: fields)
+        if prepared { onPrepared?() }
+        return prepared
     }
 
     private func workspaceMutation(key: String, in id: String, path: String, fields: [String: JSONValue]) async -> Bool {
@@ -487,6 +492,64 @@ final class AssistantStore: ObservableObject {
             if let failure = error as? APIError, failure.status == 404 { workspacePendingBodies.removeValue(forKey: key); return }
             update(id) { $0.actionNotice = "账本操作已确认，后续回复尚待核对。可点「继续原任务」重试同一个续接请求。" }
         }
+    }
+
+    static func nativeSourceKey(conversationID: String, messageID: String) -> String { conversationID + ":" + messageID }
+
+    /// Only a trusted, dismissed native workspace emits this receipt. The backend checks
+    /// its actual result again; receipt delivery is never a new financial authorization.
+    func continueNativeCompletion(_ completion: NativeWorkspaceCompletion) async {
+        guard completion.apiIdentity == api.identity, !completion.conversationID.isEmpty,
+              !completion.sourceMessageID.isEmpty, !completion.clientRequestID.isEmpty,
+              completion.clientRequestID.utf16.count <= 120,
+              let reference = completion.reference.objectValue,
+              Set(reference.keys).isSubset(of: ["kind", "previewId", "batchId", "itemId", "operation", "sha256", "exportKind"]),
+              reference.values.allSatisfy({ $0.stringValue != nil && ($0.stringValue?.utf8.count ?? 201) <= 200 }),
+              ["csv-import", "platform-import", "item-photo", "export"].contains(completion.reference["kind"].stringValue ?? "") else { return }
+        let key = "native:" + completion.clientRequestID
+        let sourceKey = Self.nativeSourceKey(conversationID: completion.conversationID, messageID: completion.sourceMessageID)
+        guard !workspaceBusy.contains(key), !completedNativeRequests.contains(completion.clientRequestID) else { return }
+        workspaceBusy.insert(key)
+        defer { workspaceBusy.remove(key) }
+        nativeCompletionRetries[key] = completion
+        let body = workspacePendingBodies[key] ?? completion.body
+        workspacePendingBodies[key] = body
+        do {
+            if !thread(completion.conversationID).messages.contains(where: { $0.id == completion.sourceMessageID }) {
+                let history: AssistantItems<AssistantMessage> = try await api.request(AssistantPath.conversation(completion.conversationID) + "/messages")
+                try validateHistory(history.items, conversation: completion.conversationID)
+                guard !Task.isCancelled else { return }
+                applyHistory(history.items, in: completion.conversationID)
+            }
+            guard let source = thread(completion.conversationID).messages.first(where: { $0.id == completion.sourceMessageID }),
+                  source.content.result?["toolName"].stringValue == "workspace.open",
+                  let destination = source.content.result?["data"]["nativeAction"]["destination"].stringValue else { throw AssistantProtocolError.invalidSnapshot }
+            let matching: [String: Set<String>] = ["csv-import": ["data-import"], "platform-import": ["platform-import"],
+                "item-photo": ["item-photo", "item-cutout"], "export": ["data-export"]]
+            guard matching[completion.reference["kind"].stringValue ?? ""]?.contains(destination) == true else { throw AssistantProtocolError.invalidSnapshot }
+            if completion.reference["kind"].stringValue == "item-photo" {
+                guard source.content.result?["data"]["nativeAction"]["itemId"].stringValue == completion.reference["itemId"].stringValue else { throw AssistantProtocolError.invalidSnapshot }
+            }
+            let response: AssistantWorkspaceGenerationResponse = try await api.request(AssistantWorkspacePath.base(completion.conversationID) + "/native-completions", method: "POST", body: body)
+            try response.generation.validate(conversation: completion.conversationID)
+            guard !Task.isCancelled else { return }
+            completedNativeRequests.insert(completion.clientRequestID)
+            workspacePendingBodies.removeValue(forKey: key); nativeCompletionRetries.removeValue(forKey: key)
+            nativeCompletionNotices[sourceKey] = "功能结果已重新核实，原任务正在继续。"
+            acceptWorkspaceGeneration(response.generation, in: completion.conversationID)
+        } catch {
+            nativeCompletionNotices[sourceKey] = "功能结果的续接尚待核对。可重试同一回执，无需重复导入、修改照片或下载文件。"
+            update(completion.conversationID) { $0.actionNotice = "原功能操作请以工作区结果为准；后续回复尚待核对，可在原功能卡继续原任务。" }
+        }
+    }
+
+    func retryNativeCompletion(conversationID: String, messageID: String) async {
+        guard let completion = nativeCompletionRetries.values.first(where: { $0.conversationID == conversationID && $0.sourceMessageID == messageID }) else { return }
+        await continueNativeCompletion(completion)
+    }
+
+    func hasPendingNativeCompletion(conversationID: String, messageID: String) -> Bool {
+        nativeCompletionRetries.values.contains { $0.conversationID == conversationID && $0.sourceMessageID == messageID }
     }
 
     func canAct(on card: JSONValue, in id: String, confirm: Bool = true) -> Bool {

@@ -135,6 +135,26 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "7F29A710444D4CF11B7B7C7F";
 		};
+		"6734ED6B95264DBC972841E3" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Jizhang/Core/NativePresentationGate.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"A55D3EF7C7ACE00BD6B33881" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "6734ED6B95264DBC972841E3";
+		};
+		"B2085B8423602FAF02E6BC59" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Jizhang/Core/NativeWorkspaceCompletionRelay.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"528FBA4113E5A14886C210E5" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "B2085B8423602FAF02E6BC59";
+		};
 		"A754CD435408A60CECDE63B6" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -795,6 +815,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "FC77BAB16FBEC07F04663E10";
 		};
+		"6786CE48145CB4457FB21A1E" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "JizhangTests/NativePresentationGateTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"933CE6E143CAEED8721FF06F" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "6786CE48145CB4457FB21A1E";
+		};
 		"0263C0357491BCAE1AA51AF9" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -891,6 +921,8 @@
 				"292C7C41F84697F83F8F6CEA",
 				"2E3A057B16553D585B5C42F2",
 				"7F29A710444D4CF11B7B7C7F",
+				"6734ED6B95264DBC972841E3",
+				"B2085B8423602FAF02E6BC59",
 				"A754CD435408A60CECDE63B6",
 				"5AD66381EF149F469D99CFBB",
 				"9DC2750064C0D8E6D906289B",
@@ -964,6 +996,7 @@
 				"9CF388E4CB51230F09FACF8E",
 				"FB66042220C4A9F702D5A838",
 				"FC77BAB16FBEC07F04663E10",
+				"6786CE48145CB4457FB21A1E",
 				"0263C0357491BCAE1AA51AF9",
 				"65F86C243C5C11835C4650DE",
 				"F5BA944CCF4978FB93BBB31C",
@@ -1018,6 +1051,8 @@
 				"60B46DE8F17A3F439CA6B03D",
 				"C2D97BB2FF898D0A2FCD4CF9",
 				"DD6339D8466DE3AB3B146D49",
+				"A55D3EF7C7ACE00BD6B33881",
+				"528FBA4113E5A14886C210E5",
 				"11ABCCF08424F899618C7821",
 				"BEE33ACB4E702C3F763FC62E",
 				"43C88696BA326B36AF3374A4",
@@ -1091,6 +1126,7 @@
 				"DA384E7C340730541A8D6252",
 				"51E7CA8058E31EECD3A7538B",
 				"3B1FA72A539BBE98FC062E3C",
+				"933CE6E143CAEED8721FF06F",
 				"00C12862D36B02502618F07D",
 				"D951B35AACB9B2B85496644E",
 				"A443B7E283ADAA8317E064A6",

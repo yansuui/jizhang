@@ -65,14 +65,27 @@ private struct MainTabView: View {
     @State private var selectedTab = Tab.home
     @State private var recording = false
     @State private var workspace: NativeWorkspaceRoute?
-    @State private var pendingRecording: DailyRecordingIntent?
-    @State private var pendingReview: AssistantLaunchIntent?
+    @StateObject private var presentation: NativePresentationQueue
+    @StateObject private var workspaceCompletions: NativeWorkspaceCompletionRelay
+    @State private var recordingRequestID: UUID?
+    @State private var workspaceRequestID: UUID?
+    @State private var activeReviewID: String?
+    @State private var assistantVisible = false
     @State private var presentedReview: UUID?
 
+    init(api: APIClient, user: AuthenticatedUser, onLogout: @escaping () -> Void) {
+        self.api = api; self.user = user; self.onLogout = onLogout
+        _presentation = StateObject(wrappedValue: NativePresentationQueue(ownerIdentity: api.identity))
+        _workspaceCompletions = StateObject(wrappedValue: NativeWorkspaceCompletionRelay(ownerIdentity: api.identity))
+    }
+
     private var assistantLaunch: AssistantLaunchIntent? {
-        guard selectedTab == .assistant, !recording, workspace == nil,
-              reminders.reviewLaunch?.presentationID == presentedReview else { return nil }
-        return reminders.reviewLaunch
+        guard selectedTab == .assistant, assistantVisible, !recording, workspace == nil,
+              let activeReviewID, let current = reminders.authorizedReviewLaunches[activeReviewID],
+              let presentedReview else { return nil }
+        return AssistantLaunchIntent(id: current.id, apiIdentity: current.apiIdentity, date: current.date,
+            timeZone: current.timeZone, clientRequestID: current.clientRequestID,
+            conversationID: current.conversationID, mayStart: current.mayStart, presentationID: presentedReview)
     }
 
     var body: some View {
@@ -89,6 +102,8 @@ private struct MainTabView: View {
             NavigationStack {
                 AssistantView(api: api, launch: assistantLaunch, onLaunchCheckpoint: reminders.checkpoint)
             }
+                .onAppear { assistantVisible = true }
+                .onDisappear { assistantVisible = false }
                 .tabItem { Label("AI 助手", systemImage: "sparkles") }
                 .tag(Tab.assistant)
             NavigationStack { MyView(api: api, user: user, onLogout: onLogout) }
@@ -106,31 +121,58 @@ private struct MainTabView: View {
                 .padding(12)
                 .background(.regularMaterial)
             }
+            if presentation.first != nil {
+                HStack(alignment: .top, spacing: 12) {
+                    Label(presentation.notice ?? "正在等待当前弹窗关闭后继续打开…", systemImage: "clock")
+                        .font(.footnote)
+                    Spacer(minLength: 0)
+                    if presentation.notice != nil {
+                        Button("继续打开") { presentation.retry() }.font(.footnote.weight(.semibold))
+                    }
+                }
+                .padding(12)
+                .background(.regularMaterial)
+            }
         }
         .environment(\.openJizhangWorkspace, { route in
             guard reminders.owner?.apiIdentity == api.identity else { return }
-            workspace = route
+            presentation.enqueue(.workspace(route), owner: api.identity)
         })
         .environment(\.jizhangCanManageInvitations, user.canManageInvitations)
-        .sheet(isPresented: $recording, onDismiss: applyPendingNotification) {
+        .sheet(isPresented: $recording, onDismiss: retryPendingPresentation) {
+            let requestID = recordingRequestID
             LedgerTransactionEditor(api: api, onSaved: { recording = false })
+                .onAppear { if let requestID { presentation.acknowledgeAppearance(requestID) } }
         }
-        .sheet(item: $workspace, onDismiss: applyPendingNotification) { route in
-            NativeWorkspaceView(api: api, user: user, route: route, onLogout: onLogout)
+        .sheet(item: $workspace, onDismiss: workspaceDidDismiss) { route in
+            let requestID = workspaceRequestID
+            NativeWorkspaceView(api: api, user: user, route: route, onLogout: onLogout,
+                                onCompletion: { completion in
+                guard completion.conversationID == route.conversationID,
+                      completion.sourceMessageID == route.sourceMessageID else { return }
+                workspaceCompletions.store(completion, currentOwner: reminders.owner?.apiIdentity)
+            })
                 .environmentObject(reminders)
+                .onAppear { if let requestID { presentation.acknowledgeAppearance(requestID) } }
+        }
+        .onChange(of: reminders.owner?.apiIdentity) { _, identity in
+            if identity != api.identity { workspaceCompletions.clear() }
         }
         .onChange(of: reminders.recordingLaunch?.id) { _, _ in queueRecording() }
         .onChange(of: reminders.reviewLaunch?.presentationID) { _, _ in queueReview() }
         .task {
-            if reminders.reviewLaunch != nil { queueReview() }
-            else { queueRecording() }
+            queueRecording()
+            queueReview()
         }
+        .task(id: presentation.observationID) { await presentWhenAvailable() }
     }
 
     @ToolbarContentBuilder
     private var recordButton: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            Button { recording = true } label: {
+            Button {
+                presentation.enqueue(.recording(DailyRecordingIntent(apiIdentity: api.identity)), owner: api.identity)
+            } label: {
                 Label("记一笔", systemImage: "plus.circle.fill")
             }.accessibilityLabel("记一笔收入或支出")
         }
@@ -138,26 +180,69 @@ private struct MainTabView: View {
 
     private func queueRecording() {
         guard let intent = reminders.recordingLaunch, intent.apiIdentity == api.identity else { return }
-        pendingRecording = intent; pendingReview = nil
-        applyPendingNotification()
+        presentation.enqueue(.recording(intent), owner: api.identity)
     }
 
     private func queueReview() {
         guard let intent = reminders.reviewLaunch, intent.apiIdentity == api.identity else { return }
-        pendingReview = intent; pendingRecording = nil
-        applyPendingNotification()
+        presentation.enqueue(.review(intent), owner: api.identity)
     }
 
-    private func applyPendingNotification() {
-        guard !recording, workspace == nil, reminders.owner?.apiIdentity == api.identity else { return }
-        if let intent = pendingReview, intent.apiIdentity == api.identity {
-            pendingReview = nil
-            presentedReview = intent.presentationID
-            selectedTab = .assistant
-        } else if let intent = pendingRecording, intent.apiIdentity == api.identity {
-            pendingRecording = nil
+    private func retryPendingPresentation() {
+        recordingRequestID = nil; workspaceRequestID = nil
+        if presentation.first != nil { presentation.retry() }
+    }
+
+    private func workspaceDidDismiss() {
+        if let completion = workspaceCompletions.takeAfterDismiss(currentOwner: reminders.owner?.apiIdentity) {
+            NotificationCenter.default.post(name: .jizhangNativeWorkspaceCompleted, object: completion)
+        }
+        retryPendingPresentation()
+    }
+
+    private func presentWhenAvailable() async {
+        guard let request = presentation.first else { return }
+        let stillCurrent = { reminders.owner?.apiIdentity == api.identity && presentation.first?.id == request.id }
+        let gate = NativePresentationGate(available: {
+            !recording && workspace == nil && UIKitPresentationStatus.isFree()
+        })
+        let available = await gate.wait(stillCurrent: stillCurrent)
+        guard available == .ready, !Task.isCancelled, stillCurrent() else {
+            if available == .timedOut { presentation.deferPresentation(request.id) }
+            return
+        }
+        guard let current = presentation.first, presentation.beginPresentation(current.id) else { return }
+        switch current.target {
+        case .workspace(let route):
+            workspaceRequestID = current.id
+            workspace = route
+        case .recording:
+            recordingRequestID = current.id
             selectedTab = .home
             recording = true
+        case .review(let intent):
+            activeReviewID = intent.id
+            presentedReview = nil
+            selectedTab = .assistant
+            let visible = await NativePresentationGate(available: {
+                assistantVisible && selectedTab == .assistant && !recording && workspace == nil && UIKitPresentationStatus.isFree()
+            }, maximumChecks: 80).wait(stillCurrent: stillCurrent)
+            guard visible == .ready, !Task.isCancelled, stillCurrent(),
+                  let latest = presentation.first, case .review(let latestIntent) = latest.target else {
+                if visible == .timedOut { presentation.deferPresentation(current.id) }
+                return
+            }
+            presentedReview = latestIntent.presentationID
+            presentation.acknowledgeAppearance(latest.id)
+            return
         }
+        // A binding change is only a presentation attempt. Keep the request until onAppear.
+        let appeared = await NativePresentationGate(available: {
+            presentation.first?.id != current.id
+        }, maximumChecks: 80).wait(stillCurrent: { reminders.owner?.apiIdentity == api.identity })
+        guard appeared == .timedOut, !Task.isCancelled, presentation.first?.id == current.id else { return }
+        if workspaceRequestID == current.id { workspace = nil; workspaceRequestID = nil }
+        if recordingRequestID == current.id { recording = false; recordingRequestID = nil }
+        presentation.deferPresentation(current.id)
     }
 }

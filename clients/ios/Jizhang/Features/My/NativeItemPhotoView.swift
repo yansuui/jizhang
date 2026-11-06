@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
     @State private var fileError: String?
     @State private var refresh = UUID()
     @State private var pickingTask: Task<Void, Never>?
+    @Environment(\.recordJizhangNativeResult) private var recordResult
     init(api: APIClient, itemID: String, cutout: Bool) {
         _store = StateObject(wrappedValue: NativeWorkspaceSessions.photo(api, itemID: itemID)); self.cutout = cutout
     }
@@ -63,6 +64,7 @@ import UniformTypeIdentifiers
             if let error = store.error ?? fileError { Text(error).foregroundStyle(.red) }
         }
         .navigationTitle(cutout ? "物品抠图" : "物品照片")
+        .onChange(of: store.completionReference) { _, reference in if let reference { recordResult?(reference) } }
         .task { await store.load() }
         .task(id: (store.jobID ?? "") + refresh.uuidString) { await store.observe() }
         .onChange(of: selectedPhoto) { _, item in

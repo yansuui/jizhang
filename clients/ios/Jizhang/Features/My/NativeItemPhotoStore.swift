@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import UIKit
+import CryptoKit
 
 struct NativePhotoPayload {
     let bytes: Data
@@ -46,6 +47,7 @@ struct NativePhotoPayload {
     @Published private(set) var busy = false
     @Published private(set) var error: String?
     @Published private(set) var notice: String?
+    @Published private(set) var completionReference: JSONValue?
     private var readTicket = UUID()
     private var jobReadTicket = UUID()
     init(api: APIClient, itemID: String) { self.api = api; self.itemID = itemID }
@@ -59,6 +61,7 @@ struct NativePhotoPayload {
     }
     func load() async {
         let ticket = UUID(); readTicket = ticket
+        completionReference = nil
         do {
             let response = try await api.binary(photoPath, accept: "image/*", maximumBytes: 2 * 1_024 * 1_024)
             try Task.checkCancellation()
@@ -66,6 +69,9 @@ struct NativePhotoPayload {
             guard ["image/png", "image/jpeg", "image/webp"].contains(response.mimeType),
                   let image = UIImage(data: response.data) else { throw NativeDataError.invalidResponse }
             existing = image
+            completionReference = .object(["kind": .string("item-photo"), "itemId": .string(itemID),
+                "operation": .string("viewed"),
+                "sha256": .string(SHA256.hash(data: response.data).map { String(format: "%02x", $0) }.joined())])
         } catch {
             guard readTicket == ticket else { return }
             if let failure = error as? APIError, failure.status == 404 { existing = nil }
@@ -81,6 +87,9 @@ struct NativePhotoPayload {
             try Task.checkCancellation()
             readTicket = UUID()
             existing = draft.image; self.draft = nil; notice = "照片已保存。"; api.notifyLedgerChanged()
+            completionReference = .object(["kind": .string("item-photo"), "itemId": .string(itemID),
+                "operation": .string("saved"),
+                "sha256": .string(SHA256.hash(data: draft.bytes).map { String(format: "%02x", $0) }.joined())])
             if let completedJob = jobID, job["state"].stringValue == "ready" {
                 // The photo write is complete; candidate cleanup must not undo its success.
                 jobReadTicket = UUID()
@@ -100,6 +109,7 @@ struct NativePhotoPayload {
             try Task.checkCancellation()
             readTicket = UUID()
             existing = nil; notice = "照片已移除。"; api.notifyLedgerChanged()
+            completionReference = .object(["kind": .string("item-photo"), "itemId": .string(itemID), "operation": .string("removed")])
         } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
     func startCutout() async {

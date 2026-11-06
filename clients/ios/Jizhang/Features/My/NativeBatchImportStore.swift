@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CryptoKit
 
 /// Dedicated merged-file protocol. Original bytes never enter a model request.
 @MainActor final class NativeBatchImportStore: ObservableObject {
@@ -26,8 +27,11 @@ import Combine
     private var analysisRequestID: String?
     private var mutation: (path: String, body: JSONValue, files: [NativeBillFile])?
     private var notified = false
-    init(api: APIClient, conversationID: String?, batchID: String?) {
+    private let sourceMessageID: String?
+    private var forceFresh = false
+    init(api: APIClient, conversationID: String?, batchID: String?, sourceMessageID: String? = nil) {
         self.api = api; self.conversationID = conversationID; self.batchID = batchID
+        self.sourceMessageID = sourceMessageID
     }
     var basePath: String? {
         guard let conversationID, let batchID else { return nil }
@@ -51,8 +55,12 @@ import Combine
             files = input; error = nil
             return
         }
-        if files.map(\.id) != input.map(\.id) { createRequestID = UUID().uuidString }
-        files = input
+        let ordered = input.sorted { ($0.name, $0.id) < ($1.name, $1.id) }
+        if let sourceMessageID, !forceFresh {
+            let identity = sourceMessageID + ":" + ordered.map { $0.name + ":" + $0.id }.joined(separator: "|")
+            createRequestID = "batch-" + SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+        } else if files.map(\.id) != ordered.map(\.id) { createRequestID = UUID().uuidString }
+        files = ordered
         await create()
     }
 
@@ -293,6 +301,7 @@ import Combine
         selected = []; assignments = [:]; notes = [:]; approved = [:]; conflicts = [:]
         invalidateReview(); result = nil; error = nil; nextCursor = nil
         createRequestID = UUID().uuidString; analysisRequestID = nil; mutation = nil; notified = false
+        forceFresh = true
     }
     func cancel() async {
         guard editable, let basePath else { return }
