@@ -1,6 +1,11 @@
 # Current delivery — original repository/main
 
-Latest 2026-11-06 bill modal/filter/statistics polish: see
+Latest 2026-11-06 assistant reliability repair: see
+[assistant-reliability-verification.md](./assistant-reliability-verification.md) for
+the server repair, native run and latest verified IPA. Both server and app need the
+corresponding update; production-provider/device acceptance is separate.
+
+Earlier 2026-11-06 bill modal/filter/statistics polish: see
 [bill-ui-polish-verification.md](./bill-ui-polish-verification.md) for the verified
 build-12 IPA, 133 native tests, actual UI review and checksum.
 

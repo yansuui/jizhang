@@ -134,3 +134,40 @@ Polished the centered bill modal, blocked background/tab touches, and moved filt
 ### Next Steps
 
 - Physical phone installation and gesture acceptance remain deferred; ready build12 IPA and exact checksum are in bill-ui-polish-verification.md.
+
+
+## Session 5: Repair assistant turn completion and background task recovery
+
+**Date**: 2026-11-06
+**Task**: Repair assistant turn completion and background task recovery
+**Branch**: `main`
+
+### Summary
+
+Fixed composed assistant conversations and historical organization on original main; verified backend/native CI and prepared build14 device IPA.
+
+### Main Changes
+
+- Persist successful reads, share bounded8-step/180s turn policy, deterministically hand off organization jobs, correct known business arguments and preserve explicit financial confirmation.
+- Fit truthful paginated tool results to mobile transport, preserve exact financial facts, disclose long-note omissions and restore iOS read-only progress recovery/safe errors.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4033d26` | (see git log) |
+| `d3eddc3` | (see git log) |
+| `ebc8086` | (see git log) |
+
+### Testing
+
+- [OK] Local full core gate passed405 shared+1314 server; final82 targeted note follow-up passed. Exact backend CI42180534737 passed405+1315 tests, lint/types/build, Androidunit/package/lint and isolated production-container lifecycle.
+- [OK] Exact native CI42179267691 at d3eddc3 passed142 XCTest cases and unsigned arm64 packaging; verified metadata/checksum/ZIP/plist/MachO/noXCTest. Ready build14 SHA256 cb83e009bb158eba8b2356382b9597b0f27322a9728f8ac0aee58015b173dd8a.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Upgrade running backend to ebc8086 as well as app; live-provider interaction and physical Sideloadly signing/Keychain/login/device acceptance remain separate. User deferred phone connection; keep broader task active.

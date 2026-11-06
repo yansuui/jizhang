@@ -96,4 +96,16 @@ Multi-user source and mocked-network coverage are tracked in [the multi-user tas
 
 The app icon reuses the existing Android brand artwork, converted to the iOS asset-catalog size; no new brand is introduced.
 
+2026-11-06 assistant reliability: [native run 42179267691](https://github.com/yansuui/jizhang/actions/runs/42179267691)
+at `d3eddc3` passed **142 XCTest cases, zero failures**, and unsigned iPhone arm64
+packaging with Xcode 16.4. Build **14** is 2,698,116 bytes, SHA-256
+`cb83e009bb158eba8b2356382b9597b0f27322a9728f8ac0aee58015b173dd8a`.
+The matching backend repair is `ebc8086` (no subsequent native source changes), whose
+[verification run 42180534737](https://github.com/yansuui/jizhang/actions/runs/42180534737)
+passed repository lint/typecheck/build, **405 shared + 1315 server tests**, Android
+unit/package/lint and isolated production-container lifecycle checks. Deploy the server
+repair as well as updating the app: IPA replacement alone cannot fix orchestration.
+See [reliability verification](../../.trellis/tasks/11-04-ios-assistant/assistant-reliability-verification.md)
+for workflow evidence, verified local IPA and the separate live-provider/device boundary.
+
 2026-11-05 bill/detail/tag work (modal bill card with bottom capsule actions, authoritative daily totals, template removal, tag-first catalog, background historical analysis) was verified by [iOS build and IPA run 42013499694](https://github.com/yansuui/jizhang/actions/runs/42013499694) on commit `b114d1f`: Xcode 16.4 on `macos-15-intel` ran **129 XCTest cases with 0 failures** (12 suites; includes the two added previews `testCentredBillDetailOverlayPreview` and `testDaySummaryHeaderPreview`, whose simulator renders were reviewed), built the arm64 device app and packaged `Jizhang-unsigned.ipa` (2,627,321 bytes, SHA-256 `36feac9e012d5fb9a8019f4e56c9b6249ea65b28f618911c3bdf2ee6806958a0`). The server side of the same change passed `pnpm lint`, `pnpm typecheck`, `pnpm build` and 405 shared + 1244 server tests. **Still unverified:** physical-device installation and interaction (Sideloadly signing, real taps, scroll and Dynamic Type on hardware), and live-provider behaviour for the new background analysis flow.

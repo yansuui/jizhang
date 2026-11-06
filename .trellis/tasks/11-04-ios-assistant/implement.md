@@ -2,6 +2,12 @@
 
 ## Current user-directed continuation
 
+Latest assistant reliability continuation: `assistant-reliability.md`. The screenshot's
+unfinished background analysis requires a composed route/provider/tool/history/client fix,
+not isolated capability catalogue additions. See `research/assistant-reliability-root-causes.md`
+for confirmed causes and prevention, and `assistant-reliability-verification.md` for the
+final source, check, artifact and deployment boundaries. Keep original-repository main.
+
 Latest bill presentation and scrolling continuation: `bill-ui-polish.md`, delivered
 and verified in `bill-ui-polish-verification.md` (133 native tests and build-12 IPA).
 

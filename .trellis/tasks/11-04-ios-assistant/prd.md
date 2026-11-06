@@ -2,7 +2,12 @@
 
 ## Goal and status
 
-**Latest follow-up (2026-11-06):** fix centred bill modal/background/tab interaction,
+**Latest follow-up (2026-11-06, assistant):** repair frequent unfinished turns and the
+historical-organization workflow shown in the user's screenshot. The authoritative scope
+is [`assistant-reliability.md`](assistant-reliability.md); server deployment, live provider
+and physical-device results remain separate evidence. Continue directly on original main.
+
+**Earlier follow-up (2026-11-06, bills):** fix centred bill modal/background/tab interaction,
 improve daily-statistics layout and make the type/account/date filters scroll with bills.
 See [`bill-ui-polish.md`](bill-ui-polish.md) and its verification record.
 

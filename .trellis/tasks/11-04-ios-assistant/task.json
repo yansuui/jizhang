@@ -15,12 +15,12 @@
   "branch": "main",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "f381bfc0c0cde5ce2b7a16b83536acbad8e0d04b",
+  "commit": "ebc8086e4653fec2c48a43deef09b77ff853dde6",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "Latest 2026-11-06 continuation fixes bill modal/background/tab isolation, adaptive detail and daily stats, and scrolling filters on original main. Code f381bfc; native CI42147423830 passed133 tests and arm64 packaging. Ready IPA clients/ios/build/delivery/Jizhang-iOS-bill-ui-f381bfc.ipa (build12), SHA256 8a341388f5f8667a8e7e974a82d22215a42c493a8d2def78abc5c0666868b300. See bill-ui-polish-verification.md for native routing/pagination/scroll and visual evidence, and older functional-verification.md for backend capabilities. No backend change in this UI continuation. User deferred phone connection; keep task active for signed Keychain/login and physical acceptance. Existing Sideloadly D:/Sideloadly/Sideloadly.exe v0.72; do not ask path again.",
+  "notes": "Latest 2026-11-06 assistant reliability repair on original main: backend ebc8086, native 4033d26/d3eddc3. Background jobs hand off durably without model polling; successful reads persist across bounded multi-tool decisions; safe result paging/size and typed correction preserve confirmation/tenant guards. Backend CI42180534737 all3jobs passed (405 shared+1315 server, lint/types/build, Androidunit/package/lint, isolated image lifecycle). Native CI42179267691 at d3eddc3 passed142 tests and arm64 IPA packaging; ebc8086 changes no native source. Ready IPA clients/ios/build/delivery/Jizhang-iOS-assistant-reliability-d3eddc3.ipa, build14, SHA256 cb83e009bb158eba8b2356382b9597b0f27322a9728f8ac0aee58015b173dd8a. See assistant-reliability-verification.md; earlier bill UI evidence remains bill-ui-polish-verification.md. Server must be upgraded too; no production deployment/live-provider/physical-install claim. User deferred phone connection; keep broader task active for signed Keychain/login and physical acceptance. Sideloadly D:/Sideloadly/Sideloadly.exe v0.72; do not ask path again.",
   "meta": {}
 }

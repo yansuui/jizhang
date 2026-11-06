@@ -192,3 +192,13 @@ production, full-suite or device acceptance evidence. Final integrated gates bel
 root. `clients/android/README.md` was updated only for the affected assistant contract,
 execution bounds, result projection and known native gaps; no Android source or global
 inventory totals/audit dates were changed.
+
+## Final long-note disclosure follow-up
+
+A later frozen-diff review used a legal 4518-unit note with a unique tail marker and
+found the general JSON normalizer's 4000-unit limit acted before the detail projection.
+The missing text was not disclosed despite the tool promising a complete note. The tool
+owner retained the global guard, removed that unqualified promise, and added original/
+displayed lengths, truncation/full-note-omitted fields and a native-detail direction.
+A realistic persisted-result/SSE regression proves the domain note remains unchanged.
+The focused 82-test follow-up, typecheck and lint passed; root records final CI separately.
