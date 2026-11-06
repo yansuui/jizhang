@@ -23,6 +23,11 @@ final class LedgerBillPresentationTests: XCTestCase {
             try await self.waitUntil { self.views(host.view, of: UIScrollView.self).contains { $0.contentSize.height > $0.bounds.height + 300 } }
             let scroll = try XCTUnwrap(self.views(host.view, of: UIScrollView.self).first { $0.contentSize.height > $0.bounds.height + 300 })
             scroll.setContentOffset(CGPoint(x: 0, y: 240), animated: false)
+            // List replaces estimated row heights during the next layout pass. Capture
+            // the settled position a user would tap from, not the interim jump target.
+            window.layoutIfNeeded()
+            scroll.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(500))
             let offset = scroll.contentOffset
             let tabBar = try XCTUnwrap(self.views(host.view, of: UITabBar.self).first)
             let tabPoint = tabBar.convert(CGPoint(x: tabBar.bounds.midX, y: tabBar.bounds.midY), to: window)
