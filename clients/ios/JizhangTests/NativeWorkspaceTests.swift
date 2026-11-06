@@ -75,7 +75,8 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(store.result?["inserted"].intValue, 1)
         XCTAssertEqual(api.ledgerRevision, 1)
         XCTAssertEqual(calls.bodies("confirm").count, 2)
-        XCTAssertEqual(calls.bodies("confirm").first, calls.bodies("confirm").last)
+        XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(calls.bodies("confirm").first)),
+                       try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(calls.bodies("confirm").last)))
         await store.confirm()
         XCTAssertEqual(calls.count("confirm"), 2)
     }
@@ -186,7 +187,8 @@ final class NativeWorkspaceTests: XCTestCase {
         await store.confirm()
         XCTAssertTrue(store.terminal)
         XCTAssertEqual(api.ledgerRevision, 1)
-        XCTAssertEqual(calls.bodies("confirm").first, calls.bodies("confirm").last)
+        XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(calls.bodies("confirm").first)),
+                       try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(calls.bodies("confirm").last)))
         let frozen = try JSONDecoder().decode(JSONValue.self, from: XCTUnwrap(calls.bodies("confirm").first))
         XCTAssertEqual(frozen["reviewToken"].stringValue, "review-one")
         XCTAssertEqual(frozen["files"].arrayValue?.first?["fileBase64"].stringValue, file.bytes.base64EncodedString())

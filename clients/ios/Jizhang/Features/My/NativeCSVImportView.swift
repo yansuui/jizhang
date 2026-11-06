@@ -74,9 +74,10 @@ import UniformTypeIdentifiers
                          ("recurring", "周期账单规则"), ("transfers", "账户转账")]
     var body: some View {
         List {
-            Section("导出 CSV") {
+            Section {
                 ForEach(kinds, id: \.0) { kind in Button(kind.1) { Task { await store.download(kind.0) } }.disabled(store.busy) }
-            } footer: { Text("文件通过当前账号下载，可保存到「文件」或分享。不会向外部地址转交登录凭据。") }
+            } header: { Text("导出 CSV") }
+            footer: { Text("文件通过当前账号下载，可保存到「文件」或分享。不会向外部地址转交登录凭据。") }
             if store.busy { ProgressView("正在下载…") }
             if let error = store.error { Text(error).foregroundStyle(.red) }
             if let file = store.file {

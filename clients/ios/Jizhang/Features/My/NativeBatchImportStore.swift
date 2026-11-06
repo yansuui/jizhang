@@ -76,7 +76,7 @@ import Combine
             batchID = id
             try adopt(value)
             try await loadRows(reset: true)
-        } catch { if !Task.isCancelled { error = error.localizedDescription } }
+        } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
 
     func refresh() async {
@@ -110,7 +110,8 @@ import Combine
     private func loadRows(reset: Bool) async throws {
         guard let basePath, let version = batch["version"].intValue else { throw NativeDataError.invalidResponse }
         let page = reset ? nil : nextCursor
-        let path = basePath + "/rows" + LedgerURL.query([("limit", "50"), ("includeVersion", String(version)), ("cursor", page)])
+        let path = LedgerURL.path(basePath + "/rows", [("limit", "50"), ("includeVersion", String(version))] +
+                                  (page.map { [("cursor", $0)] } ?? []))
         let value: JSONValue = try await api.request(path)
         try Task.checkCancellation()
         guard value["batchId"].stringValue == batchID, value["version"] == batch["version"],
@@ -128,7 +129,7 @@ import Combine
         }
         nextCursor = value["nextCursor"].stringValue
         if reset {
-            let options: JSONValue = try await api.request(basePath + "/categories" + LedgerURL.query([("includeVersion", String(version))]))
+            let options: JSONValue = try await api.request(LedgerURL.path(basePath + "/categories", [("includeVersion", String(version))]))
             guard options["batchId"].stringValue == batchID, options["version"] == batch["version"],
                   options["viewRevision"] == batch["viewRevision"], options["categories"].arrayValue != nil,
                   options["items"].arrayValue != nil else { throw NativeDataError.staleReview }
@@ -250,8 +251,8 @@ import Combine
     }
     func duplicates(_ row: JSONValue, cursor: String? = nil) async throws -> JSONValue {
         guard let basePath, let id = row["itemId"].stringValue else { throw NativeDataError.invalidResponse }
-        return try await api.request(basePath + "/rows/" + LedgerURL.segment(id) + "/duplicates" +
-                                    LedgerURL.query([("limit", "20"), ("cursor", cursor)]))
+        return try await api.request(LedgerURL.path(basePath + "/rows/" + LedgerURL.segment(id) + "/duplicates",
+            [("limit", "20")] + (cursor.map { [("cursor", $0)] } ?? [])))
     }
     func mutateFiles(index: Int64, replacement: NativeBillFile?) async {
         guard editable, let basePath, let meta = batch["files"].arrayValue else { return }
