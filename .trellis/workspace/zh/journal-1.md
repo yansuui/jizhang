@@ -98,3 +98,39 @@ Implemented the six requested iOS gaps on original main; built and verified the 
 ### Next Steps
 
 - Production server upgrade and live-provider/physical-phone acceptance remain separate; user deferred phone connection. Ready IPA and checksum in functional-verification.md.
+
+
+## Session 4: Fix iOS bill popup isolation and scrolling statistics
+
+**Date**: 2026-11-06
+**Task**: Fix iOS bill popup isolation and scrolling statistics
+**Branch**: `main`
+
+### Summary
+
+Polished the centered bill modal, blocked background/tab touches, and moved filters into scrolling bill content on original main.
+
+### Main Changes
+
+- Shared full-screen native presentation retains real paged Bills state; adaptive details and daily totals improve compact and accessibility layouts.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b80e8e4` | (see git log) |
+| `dae03d1` | (see git log) |
+| `3a8f401` | (see git log) |
+| `f381bfc` | (see git log) |
+
+### Testing
+
+- [OK] GitHub42147423830:133 native XCTest cases and arm64 IPA passed; strict routing/page count/offset tests, screenshots and delivery SHA256 verified.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Physical phone installation and gesture acceptance remain deferred; ready build12 IPA and exact checksum are in bill-ui-polish-verification.md.

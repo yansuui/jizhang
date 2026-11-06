@@ -87,7 +87,7 @@ The current plan surface follows the backend's continuous four-purpose fund cont
 
 Native compilation, XCTest, simulator launch and device installation are recorded separately in the task delivery evidence. A Windows source review alone is not a build. Live-provider behavior also requires a configured backend and explicit interaction.
 
-The subsequent tag-catalog picker, fixed bottom actions and background-run status UI changes have not yet been compiled by the previously recorded run; verify their exact commit with macOS CI before distributing an IPA.
+The current bill modal/filter/statistics continuation is verified at code commit `f381bfc` by [native run 42147423830](https://github.com/yansuui/jizhang/actions/runs/42147423830): 133 XCTest cases passed and the Release arm64 IPA was packaged. See [the delivery record](../../.trellis/tasks/11-04-ios-assistant/bill-ui-polish-verification.md) for exact source, visual checks, local IPA and checksum. Physical-device interaction remains separate acceptance.
 
 Initial implementation and verification are tracked in [the iOS task](../../.trellis/tasks/11-04-ios-assistant/implement.md). No production API deployment is included in this client delivery.
 

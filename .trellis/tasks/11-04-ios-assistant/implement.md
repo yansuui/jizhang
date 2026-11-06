@@ -2,6 +2,9 @@
 
 ## Current user-directed continuation
 
+Latest bill presentation and scrolling continuation: `bill-ui-polish.md`, delivered
+and verified in `bill-ui-polish-verification.md` (133 native tests and build-12 IPA).
+
 Implement the six outcomes and worker boundaries in `functional-parity.md`.
 The prior read-only phase below has shipped; the latest user instruction expands
 it to actual financial edits and assistant confirmations on `main`. Reuse the

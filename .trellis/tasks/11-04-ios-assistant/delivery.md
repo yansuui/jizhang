@@ -1,5 +1,9 @@
 # Current delivery — original repository/main
 
+Latest 2026-11-06 bill modal/filter/statistics polish: see
+[bill-ui-polish-verification.md](./bill-ui-polish-verification.md) for the verified
+build-12 IPA, 133 native tests, actual UI review and checksum.
+
 The current 2026-11-05 functional-completion delivery is recorded in
 [functional-verification.md](./functional-verification.md). Its code is in
 `yansuui/jizhang` on `main`, including bill/refund editing, allocation controls and

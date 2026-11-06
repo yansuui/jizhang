@@ -2,6 +2,10 @@
 
 ## Goal and status
 
+**Latest follow-up (2026-11-06):** fix centred bill modal/background/tab interaction,
+improve daily-statistics layout and make the type/account/date filters scroll with bills.
+See [`bill-ui-polish.md`](bill-ui-polish.md) and its verification record.
+
 **Current continuation:** the user's six-item request on 2026-11-05 authorizes
 bill sheets, linked refunds, expense/income entry, account/date filters, existing
 four-purpose allocation editing and full business-tool assistant execution.

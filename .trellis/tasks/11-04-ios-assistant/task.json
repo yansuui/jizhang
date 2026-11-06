@@ -15,12 +15,12 @@
   "branch": "main",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "139756f96aba1c0c7204425408a12469ecb8cae2",
+  "commit": "f381bfc0c0cde5ce2b7a16b83536acbad8e0d04b",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "Six-item functional continuation implemented directly on original yansuui/jizhang main (fb2f1cf,139756f). User confirmed existing four-purpose allocations. Full local gate passed:405 shared+1235 server tests; GitHub41974544244 backend/Android/container passed; iOS41974544329 passed127 tests and arm64 packaging. Verified ready IPA clients/ios/build/delivery/Jizhang-iOS-complete-139756f.ipa, SHA256 8a04f154c0bc8cf2764d391133f48c0458a08e6fae4741285cf3200724515175. See functional-verification.md and research capability matrix for exact coverage. New AI tools require server update; no production deploy/live-provider check claimed. User deferred phone connection; keep task active for signed Keychain/login and physical acceptance. Existing Sideloadly D:/Sideloadly/Sideloadly.exe v0.72; do not ask path again.",
+  "notes": "Latest 2026-11-06 continuation fixes bill modal/background/tab isolation, adaptive detail and daily stats, and scrolling filters on original main. Code f381bfc; native CI42147423830 passed133 tests and arm64 packaging. Ready IPA clients/ios/build/delivery/Jizhang-iOS-bill-ui-f381bfc.ipa (build12), SHA256 8a341388f5f8667a8e7e974a82d22215a42c493a8d2def78abc5c0666868b300. See bill-ui-polish-verification.md for native routing/pagination/scroll and visual evidence, and older functional-verification.md for backend capabilities. No backend change in this UI continuation. User deferred phone connection; keep task active for signed Keychain/login and physical acceptance. Existing Sideloadly D:/Sideloadly/Sideloadly.exe v0.72; do not ask path again.",
   "meta": {}
 }
