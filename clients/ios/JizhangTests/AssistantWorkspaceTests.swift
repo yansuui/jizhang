@@ -2,11 +2,11 @@ import XCTest
 @testable import Jizhang
 
 final class AssistantWorkspaceTests: XCTestCase {
-    override func tearDown() { CoreMockURLProtocol.setHandler(nil); super.tearDown() }
+    override func tearDown() { CoreMockURLProtocol.setHandler(nil); WorkspaceLaunchURLProtocol.setHandler(nil); super.tearDown() }
 
-    @MainActor private func client() throws -> APIClient {
+    @MainActor private func client(protocolClass: AnyClass = CoreMockURLProtocol.self) throws -> APIClient {
         let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [CoreMockURLProtocol.self]
+        config.protocolClasses = [protocolClass]
         return try APIClient(baseURL: ServerAddress.parse("https://example.com"), credentialStore: CoreMemoryCredentialStore(), restoreSession: false, configuration: config)
     }
     private static func reply(_ request: URLRequest, _ value: Any) throws -> (HTTPURLResponse, Data) {
@@ -56,6 +56,9 @@ final class AssistantWorkspaceTests: XCTestCase {
         try XCTUnwrap(NativeWorkspaceCompletion(apiIdentity: apiIdentity,
             route: NativeWorkspaceRoute(destination: .dataImport, conversationID: "chat", sourceMessageID: "native-source"),
             reference: .object(["kind": .string("csv-import"), "previewId": .string("verified-preview")])))
+    }
+    private static func conversation(_ id: String) -> [String: Any] {
+        ["id": id, "title": id, "archived": false, "createdAt": 1, "updatedAt": 1]
     }
 
     @MainActor func testSelectionKeepsAuthoritativeIDsAcrossPagesAndDoesNotWriteLedger() async throws {
@@ -400,6 +403,121 @@ final class AssistantWorkspaceTests: XCTestCase {
         XCTAssertNil(store.thread("chat").generation)
         XCTAssertEqual(api.ledgerRevision, 0)
     }
+
+    @MainActor func testQueuedDifferentReviewDaysWaitForFirstCreateAndEachSubmitExactlyOnce() async throws {
+        let held = expectation(description: "First daily conversation creation is held")
+        let secondEntered = expectation(description: "Second day launch entered")
+        let lock = NSLock(); var firstRequest: WorkspaceLaunchURLProtocol?; var creates = 0
+        let bodies = WorkspaceBodyCapture()
+        WorkspaceLaunchURLProtocol.setHandler { transport in
+            let request = transport.request; let path = request.url?.path ?? ""
+            if request.httpMethod == "POST", path == "/api/v1/assistant/conversations" {
+                let count = lock.withLock { creates += 1; return creates }
+                if count == 1 { lock.withLock { firstRequest = transport }; held.fulfill() }
+                else {
+                    XCTAssertEqual(bodies.count, 1, "Second day cannot create before the first has submitted")
+                    try transport.respond(Self.conversation("day-2"))
+                }
+            } else if path.hasSuffix("/daily-review") {
+                _ = bodies.add(try Self.body(request))
+                let id = path.contains("/day-1/") ? "day-1" : "day-2"
+                var generation = Self.generation(id); generation["id"] = "generation-" + id
+                try transport.respond(["generation": generation])
+            } else { try transport.respond(["items": []]) }
+        }
+        let api = try client(protocolClass: WorkspaceLaunchURLProtocol.self); defer { api.invalidate() }
+        let store = AssistantStore(api: api)
+        let a = AssistantLaunchIntent(id: "owner.2026-11-05", apiIdentity: api.identity, date: "2026-11-05", timeZone: "Asia/Shanghai", clientRequestID: "request-day-A", conversationID: nil, mayStart: true)
+        let b = AssistantLaunchIntent(id: "owner.2026-11-06", apiIdentity: api.identity, date: "2026-11-06", timeZone: "Asia/Shanghai", clientRequestID: "request-day-B", conversationID: nil, mayStart: true)
+        let first = Task { await store.launchDailyReview(a) { _, _ in true } }
+        await fulfillment(of: [held], timeout: 3)
+        let second = Task { secondEntered.fulfill(); return await store.launchDailyReview(b) { _, _ in true } }
+        let duplicate = Task { await store.launchDailyReview(a) { _, _ in true } }
+        await fulfillment(of: [secondEntered], timeout: 3)
+        XCTAssertTrue(store.creating)
+        XCTAssertEqual(bodies.count, 0)
+        let pending = lock.withLock { let value = firstRequest; firstRequest = nil; return value }
+        try XCTUnwrap(pending).respond(Self.conversation("day-1"))
+        let resultA = await first.value; let resultB = await second.value; let repeatedA = await duplicate.value
+        XCTAssertEqual(resultA?.id, "day-1"); XCTAssertEqual(repeatedA?.id, "day-1"); XCTAssertEqual(resultB?.id, "day-2")
+        XCTAssertEqual(lock.withLock { creates }, 2)
+        XCTAssertEqual(bodies.count, 2)
+        let submitted = try bodies.encoded.map { try XCTUnwrap(JSONSerialization.jsonObject(with: $0) as? [String: String]) }
+        XCTAssertEqual(submitted.map { $0["date"] }, ["2026-11-05", "2026-11-06"])
+        XCTAssertEqual(submitted.map { $0["clientRequestId"] }, ["request-day-A", "request-day-B"])
+        XCTAssertTrue(submitted.allSatisfy { $0["timeZone"] == "Asia/Shanghai" })
+        XCTAssertNil(store.selectedID, "Preparation cannot steal the user's visible conversation")
+        XCTAssertEqual(api.ledgerRevision, 0)
+    }
+
+    @MainActor func testDailyReviewWaitsForUnrelatedUserConversationCreation() async throws {
+        let held = expectation(description: "Manual conversation creation held")
+        let dailyEntered = expectation(description: "Daily launch waiting")
+        let lock = NSLock(); var firstRequest: WorkspaceLaunchURLProtocol?; var creates = 0
+        let bodies = WorkspaceBodyCapture()
+        WorkspaceLaunchURLProtocol.setHandler { transport in
+            let request = transport.request; let path = request.url?.path ?? ""
+            if request.httpMethod == "POST", path == "/api/v1/assistant/conversations" {
+                let count = lock.withLock { creates += 1; return creates }
+                if count == 1 { lock.withLock { firstRequest = transport }; held.fulfill() }
+                else { try transport.respond(Self.conversation("daily-chat")) }
+            } else if path.hasSuffix("/daily-review") {
+                _ = bodies.add(try Self.body(request)); try transport.respond(["generation": Self.generation("daily-chat")])
+            } else { try transport.respond(["items": []]) }
+        }
+        let api = try client(protocolClass: WorkspaceLaunchURLProtocol.self); defer { api.invalidate() }
+        let store = AssistantStore(api: api)
+        let manual = Task { await store.createConversation() }
+        await fulfillment(of: [held], timeout: 3)
+        let intent = AssistantLaunchIntent(id: "owner.day", apiIdentity: api.identity, date: "2026-11-06", timeZone: "Asia/Shanghai", clientRequestID: "daily-after-manual", conversationID: nil, mayStart: true)
+        let daily = Task { dailyEntered.fulfill(); return await store.launchDailyReview(intent) { _, _ in true } }
+        await fulfillment(of: [dailyEntered], timeout: 3)
+        XCTAssertEqual(bodies.count, 0)
+        let pending = lock.withLock { let value = firstRequest; firstRequest = nil; return value }
+        try XCTUnwrap(pending).respond(Self.conversation("manual-chat"))
+        let manualResult = await manual.value; let dailyResult = await daily.value
+        XCTAssertEqual(manualResult?.id, "manual-chat"); XCTAssertEqual(dailyResult?.id, "daily-chat")
+        XCTAssertEqual(lock.withLock { creates }, 2); XCTAssertEqual(bodies.count, 1)
+        let bytes = try XCTUnwrap(bodies.encoded.first)
+        let submitted = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+        XCTAssertEqual(submitted["clientRequestId"] as? String, "daily-after-manual")
+        XCTAssertEqual(api.ledgerRevision, 0)
+    }
+
+    @MainActor func testCancelledFirstDailyCreateReleasesNextDayWithoutAcceptingFailedReceipt() async throws {
+        let held = expectation(description: "First day create held for cancellation")
+        let nextEntered = expectation(description: "Next day queued")
+        let lock = NSLock(); var firstRequest: WorkspaceLaunchURLProtocol?; var creates = 0
+        let bodies = WorkspaceBodyCapture()
+        WorkspaceLaunchURLProtocol.setHandler { transport in
+            let request = transport.request; let path = request.url?.path ?? ""
+            if request.httpMethod == "POST", path == "/api/v1/assistant/conversations" {
+                let count = lock.withLock { creates += 1; return creates }
+                if count == 1 { lock.withLock { firstRequest = transport }; held.fulfill() }
+                else { try transport.respond(Self.conversation("surviving-day")) }
+            } else if path.hasSuffix("/daily-review") {
+                _ = bodies.add(try Self.body(request)); try transport.respond(["generation": Self.generation("surviving-day")])
+            } else { try transport.respond(["items": []]) }
+        }
+        let api = try client(protocolClass: WorkspaceLaunchURLProtocol.self); defer { api.invalidate() }
+        let store = AssistantStore(api: api)
+        let a = AssistantLaunchIntent(id: "owner.A", apiIdentity: api.identity, date: "2026-11-05", timeZone: "Asia/Shanghai", clientRequestID: "failed-A", conversationID: nil, mayStart: true)
+        let b = AssistantLaunchIntent(id: "owner.B", apiIdentity: api.identity, date: "2026-11-06", timeZone: "Asia/Shanghai", clientRequestID: "surviving-B", conversationID: nil, mayStart: true)
+        var failedDayCheckpoints = 0
+        let first = Task { await store.launchDailyReview(a) { _, _ in failedDayCheckpoints += 1; return true } }
+        await fulfillment(of: [held], timeout: 3)
+        let second = Task { nextEntered.fulfill(); return await store.launchDailyReview(b) { _, _ in true } }
+        await fulfillment(of: [nextEntered], timeout: 3)
+        lock.withLock { firstRequest }?.fail(URLError(.cancelled))
+        let failed = await first.value; let survived = await second.value
+        XCTAssertNil(failed); XCTAssertEqual(survived?.id, "surviving-day")
+        XCTAssertEqual(failedDayCheckpoints, 0)
+        XCTAssertEqual(lock.withLock { creates }, 2); XCTAssertEqual(bodies.count, 1)
+        let bytes = try XCTUnwrap(bodies.encoded.first)
+        let submitted = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: String])
+        XCTAssertEqual(submitted["date"], "2026-11-06"); XCTAssertEqual(submitted["clientRequestId"], "surviving-B")
+        XCTAssertFalse(store.creating); XCTAssertEqual(api.ledgerRevision, 0)
+    }
 }
 
 private final class WorkspaceRequestCapture: @unchecked Sendable {
@@ -417,4 +535,28 @@ private final class WorkspaceBodyCapture: @unchecked Sendable {
     func add(_ value: [String: Any]) -> Int { lock.withLock { values.append((try? JSONSerialization.data(withJSONObject: value, options: .sortedKeys)) ?? Data()); return values.count } }
     var count: Int { lock.withLock { values.count } }
     var encoded: [Data] { lock.withLock { values } }
+}
+
+private final class WorkspaceLaunchURLProtocol: URLProtocol, @unchecked Sendable {
+    typealias Handler = (WorkspaceLaunchURLProtocol) throws -> Void
+    private static let lock = NSLock()
+    private static var handler: Handler?
+    static func setHandler(_ value: Handler?) { lock.withLock { handler = value } }
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "example.com" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        do {
+            guard let handler = Self.lock.withLock({ Self.handler }) else { throw URLError(.badServerResponse) }
+            try handler(self)
+        } catch { client?.urlProtocol(self, didFailWithError: error) }
+    }
+    override func stopLoading() {}
+    func fail(_ error: Error) { client?.urlProtocol(self, didFailWithError: error) }
+    func respond(_ value: Any) throws {
+        guard let url = request.url, let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"]) else { throw URLError(.badServerResponse) }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: try JSONSerialization.data(withJSONObject: value))
+        client?.urlProtocolDidFinishLoading(self)
+    }
 }

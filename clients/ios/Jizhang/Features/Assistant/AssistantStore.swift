@@ -81,6 +81,9 @@ final class AssistantStore: ObservableObject {
     private var visibleConversationID: String?
     private var streamTask: Task<Void, Never>?
     private var dailyLaunchJobs: [String: Task<AssistantConversation?, Never>] = [:]
+    private var dailyLaunchTail: Task<AssistantConversation?, Never>?
+    private var dailyLaunchTailID: String?
+    private var conversationCreationWaiters: [CheckedContinuation<Void, Never>] = []
     private var dailyAccepted: [String: (AssistantGenerationSnapshot) -> Bool] = [:]
     private var dailyUncertain: [String: () -> Void] = [:]
     private var dailyWillSubmit: [String: () -> Bool] = [:]
@@ -131,7 +134,12 @@ final class AssistantStore: ObservableObject {
         listError = nil
         listTicket = UUID()
         loadingList = false
-        defer { creating = false }
+        defer {
+            creating = false
+            let waiters = conversationCreationWaiters
+            conversationCreationWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
         do {
             let conversation: AssistantConversation = try await api.request("/assistant/conversations", method: "POST")
             guard !conversation.id.isEmpty, !conversation.archived else { throw AssistantProtocolError.invalidSnapshot }
@@ -318,13 +326,17 @@ final class AssistantStore: ObservableObject {
     func launchDailyReview(_ intent: AssistantLaunchIntent,
                            checkpoint: @escaping (AssistantLaunchIntent, DailyReviewCheckpoint) -> Bool) async -> AssistantConversation? {
         if let current = dailyLaunchJobs[intent.id] { return await current.value }
+        let preceding = dailyLaunchTail
         let job = Task<AssistantConversation?, Never> { [weak self] in
+            _ = await preceding?.value
             guard let self else { return nil }
             return await self.performDailyReviewLaunch(intent, checkpoint: checkpoint)
         }
         dailyLaunchJobs[intent.id] = job
+        dailyLaunchTail = job; dailyLaunchTailID = intent.id
         let result = await job.value
         dailyLaunchJobs.removeValue(forKey: intent.id)
+        if dailyLaunchTailID == intent.id { dailyLaunchTail = nil; dailyLaunchTailID = nil }
         return result
     }
 
@@ -339,16 +351,26 @@ final class AssistantStore: ObservableObject {
             conversation = conversations.first(where: { $0.id == id }) ?? AssistantConversation(
                 id: id, title: "每日复盘 · \(intent.date)", archived: false, createdAt: 0, updatedAt: 0)
         } else {
-            guard intent.mayStart, let created = await createConversation() else { return nil }
+            guard intent.mayStart else { return nil }
+            // A notification can arrive while the user is creating an unrelated chat.
+            // Wait for that actual request to settle, then create a distinct daily chat.
+            while creating {
+                await withCheckedContinuation { conversationCreationWaiters.append($0) }
+                guard !Task.isCancelled else { return nil }
+            }
+            guard let created = await createConversation() else {
+                listError = "每日复盘仍待处理，尚未开始分析。请稍后重试通知，原请求会保留。"
+                return nil
+            }
             conversation = created
         }
         guard checkpoint(intent, .conversation(conversation.id)), intent.apiIdentity == api.identity else {
             listError = "每日复盘的状态未能保存，尚未发起分析。请重试通知或检查本机存储。"
             return nil
         }
-        await open(conversation.id)
-        guard visibleConversationID == conversation.id, !Task.isCancelled else { return nil }
-        if let known = thread(conversation.id).generation {
+        let ready = await reconcileDailyConversation(conversation.id)
+        guard !Task.isCancelled else { return nil }
+        if ready, let known = thread(conversation.id).generation {
             _ = checkpoint(intent, .accepted(known.id))
             return conversation
         }
@@ -360,16 +382,36 @@ final class AssistantStore: ObservableObject {
         dailyAccepted[submission.requestID] = { checkpoint(intent, .accepted($0.id)) }
         dailyUncertain[submission.requestID] = { _ = checkpoint(intent, .uncertain(conversation.id)) }
         dailyWillSubmit[submission.requestID] = { checkpoint(intent, .submitting(conversation.id)) }
-        if intent.mayStart {
-            guard thread(conversation.id).loaded else { return conversation }
+        if intent.mayStart && ready {
             await submit(submission, in: conversation.id)
         } else {
             update(conversation.id) {
-                $0.pendingSubmission = submission
-                $0.notice = "每日复盘的发送结果尚待核对。可刷新对话，或显式重试同一个请求；不会自动重新调用模型。"
+                if $0.pendingSubmission == nil {
+                    $0.pendingSubmission = submission
+                    $0.notice = "每日复盘的发送结果尚待核对。可刷新对话，或显式重试同一个请求；不会自动重新调用模型。"
+                }
             }
         }
         return conversation
+    }
+
+    /// Daily launch work may be queued behind another day or displayed conversation.
+    /// Reconcile its own data without calling open(), stealing selection or cancelling SSE.
+    private func reconcileDailyConversation(_ id: String) async -> Bool {
+        let read = UUID()
+        update(id) { $0.readTicket = read }
+        do {
+            let history: AssistantItems<AssistantMessage> = try await api.request(AssistantPath.conversation(id) + "/messages")
+            try validateHistory(history.items, conversation: id)
+            let latest: AssistantItems<AssistantGenerationSnapshot> = try await api.request(AssistantPath.conversation(id) + "/generations?limit=1")
+            guard !Task.isCancelled, threads[id]?.readTicket == read, latest.items.count <= 1 else { return false }
+            applyHistory(history.items, in: id)
+            if let snapshot = latest.items.first { try install(snapshot, conversation: id) }
+            return true
+        } catch {
+            if threads[id]?.readTicket == read { update(id) { $0.notice = "每日复盘对话暂时无法核对。原请求已保留，可刷新或显式重试。" } }
+            return false
+        }
     }
 
     func stop(in id: String) async {
