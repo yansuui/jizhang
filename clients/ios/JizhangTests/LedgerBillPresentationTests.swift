@@ -112,7 +112,7 @@ final class LedgerBillPresentationTests: XCTestCase {
         }
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [CoreMockURLProtocol.self]
-        return try APIClient(baseURL: URL(string: "https://bill-modal.example")!, credentialStore: CoreMemoryCredentialStore(),
+        return try APIClient(baseURL: URL(string: "https://example.com")!, credentialStore: CoreMemoryCredentialStore(),
                              restoreSession: false, configuration: config)
     }
 
