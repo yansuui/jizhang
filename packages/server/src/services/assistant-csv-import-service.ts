@@ -42,7 +42,7 @@ export class AssistantCsvImportService {
       if (row.result_json !== null) return { result: JSON.parse(row.result_json) as unknown };
       if (row.expires_at < this.context.now() || row.fingerprint !== ledgerFingerprint(this.context)) workspaceError(409, 'STALE', '账本或预览已变化，请重新审核后确认。');
       const result = row.kind === 'transactions' ? this.context.services.portability.importTransactionsCsv(csv) : this.context.services.portability.importTransfersCsv(csv);
-      this.context.db.prepare('UPDATE assistant_csv_previews SET result_json=? WHERE id=?').run(JSON.stringify(result), id);
+      this.context.db.prepare('UPDATE assistant_csv_previews SET result_json=?,confirmed_at=? WHERE id=?').run(JSON.stringify(result), this.context.now(), id);
       return { result };
     })();
   }

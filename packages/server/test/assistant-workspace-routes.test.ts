@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -390,6 +391,157 @@ describe('negotiated durable conversational workspace', () => {
     expect(assistantBusinessFingerprint(db, 'test', {}, NOW)).toBe(afterApproved); expect(count()).toBe(0);
     const secondId = messages(second).find((m) => m.content.card)!.content.card!.actionId; expect(secondId).not.toBe(id);
     expect((await request('POST', `/actions/${secondId}/cancel`, {})).statusCode).toBe(200); expect(count()).toBe(0);
+  });
+});
+
+describe('native outcome continuation of the original task', () => {
+  async function source(cid: string, destination: string, itemId?: string) {
+    turns.push({ toolCall: { name: 'workspace.open', arguments: { destination, ...(itemId ? { itemId } : {}) } } });
+    const initial = await generate(cid, 'Import the file, then summarize the ledger; later edits still need approval.', 'native-' + destination);
+    expect(initial.status).toBe('completed');
+    const message = messages(initial).find((m) => m.content.result?.toolName === 'workspace.open')!;
+    expect(message.content.generationId).toBe(initial.id);
+    return message.id;
+  }
+  async function complete(cid: string, sourceMessageId: string, reference: Record<string, unknown>, clientRequestId = 'native-complete') {
+    return request('POST', `/conversations/${cid}/workspace/native-completions`, { clientRequestId, sourceMessageId, reference });
+  }
+  async function csvPreview() {
+    new TransactionService(db, { now: () => NOW }).create({ type: 0, amountCents: 3500, categoryId: 'builtin-expense-food', accountId: 'builtin-default-account', date: NOW, note: 'native csv source' });
+    const exported = await app.inject({ method: 'GET', url: '/api/v1/export/transactions.csv', headers: { cookie } });
+    const csv = exported.body.replace(/(?<=\n)[^,]+,/, 'native-imported-id,');
+    const preview = await request('POST', '/data-import/preview', { kind: 'transactions', csv, clientRequestId: 'native-csv-preview' });
+    expect(preview.statusCode, preview.body).toBe(200);
+    return { csv, id: preview.json().preview.id as string };
+  }
+
+  it('verifies a confirmed CSV receipt then rereads the ledger in the original task, with canonical exact-once replay', async () => {
+    const cid = await conversation(); const mid = await source(cid, 'data-import'); const preview = await csvPreview();
+    const ref = { kind: 'csv-import', previewId: preview.id };
+    const premature = await complete(cid, mid, ref);
+    expect(premature.statusCode).toBe(409); expect(premature.json().error.code).toBe('ASSISTANT_WORKSPACE_STALE'); expect(prompts).toHaveLength(1);
+    expect((await request('POST', `/data-import/${preview.id}/confirm`, { csv: preview.csv })).statusCode).toBe(200); expect(count()).toBe(2);
+    db.prepare('UPDATE assistant_csv_previews SET confirmed_at=? WHERE id=?').run(NOW - 1, preview.id);
+    expect((await complete(cid, mid, ref)).statusCode).toBe(409);
+    db.prepare('UPDATE assistant_csv_previews SET confirmed_at=NULL WHERE id=?').run(preview.id);
+    expect((await complete(cid, mid, ref)).statusCode).toBe(409);
+    db.prepare('UPDATE assistant_csv_previews SET confirmed_at=? WHERE id=?').run(NOW, preview.id);
+    const generationCount = count('assistant_generations'); const messageCount = count('assistant_messages');
+    db.exec("CREATE TRIGGER reject_native_receipt BEFORE INSERT ON assistant_workspace_requests WHEN NEW.kind='native-receipt' BEGIN SELECT RAISE(ABORT,'receipt write failed'); END");
+    const failed = await complete(cid, mid, ref);
+    expect(failed.statusCode).toBe(500); expect(failed.body).not.toContain('receipt write failed');
+    expect(count('assistant_generations')).toBe(generationCount); expect(count('assistant_messages')).toBe(messageCount);
+    expect(count('assistant_workspace_requests')).toBe(0); expect(count()).toBe(2); expect(prompts).toHaveLength(1);
+    db.exec('DROP TRIGGER reject_native_receipt');
+    turns.push({ toolCall: { name: 'transactions.query', arguments: { limit: 10 } } }, { message: 'Verified both ledger rows after the native import.' });
+    const response = await complete(cid, mid, ref); expect(response.statusCode, response.body).toBe(202);
+    const result = await terminal(cid, response.json().generation.id); expect(result.status).toBe('completed');
+    const rows = messages(result).find((m) => m.content.result?.toolName === 'transactions.query')!.content.result!.data;
+    expect(rows['total']).toBe(2); expect(count()).toBe(2);
+    const facts = new AssistantWorkspaceStore(db, () => NOW).facts(result.id)!;
+    expect(facts['originalRequest']).toContain('Import the file, then summarize');
+    expect(facts['lastNativeOutcome']).toMatchObject({ sourceMessageId: mid, kind: 'csv-import', verified: 'confirmed-import', result: { inserted: 1 } });
+    expect(prompts.at(-1)).toContain('lastNativeOutcome');
+    const replay = await request('POST', `/conversations/${cid}/workspace/native-completions`, { reference: { previewId: preview.id, kind: 'csv-import' }, sourceMessageId: mid, clientRequestId: 'native-complete' });
+    expect(replay.statusCode).toBe(200); expect(replay.json().generation.id).toBe(result.id);
+    const alias = await complete(cid, mid, ref, 'reopened-native'); expect(alias.statusCode).toBe(200); expect(alias.json().generation.id).toBe(result.id);
+    expect((await complete(cid, mid, { kind: 'csv-import', previewId: 'another' }, 'reopened-native')).statusCode).toBe(409);
+    expect(prompts).toHaveLength(3); expect(count()).toBe(2);
+    expect(count('assistant_pending_actions')).toBe(0);
+  });
+
+  it('rejects foreign conversations, ordinary messages, mismatched destinations, unknown fields and missing receipts', async () => {
+    const cid = await conversation(); const mid = await source(cid, 'data-import'); const other = await conversation();
+    const wrong = await complete(other, mid, { kind: 'csv-import', previewId: 'missing' });
+    expect(wrong.statusCode).toBe(404); expect(wrong.json().error.code).toBe('ASSISTANT_WORKSPACE_NOT_FOUND');
+    expect((await complete(cid, mid, { kind: 'export', exportKind: 'transactions' })).statusCode).toBe(409);
+    const user = (await request('GET', `/conversations/${cid}/messages`)).json();
+    const ordinaryId = (user.items as AssistantMessageDto[]).find((m) => m.role === 'user')!.id;
+    expect((await complete(cid, ordinaryId, { kind: 'csv-import', previewId: 'missing' })).statusCode).toBe(404);
+    expect((await complete(cid, mid, { kind: 'csv-import', previewId: 'missing', claimedSuccess: true })).statusCode).toBe(400);
+    expect((await complete(cid, mid, { kind: 'csv-import', previewId: 'missing' })).statusCode).toBe(404);
+    expect(prompts).toHaveLength(1); expect(count('assistant_workspace_requests')).toBe(0);
+  });
+
+  it('checks exact current photo bytes or absence and retains new-approval and daily read-only boundaries', async () => {
+    const item = new ItemService(db, { now: () => NOW }).create({ name: 'Native photo', purchaseDate: NOW });
+    const cid = await conversation(); const mid = await source(cid, 'item-photo', item.id);
+    const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
+    const sha256 = createHash('sha256').update(png).digest('hex');
+    const ref = { kind: 'item-photo', itemId: item.id, operation: 'saved', sha256 };
+    expect((await complete(cid, mid, ref)).statusCode).toBe(409);
+    const upload = await app.inject({ method: 'PUT', url: `/api/v1/items/${item.id}/photo`, headers: { cookie, 'x-requested-with': 'fetch', 'content-type': 'image/png' }, payload: png });
+    expect(upload.statusCode, upload.body).toBe(204);
+    expect((await complete(cid, mid, { ...ref, sha256: '00'.repeat(32) })).statusCode).toBe(409);
+    expect((await complete(cid, mid, { kind: 'item-photo', itemId: item.id, operation: 'removed' })).statusCode).toBe(409);
+    expect((await complete(cid, mid, { ...ref, itemId: 'another-item' })).statusCode).toBe(409);
+    turns.push({ toolCall: { name: 'tag.create', arguments: { name: 'Photo reviewed' } } });
+    const response = await complete(cid, mid, ref); expect(response.statusCode, response.body).toBe(202);
+    const pending = await terminal(cid, response.json().generation.id); expect(pending.outcome).toBe('pending-confirmation'); expect(count('tags')).toBe(0);
+    expect(new AssistantWorkspaceStore(db, () => NOW).facts(pending.id)!['lastNativeOutcome']).toMatchObject({ verified: 'current-state', sha256, hasPhoto: true });
+    const action = messages(pending).find((m) => m.content.card)!.content.card!.actionId;
+    await request('POST', `/actions/${action}/cancel`, {});
+    turns.push({ toolCall: { name: 'workspace.open', arguments: { destination: 'item-photo', itemId: item.id } } });
+    const daily = await request('POST', `/conversations/${cid}/workspace/daily-review`, { clientRequestId: 'native-daily', date: '2026-11-06', timeZone: 'Asia/Shanghai' });
+    const day = await terminal(cid, daily.json().generation.id); const dayMid = messages(day).find((m) => m.content.result?.toolName === 'workspace.open')!.id;
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/items/${item.id}/photo`, headers: { cookie, 'x-requested-with': 'fetch' } })).statusCode).toBe(204);
+    turns.push({ toolCall: { name: 'tag.create', arguments: { name: 'Must remain read only' } } });
+    const removed = await complete(cid, dayMid, { kind: 'item-photo', itemId: item.id, operation: 'removed' }, 'native-daily-return');
+    expect(removed.statusCode, removed.body).toBe(202);
+    const dayDone = await terminal(cid, removed.json().generation.id);
+    expect(new AssistantWorkspaceStore(db, () => NOW).facts(dayDone.id)!['dailyReview']).toMatchObject({ date: '2026-11-06' });
+    expect(count('tags')).toBe(0); expect(count('assistant_pending_actions')).toBe(1);
+  });
+
+  it('verifies owned confirmed merged-batch receipts using real review/confirm routes', async () => {
+    const cid = await conversation(); const mid = await source(cid, 'platform-import');
+    const bytes = readFileSync(new URL('./fixtures/wechat-bill-sample.csv', import.meta.url));
+    const created = await request('POST', `/conversations/${cid}/import-batches`, { clientRequestId: 'native-batch', analyse: false, files: [{ fileName: 'wechat.csv', source: 'auto', fileBase64: bytes.toString('base64') }] });
+    expect(created.statusCode, created.body).toBe(201); const batchId = created.json().batch.batchId as string;
+    const ref = { kind: 'platform-import', batchId };
+    expect((await complete(cid, mid, ref)).statusCode).toBe(409);
+    const rows = (await request('GET', `/conversations/${cid}/import-batches/${batchId}/rows?limit=100`)).json().items as { itemId: string; type: number; ignored: boolean; existing: boolean; conflictKind: string | null }[];
+    const selected = rows.filter((r) => !r.ignored && !r.existing && !r.conflictKind).slice(0, 1); expect(selected).toHaveLength(1);
+    const batch = (await request('GET', `/conversations/${cid}/import-batches/${batchId}`)).json().batch;
+    const reviewed = await request('POST', `/conversations/${cid}/import-batches/${batchId}/review`, { version: batch.version, analysisRevision: batch.analysis.analysisRevision, viewRevision: batch.viewRevision, selectedItemIds: selected.map((r) => r.itemId), categoryAssignments: Object.fromEntries(selected.map((r) => [r.itemId, { kind: 'existing', categoryId: r.type === 0 ? 'builtin-expense-other' : 'builtin-income-other' }])), approvedCategories: [], noteOverrides: {}, conflictDecisions: [] });
+    expect(reviewed.statusCode, reviewed.body).toBe(200);
+    const confirmed = await request('POST', `/conversations/${cid}/import-batches/${batchId}/confirm`, { reviewToken: reviewed.json().reviewToken, expectedVersion: batch.version, files: [{ fileIndex: 0, fileBase64: bytes.toString('base64') }] });
+    expect(confirmed.statusCode, confirmed.body).toBe(200); expect(count()).toBe(1);
+    db.prepare('UPDATE assistant_import_batches SET updated_at=? WHERE id=?').run(NOW - 1, batchId);
+    expect((await complete(cid, mid, ref)).statusCode).toBe(409);
+    db.prepare('UPDATE assistant_import_batches SET updated_at=? WHERE id=?').run(NOW, batchId);
+    const foreign = await conversation(); const foreignMid = await source(foreign, 'platform-import');
+    expect((await complete(foreign, foreignMid, ref)).statusCode).toBe(404);
+    turns.push({ message: 'The confirmed batch is ready for the requested summary.' });
+    const response = await complete(cid, mid, ref); expect(response.statusCode, response.body).toBe(202);
+    const result = await terminal(cid, response.json().generation.id); expect(result.status).toBe('completed');
+    expect(new AssistantWorkspaceStore(db, () => NOW).facts(result.id)!['lastNativeOutcome']).toMatchObject({ batchId, result: { inserted: 1 } }); expect(count()).toBe(1);
+  });
+
+  it('continues a photo viewing task from current verified bytes without implying an image mutation', async () => {
+    const service = new ItemService(db, { now: () => NOW }); const item = service.create({ name: 'Existing image', purchaseDate: NOW });
+    const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
+    service.putPhoto(item.id, 'image/png', png);
+    const cid = await conversation(); const mid = await source(cid, 'item-photo', item.id);
+    const image = await app.inject({ method: 'GET', url: `/api/v1/items/${item.id}/photo`, headers: { cookie } });
+    expect(image.statusCode).toBe(200); expect(image.rawPayload).toEqual(png);
+    const before = assistantBusinessFingerprint(db, 'test', {}, NOW);
+    turns.push({ message: 'The current image is verified; no photo mutation was requested.' });
+    const response = await complete(cid, mid, { kind: 'item-photo', itemId: item.id, operation: 'viewed', sha256: createHash('sha256').update(image.rawPayload).digest('hex') });
+    expect(response.statusCode, response.body).toBe(202); const done = await terminal(cid, response.json().generation.id);
+    expect(new AssistantWorkspaceStore(db, () => NOW).facts(done.id)!['lastNativeOutcome']).toMatchObject({ operation: 'viewed', verified: 'current-state', hasPhoto: true });
+    expect(assistantBusinessFingerprint(db, 'test', {}, NOW)).toBe(before); expect(count('assistant_pending_actions')).toBe(0);
+  });
+
+  it.each(['transactions', 'salaries', 'recurring', 'transfers'])('verifies current %s export generation without claiming device share', async (exportKind) => {
+    const cid = await conversation(); const mid = await source(cid, 'data-export');
+    turns.push({ message: 'Server export is available; device sharing has not been independently verified.' });
+    const response = await complete(cid, mid, { kind: 'export', exportKind }); expect(response.statusCode, response.body).toBe(202);
+    const result = await terminal(cid, response.json().generation.id);
+    const facts = new AssistantWorkspaceStore(db, () => NOW).facts(result.id)!['lastNativeOutcome'];
+    expect(facts).toMatchObject({ kind: 'export', exportKind, verified: 'server-read' });
+    expect(JSON.stringify(facts)).toContain('不能证明设备已保存或系统分享已完成'); expect(count()).toBe(0);
+    expect((await complete(cid, mid, { kind: 'export', exportKind: 'accounts' }, 'invalid-export')).statusCode).toBe(400);
   });
 });
 

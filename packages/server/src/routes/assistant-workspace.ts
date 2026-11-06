@@ -52,4 +52,9 @@ export async function registerAssistantWorkspaceRoutes(app: FastifyInstance, res
     if (result.created) void s.runner.start(request.params.cid, result.generation.id);
     return reply.status(result.created ? 202 : 200).send(result);
   });
+  app.post<{ Params: { cid: string } }>(`${prefix}/conversations/:cid/workspace/native-completions`, async (request, reply) => {
+    const s = resolve(request); const result = s.workspace.nativeCompletion(request.params.cid, request.body, create(s));
+    if (result.created) void s.runner.start(request.params.cid, result.generation.id);
+    return reply.status(result.created ? 202 : 200).send(result);
+  });
 }

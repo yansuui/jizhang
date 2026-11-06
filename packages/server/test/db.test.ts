@@ -72,6 +72,15 @@ function countRows(table: string): number {
 }
 
 describe('migrations', () => {
+  it('025 preserves old CSV confirmation receipts without inventing a new completion timestamp', () => {
+    runMigrations(db, null, MIGRATIONS.filter((migration) => migration.version < 25));
+    const result = JSON.stringify({ inserted: 2, skipped: 0, total: 2 });
+    db.prepare('INSERT INTO assistant_csv_previews(id,request_id,request_hash,kind,file_hash,fingerprint,preview_json,result_json,expires_at) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run('legacy-csv', 'legacy-request', 'request-hash', 'transactions', 'file-hash', 'fingerprint', '{}', result, 1000);
+    expect(runMigrations(db, null).applied).toEqual([25]);
+    expect(db.prepare('SELECT result_json,confirmed_at FROM assistant_csv_previews WHERE id=?').get('legacy-csv')).toEqual({ result_json: result, confirmed_at: null });
+    expect(runMigrations(db, null).applied).toEqual([]);
+  });
   it('013 creates tag indexes and idempotently backfills live and deleted names without changing JSON bytes', () => {
     const migrations = MIGRATIONS.filter((entry) => entry.version < 13);
     for (const migration of migrations) db.exec(migration.sql);

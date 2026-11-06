@@ -38,6 +38,7 @@ import { MIGRATION_021_FOUR_PURPOSE_FUNDS, backfillFourPurposeFunds } from './mi
 import { MIGRATION_022_TEMPLATE_TAGS, backfillTemplateTags } from './migrations/022-template-tags.js';
 import { MIGRATION_023_ASSISTANT_TRACE } from './migrations/023-assistant-trace.js';
 import { MIGRATION_024_ASSISTANT_WORKSPACE } from './migrations/024-assistant-workspace.js';
+import { MIGRATION_025_NATIVE_COMPLETION_RECEIPTS } from './migrations/025-native-completion-receipts.js';
 
 export interface Migration {
   readonly version: number;
@@ -79,6 +80,7 @@ export const MIGRATIONS: readonly Migration[] = [
   // it never holds model reasoning, provider bodies, prompts or credentials.
   { version: 23, name: 'assistant-trace', sql: MIGRATION_023_ASSISTANT_TRACE },
   { version: 24, name: 'assistant-workspace', sql: MIGRATION_024_ASSISTANT_WORKSPACE },
+  { version: 25, name: 'native-completion-receipts', sql: MIGRATION_025_NATIVE_COMPLETION_RECEIPTS },
 ];
 
 interface AppliedRow {

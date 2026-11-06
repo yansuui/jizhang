@@ -9,6 +9,7 @@ import { MAX_ASSISTANT_MESSAGE_EVENT_BYTES } from './assistant-turn-policy.js';
 import { projectAssistantReadResult } from './assistant-result-projection.js';
 import { ItemService } from './item-service.js';
 import { organizationPage } from './assistant-organization-page.js';
+import { nativeCompletionMatches, nativeCompletionReference, verifyNativeCompletion } from './assistant-native-completion.js';
 
 export type CreateWorkspaceTurn = (conversationId: string, text: string, requestId: string, workflowId: string, daily?: AssistantJsonObject) => AssistantGenerationCreateResult;
 const immutable = (key: string): boolean => key === 'id' || key === 'operationId' || key === 'contractVersion' || /(?:token|revision|fingerprint|hash)$/i.test(key) || key.startsWith('expected');
@@ -252,6 +253,38 @@ export class AssistantWorkspaceService {
       const result = create(conversationId, text, requestId, workflowId, { date: scope.date, timeZone: scope.timeZone });
       this.saveRequest(conversationId, 'daily', requestId, body, { generationId: result.generation.id, workflowId });
       return { ...result, workflow: this.store.workflow(conversationId, workflowId) };
+    })();
+  }
+  nativeCompletion(conversationId: string, raw: unknown, create: CreateWorkspaceTurn): AssistantGenerationCreateResult & { workflow: AssistantJsonObject | null } {
+    this.own(conversationId);
+    const body = workspaceRecord(raw); workspaceOnly(body, ['clientRequestId', 'sourceMessageId', 'reference']);
+    const requestId = workspaceString(body['clientRequestId']); const sourceMessageId = workspaceString(body['sourceMessageId']);
+    const reference = nativeCompletionReference(body['reference']);
+    const identity = { sourceMessageId, reference };
+    return this.context.db.transaction(() => {
+      const source = this.conversations.getMessage(sourceMessageId);
+      if (source.conversationId !== conversationId || source.role !== 'assistant' || source.content.result?.toolName !== 'workspace.open' || !source.content.generationId) workspaceError(404, 'NOT_FOUND', '没有找到当前会话的原生入口。');
+      const nativeAction = source.content.result.data['nativeAction'];
+      if (!nativeAction || typeof nativeAction !== 'object' || Array.isArray(nativeAction) || !nativeCompletionMatches(workspaceRecord(nativeAction), reference)) workspaceError(409, 'CONFLICT', '操作回执与原生入口不一致。');
+      const binding = this.store.binding(source.content.generationId);
+      if (!binding || this.generations.get(conversationId, source.content.generationId).status !== 'completed') workspaceError(409, 'STALE', '原生入口尚未完成或已失效。');
+      const receiptId = hashWorkspace(identity);
+      const requestReplay = this.request(conversationId, 'native', requestId, identity);
+      const replay = requestReplay ?? this.request(conversationId, 'native-receipt', receiptId, identity);
+      if (replay) {
+        if (!requestReplay) this.saveRequest(conversationId, 'native', requestId, identity, replay);
+        return { created: false, generation: this.generations.get(conversationId, workspaceString(replay['generationId'])), workflow: this.store.workflow(conversationId, binding.workflow_id) };
+      }
+      const verified = verifyNativeCompletion(this.context, conversationId, reference, source.createdAt);
+      const facts = { sourceMessageId, ...verified, checkedAt: this.context.now() };
+      this.store.merge(binding.workflow_id, 'lastNativeOutcome', facts);
+      this.conversations.appendMessage({ conversationId, role: 'assistant', kind: 'result', content: { version: 1, text: '已重新核实原生工作区结果，将继续原任务。', result: { version: 1, toolName: 'workspace.open', summary: '服务器已核实原生结果；设备保存、分享和操作来源仅按明确证据描述。', data: { nativeCompletion: facts } } } });
+      const turn = create(conversationId, '原生工作区已返回服务器核实的结果。请读取 lastNativeOutcome，继续原任务；不能推断设备分享或操作来源，任何新的修改仍须单独确认。', requestId, binding.workflow_id);
+      const response = { generationId: turn.generation.id };
+      this.saveRequest(conversationId, 'native', requestId, identity, response);
+      this.saveRequest(conversationId, 'native-receipt', receiptId, identity, response);
+      this.store.phase(turn.generation.id, 'reporting');
+      return { ...turn, workflow: this.store.workflow(conversationId, binding.workflow_id) };
     })();
   }
 }
