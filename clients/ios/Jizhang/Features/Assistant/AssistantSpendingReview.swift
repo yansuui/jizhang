@@ -45,6 +45,9 @@ enum AssistantSpendingSelection {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("历史账单整理").font(.headline)
+            if let start = store.run["startDate"].stringValue, let end = store.run["endDate"].stringValue {
+                Text("\(start) 至 \(end)").font(.caption).foregroundStyle(.secondary)
+            }
             if store.status == "ready" {
                 Label("分析完成，请选择要采用的建议。", systemImage: "checkmark.circle")
                 Button {
@@ -56,7 +59,7 @@ enum AssistantSpendingSelection {
                     }
                 }.buttonStyle(.bordered).disabled(store.opening)
             } else if store.status == "failed" {
-                Text("分析未完成，已保留可用的进度。")
+                Text(store.failureText)
                 if store.run["canResume"].boolValue == true {
                     Button("继续未完成的分析") {
                         onSuggestion("请继续历史账单整理任务 \(store.runID)，只处理未完成批次。")

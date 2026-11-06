@@ -22,6 +22,16 @@ import Combine
     }
 
     var status: String? { run["status"].stringValue }
+    var failureText: String {
+        switch run["errorCode"].stringValue {
+        case "AI_PROVIDER_TIMEOUT": return "分析请求超时，已完成的进度仍可保留。"
+        case "AI_RESPONSE_INVALID": return "模型返回的整理格式无法识别，请核对模型配置后继续。"
+        case "AI_PROVIDER_ERROR": return "暂时无法连接分析服务，请稍后继续。"
+        case "AI_ORGANIZATION_INTERRUPTED": return "分析被中断，可继续处理尚未完成的批次。"
+        case "AI_ORGANIZATION_CONFLICT": return "账单已发生变化，请重新分析当前范围。"
+        default: return "分析未完成，请核对任务状态后继续。"
+        }
+    }
     var progressText: String {
         guard let complete = run["completedCount"].intValue, let total = run["eligibleCount"].intValue else {
             return "正在读取整理进度…"

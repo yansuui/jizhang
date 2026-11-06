@@ -14,6 +14,16 @@ final class AssistantSpendingRunTests: XCTestCase {
         XCTAssertFalse(unsafe.displayMessage.contains("must-not-render"))
     }
 
+    @MainActor func testFailedJobExplainsSafeCauseWithoutDisplayingProviderDetails() throws {
+        let api = try client(); defer { api.invalidate() }
+        var value = Self.run(status: "failed", completed: 3)
+        value["errorCode"] = "AI_RESPONSE_INVALID"
+        value["errorDetail"] = "private-provider-text"
+        let store = AssistantSpendingRunStore(api: api, runID: "run-a", initial: try JSONValue.decodeData(value))
+        XCTAssertTrue(store.failureText.contains("格式"))
+        XCTAssertFalse(store.failureText.contains("private-provider-text"))
+    }
+
     @MainActor func testBackgroundObservationCompletesWithOnlyReadRequests() async throws {
         let reads = SpendingReadCounter()
         CoreMockURLProtocol.setHandler { request in
