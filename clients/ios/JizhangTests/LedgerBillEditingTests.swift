@@ -351,6 +351,51 @@ final class LedgerBillEditingTests: XCTestCase {
                        "A plain income never carries stale original-bill links")
     }
 
+    func testAmountExpressionAddsAndSubtractsIntegerCents() throws {
+        XCTAssertEqual(try LedgerAmountExpression.cents("12.5+3"), 1_550)
+        XCTAssertEqual(try LedgerAmountExpression.cents("100-30.25"), 6_975)
+        XCTAssertEqual(try LedgerAmountExpression.cents(" 1 + 2.5 - 0.5 "), 300)
+        XCTAssertEqual(try LedgerAmountExpression.cents("25.00"), 2_500)
+        XCTAssertEqual(try LedgerAmountExpression.cents("90071992547409.91-90071992547409.90"), 1)
+        for invalid in ["", "5+", "+", "5++3", "5-8", "-5", "0+5", "1.001+1", "5+ +3", "1e2+1"] {
+            XCTAssertThrowsError(try LedgerAmountExpression.cents(invalid), invalid)
+        }
+        XCTAssertEqual(LedgerAmountExpression.totalText("12.5+2.25"), "¥14.75")
+        XCTAssertNil(LedgerAmountExpression.totalText("12.50"), "A plain amount needs no running total")
+        XCTAssertNil(LedgerAmountExpression.totalText("5-8"), "An invalid expression shows no total")
+    }
+
+    func testBillBodySendsTheEvaluatedAmount() throws {
+        var draft = LedgerTransactionDraft()
+        draft.type = .expense
+        draft.amount = "12.5+2"
+        draft.categoryId = "food"
+        draft.accountId = "bank"
+        let body = try draft.body(operationId: "op")
+        XCTAssertEqual(body["amountCents"].intValue, 1_450)
+    }
+
+    @MainActor func testCalculatorKeysCollapseOperatorsAndCommitTheTotal() async throws {
+        let api = try client(); defer { api.invalidate() }
+        BillTestProtocol.configure { transport in Self.metadata(transport) }
+        let store = LedgerTransactionEditorStore()
+        await store.load(api: api)
+        store.appendAmountOperator("+")
+        XCTAssertEqual(store.draft.amount, "", "An operator cannot start an amount")
+        store.draft.amount = "12.5"
+        store.appendAmountOperator("+")
+        store.appendAmountOperator("-")
+        XCTAssertEqual(store.draft.amount, "12.5-", "A repeated operator replaces the previous one")
+        store.draft.amount = "12.5+2.25"
+        store.commitAmountExpression()
+        XCTAssertEqual(store.draft.amount, "14.75")
+        XCTAssertNil(store.error)
+        store.draft.amount = "12.5+"
+        store.commitAmountExpression()
+        XCTAssertEqual(store.draft.amount, "12.5+", "An unfinished expression is kept for editing")
+        XCTAssertNotNil(store.error)
+    }
+
     @MainActor func testCompactRefundEditorPreview() async throws {
         let ready = expectation(description: "Editor metadata loaded")
         ready.expectedFulfillmentCount = 2

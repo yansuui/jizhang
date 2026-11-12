@@ -138,6 +138,9 @@ struct LedgerTransactionRow: View {
                 if transaction.isRefund { Text("退款").font(.caption2).foregroundStyle(AppTheme.accent) }
             }
         }.padding(.vertical, 5)
+            // A plain-styled Button only hit-tests its drawn subviews, so the gap between the note
+            // and the amount used to be inert. Fill the row's own frame with the tap target.
+            .contentShape(Rectangle())
     }
 }
 

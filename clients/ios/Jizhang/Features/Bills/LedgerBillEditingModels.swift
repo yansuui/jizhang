@@ -14,6 +14,65 @@ enum LedgerBillEditError: LocalizedError, Equatable {
     }
 }
 
+/// A calculator-style amount: decimal terms joined by `+` / `-`, evaluated left to right.
+///
+/// Every term keeps the single-amount contract (positive, at most two decimals, safe integer
+/// cents) and the total must also be a positive safe integer amount of cents, so the wire body is
+/// always one integer — never an expression the server would have to interpret.
+enum LedgerAmountExpression {
+    static let maximumTerms = 20
+
+    static func containsOperator(_ text: String) -> Bool {
+        text.contains("+") || text.contains("-") || text.contains("−") || text.contains("＋")
+    }
+
+    /// A running total to show under the field, or nil when this is a plain amount.
+    static func totalText(_ text: String) -> String? {
+        guard containsOperator(text), let cents = try? cents(text) else { return nil }
+        return LedgerFormat.money(cents)
+    }
+
+    static func cents(_ text: String) throws -> Int64 {
+        let normalized = text
+            .replacingOccurrences(of: "＋", with: "+")
+            .replacingOccurrences(of: "−", with: "-")
+            .replacingOccurrences(of: "－", with: "-")
+        var terms: [(sign: Int64, value: String)] = []
+        var sign: Int64 = 1
+        var current = ""
+        for character in normalized {
+            guard character == "+" || character == "-" else {
+                current.append(character)
+                continue
+            }
+            let term = current.trimmingCharacters(in: .whitespaces)
+            if term.isEmpty {
+                // Only a leading sign may stand alone; "5++3" is not a number.
+                guard terms.isEmpty, current.isEmpty else { throw LedgerBillEditError.invalidAmount }
+            } else {
+                terms.append((sign, term))
+                current = ""
+            }
+            sign = character == "-" ? -1 : 1
+        }
+        let tail = current.trimmingCharacters(in: .whitespaces)
+        guard !tail.isEmpty else { throw LedgerBillEditError.invalidAmount }
+        terms.append((sign, tail))
+        guard terms.count <= maximumTerms else { throw LedgerBillEditError.invalidAmount }
+        var total: Int64 = 0
+        for term in terms {
+            let value = try LedgerTransactionDraft.cents(term.value)
+            let (signed, multiplyOverflow) = value.multipliedReportingOverflow(by: term.sign)
+            guard !multiplyOverflow else { throw LedgerBillEditError.invalidAmount }
+            let (sum, addOverflow) = total.addingReportingOverflow(signed)
+            guard !addOverflow else { throw LedgerBillEditError.invalidAmount }
+            total = sum
+        }
+        guard total > 0, total <= 9_007_199_254_740_991 else { throw LedgerBillEditError.invalidAmount }
+        return total
+    }
+}
+
 struct LedgerBillPurposeSnapshot: Decodable {
     struct Facts: Decodable {
         let transactionId: String
@@ -95,7 +154,7 @@ struct LedgerTransactionDraft: Equatable {
         let tagValues = tags.components(separatedBy: CharacterSet(charactersIn: ",，\n"))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         var body: [String: JSONValue] = [
-            "type": .integer(Int64(type.rawValue)), "amountCents": .integer(try Self.cents(amount)),
+            "type": .integer(Int64(type.rawValue)), "amountCents": .integer(try LedgerAmountExpression.cents(amount)),
             "categoryId": .string(categoryId), "accountId": .string(accountId),
             "date": .integer(LedgerBillDates.milliseconds(date)), "note": .string(note),
             "tags": .array(Array(Set(tagValues)).sorted().map(JSONValue.string)),
@@ -207,6 +266,27 @@ private struct LedgerBillPendingWrite {
             guard owner == api.identity, generation == ticket, !Task.isCancelled else { return }
             self.error = error.localizedDescription
         }
+    }
+
+    /// Calculator-style entry: append `+` / `-`, collapsing a repeated trailing operator.
+    func appendAmountOperator(_ operand: String) {
+        var text = draft.amount
+        while let last = text.last, last == "+" || last == "-" || last == "−" || last == "＋" {
+            text.removeLast()
+        }
+        guard !text.isEmpty else { return }
+        draft.amount = text + operand
+    }
+
+    /// Commit `12.5+3` into `15.50`; an invalid expression leaves the field untouched for editing.
+    func commitAmountExpression() {
+        guard LedgerAmountExpression.containsOperator(draft.amount) else { return }
+        guard let cents = try? LedgerAmountExpression.cents(draft.amount) else {
+            error = LedgerBillEditError.invalidAmount.localizedDescription
+            return
+        }
+        draft.amount = LedgerTransactionDraft.amountText(cents)
+        error = nil
     }
 
     /// A refund is an income row that links back to the expenses it offsets. Turning the flag on

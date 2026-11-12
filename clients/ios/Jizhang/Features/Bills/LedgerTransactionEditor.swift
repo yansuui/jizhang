@@ -71,8 +71,17 @@ import SwiftUI
                             Text("¥").font(.title2)
                             TextField("0.00", text: $store.draft.amount)
                                 .font(.system(.largeTitle, design: .rounded).weight(.semibold))
-                                .keyboardType(.decimalPad).monospacedDigit().accessibilityLabel("金额，单位元")
-                        }.padding(.vertical, 8)
+                                .keyboardType(.decimalPad).monospacedDigit()
+                                .accessibilityLabel("金额，单位元，可用加号减号计算")
+                        }.padding(.top, 8)
+                        HStack(spacing: 10) {
+                            calculatorKey("+", label: "加") { store.appendAmountOperator("+") }
+                            calculatorKey("−", label: "减") { store.appendAmountOperator("-") }
+                            calculatorKey("=", label: "计算合计", emphasized: true) { store.commitAmountExpression() }
+                        }.padding(.vertical, 6)
+                        if let total = LedgerAmountExpression.totalText(store.draft.amount) {
+                            Text("= " + total).font(.footnote).monospacedDigit().foregroundStyle(.secondary)
+                        }
                     }
                     Section("账单信息") {
                         Picker("分类", selection: $store.draft.categoryId) {
@@ -155,6 +164,20 @@ import SwiftUI
                 }
             }
         }
+    }
+
+    /// Calculator keys: `+` / `-` edit the amount text, `=` collapses it into one number.
+    private func calculatorKey(_ title: String, label: String, emphasized: Bool = false,
+                               action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(emphasized ? AppTheme.accent : Color.primary)
+                .frame(maxWidth: .infinity, minHeight: 40)
+                .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     private var tagPicker: some View {
