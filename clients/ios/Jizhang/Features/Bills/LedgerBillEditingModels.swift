@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-enum LedgerBillEditError: LocalizedError {
+enum LedgerBillEditError: LocalizedError, Equatable {
     case invalidAmount, missingCategory, missingAccount, staleSource, invalidRefund
     var errorDescription: String? {
         switch self {
@@ -9,7 +9,7 @@ enum LedgerBillEditError: LocalizedError {
         case .missingCategory: return "请选择对应收支类型的分类。"
         case .missingAccount: return "请选择记账账户。"
         case .staleSource: return "原账单已变化，请重新读取后核对再保存。"
-        case .invalidRefund: return "退款必须关联原支出，请从支出详情重新打开。"
+        case .invalidRefund: return "退款必须至少关联一笔原支出。"
         }
     }
 }
@@ -209,12 +209,34 @@ private struct LedgerBillPendingWrite {
         }
     }
 
+    /// A refund is an income row that links back to the expenses it offsets. Turning the flag on
+    /// keeps the category legal for income and prefers the built-in 退款 category; turning it off
+    /// drops the links so a plain income never carries stale references.
+    func setRefund(_ value: Bool) {
+        guard draft.isRefund != value else { return }
+        draft.isRefund = value
+        if value {
+            draft.type = .income
+            draft.purpose = nil
+            let income = metadata.categories.filter { $0.type == LedgerBillKind.income.rawValue }
+            if let refundCategory = income.first(where: { $0.name.contains("退款") }) {
+                draft.categoryId = refundCategory.id
+            } else if !income.contains(where: { $0.id == draft.categoryId }) {
+                draft.categoryId = income.first?.id ?? ""
+            }
+        } else {
+            draft.refundLinkedTxIds = []
+        }
+    }
+
     /// Only explicit taps call this. A retry always reuses the frozen request verbatim.
     func save(api: APIClient, retryPending: Bool = false) async -> Bool {
         guard owner == api.identity, !saving, !committed,
               (retryPending ? pending != nil : (ready && pending == nil)) else { return false }
-        do {
-            if pending == nil {
+        if pending == nil {
+            // Freeze the request only after local validation passes. A rejected draft never sent a
+            // request, so it must stay editable instead of looking like an ambiguous submission.
+            do {
                 if transaction != nil && snapshot == nil { throw LedgerBillEditError.staleSource }
                 if transaction == nil && !metadata.accounts.contains(where: { $0.id == draft.accountId }) {
                     throw LedgerBillEditError.missingAccount
@@ -226,12 +248,17 @@ private struct LedgerBillPendingWrite {
                     body: try draft.body(operationId: id, snapshot: snapshot), draft: draft)
                 pending = request
                 LedgerBillPendingWrites.records[api.identity, default: [:]][key] = request
+            } catch {
+                self.error = error.localizedDescription
+                return false
             }
-            guard let pending else { return false }
-            saving = true
-            error = nil
-            defer { saving = false }
-            let result: LedgerTransaction = try await api.request(pending.path, method: pending.method, body: pending.body)
+        }
+        guard let frozen = pending else { return false }
+        saving = true
+        error = nil
+        defer { saving = false }
+        do {
+            let result: LedgerTransaction = try await api.request(frozen.path, method: frozen.method, body: frozen.body)
             try Task.checkCancellation()
             guard owner == api.identity else { return false }
             guard !result.id.isEmpty else { throw LedgerDataError.invalidResponse }
@@ -243,7 +270,7 @@ private struct LedgerBillPendingWrite {
             if let failure = error as? APIError, (400..<500).contains(failure.status), failure.status != 408 {
                 clearPending(api: api)
                 if failure.status == 409 { ready = false; needsConflictRefresh = true }
-            } else if pending != nil {
+            } else {
                 awaitingReconciliation = true
                 self.error = "提交结果尚未确认。请先核对；如需重试，将沿用同一笔提交，避免重复记账。"
             }

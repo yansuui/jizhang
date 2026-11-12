@@ -298,6 +298,59 @@ final class LedgerBillEditingTests: XCTestCase {
         XCTAssertEqual(api.ledgerRevision, 0)
     }
 
+    @MainActor func testRefundNeedsALinkedExpenseAndALocalRejectionStaysEditable() async throws {
+        let api = try client(); defer { api.invalidate() }
+        let lock = NSLock()
+        var writes = 0
+        var sent: [String: Any] = [:]
+        BillTestProtocol.configure { transport in
+            if transport.request.httpMethod == "POST" {
+                lock.withLock { writes += 1; sent = transport.body() }
+                transport.respond(Self.row(refund: true))
+            } else { Self.metadata(transport) }
+        }
+        let store = LedgerTransactionEditorStore()
+        await store.load(api: api)
+        store.setRefund(true)
+        XCTAssertTrue(store.draft.isRefund)
+        XCTAssertEqual(store.draft.type, .income)
+        XCTAssertEqual(store.draft.categoryId, "refund-category",
+                       "Marking a refund must prefer the built-in 退款 income category")
+        store.draft.amount = "30.01"
+        let rejected = await store.save(api: api)
+        XCTAssertFalse(rejected)
+        XCTAssertFalse(store.awaitingReconciliation, "A local rejection never sent a request")
+        XCTAssertEqual(lock.withLock { writes }, 0)
+        XCTAssertEqual(store.error, LedgerBillEditError.invalidRefund.localizedDescription)
+        store.draft.refundLinkedTxIds = ["original-expense"]
+        let saved = await store.save(api: api)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(lock.withLock { writes }, 1)
+        XCTAssertEqual(lock.withLock { sent }["isRefund"] as? Bool, true)
+        XCTAssertEqual(lock.withLock { sent }["refundLinkedTxIds"] as? [String], ["original-expense"])
+    }
+
+    func testRefundDraftRequiresAnOriginalExpenseAndDropsLinksWhenUnflagged() throws {
+        var draft = LedgerTransactionDraft()
+        draft.type = .income
+        draft.isRefund = true
+        draft.amount = "10"
+        draft.categoryId = "refund-category"
+        draft.accountId = "bank"
+        XCTAssertThrowsError(try draft.body(operationId: "op")) { error in
+            XCTAssertEqual(error as? LedgerBillEditError, .invalidRefund)
+        }
+        draft.refundLinkedTxIds = ["tx-1", "tx-2"]
+        let body = try draft.body(operationId: "op")
+        XCTAssertEqual(body["isRefund"].boolValue, true)
+        XCTAssertEqual(body["refundLinkedTxIds"].arrayValue?.compactMap(\.stringValue), ["tx-1", "tx-2"])
+        draft.isRefund = false
+        let plain = try draft.body(operationId: "op")
+        XCTAssertEqual(plain["isRefund"].boolValue, false)
+        XCTAssertEqual(plain["refundLinkedTxIds"].arrayValue?.isEmpty, true,
+                       "A plain income never carries stale original-bill links")
+    }
+
     @MainActor func testCompactRefundEditorPreview() async throws {
         let ready = expectation(description: "Editor metadata loaded")
         ready.expectedFulfillmentCount = 2

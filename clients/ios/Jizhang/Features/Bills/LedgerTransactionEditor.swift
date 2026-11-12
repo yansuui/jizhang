@@ -8,7 +8,14 @@ import SwiftUI
     @StateObject private var store: LedgerTransactionEditorStore
     @State private var availableTags: [LedgerTag] = []
     @State private var tagLoadError: String?
-    @State private var showingTags = false
+    @State private var activeSheet: EditorSheet?
+
+    /// One sheet binding for the whole editor: stacking a second `.sheet` on the same presenter
+    /// is what silently drops a presentation on iOS.
+    private enum EditorSheet: String, Identifiable {
+        case tags, refundSources
+        var id: String { rawValue }
+    }
 
     init(api: APIClient, transaction: LedgerTransaction? = nil, refundOf: LedgerTransaction? = nil, onSaved: @escaping () -> Void) {
         self.api = api
@@ -89,17 +96,29 @@ import SwiftUI
                             }
                         }
                     }
+                    if store.draft.type == .income {
+                        Section("退款关联") {
+                            Toggle("这是退款", isOn: Binding(get: { store.draft.isRefund },
+                                                           set: { store.setRefund($0) }))
+                            if store.draft.isRefund {
+                                Button { activeSheet = .refundSources } label: {
+                                    HStack {
+                                        Text("关联原支出")
+                                        Spacer(minLength: 8)
+                                        Text(store.draft.refundLinkedTxIds.isEmpty
+                                             ? "请选择" : "已选 \(store.draft.refundLinkedTxIds.count) 笔")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Text("退款单独计入收入，原支出金额不会被改写。")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                     Section {
                         TextField("备注（选填）", text: $store.draft.note, axis: .vertical).lineLimit(2...5)
                         TextField("标签，用逗号分隔（选填）", text: $store.draft.tags)
-                        Button("选择已有标签") { showingTags = true }
-                    }
-                    if store.draft.isRefund {
-                        Section("关联原支出") {
-                            Text("已关联 \(store.draft.refundLinkedTxIds.count) 笔原始支出。保存后可在详情中双向查看。")
-                            Text("退款单独计入收入，原支出金额保持不变。")
-                                .font(.footnote).foregroundStyle(.secondary)
-                        }
+                        Button("选择已有标签") { activeSheet = .tags }
                     }
                     Section {
                         Button { save() } label: {
@@ -127,36 +146,45 @@ import SwiftUI
             }
             .interactiveDismissDisabled(store.saving || store.awaitingReconciliation)
             .task { await store.load(api: api) }
-            .sheet(isPresented: $showingTags) {
-                NavigationStack {
-                    List {
-                        if let tagLoadError {
-                            Text(tagLoadError).foregroundStyle(.secondary)
-                            Button("重试") { Task { await loadTags() } }
-                        } else if availableTags.isEmpty {
-                            Text("暂无标签，可以在账单中手动填写。")
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(availableTags) { tag in
-                            Button {
-                                store.draft.tags = LedgerBillTagSelection.toggling(tag.name, in: store.draft.tags)
-                            } label: {
-                                HStack {
-                                    Text(tag.name)
-                                    Spacer()
-                                    if LedgerBillTagSelection.names(in: store.draft.tags).contains(tag.name) {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
+            .sheet(item: $activeSheet) { sheet in
+                switch sheet {
+                case .tags: tagPicker
+                case .refundSources:
+                    LedgerRefundSourcePicker(api: api, metadata: store.metadata,
+                                             selectedIds: $store.draft.refundLinkedTxIds)
+                }
+            }
+        }
+    }
+
+    private var tagPicker: some View {
+        NavigationStack {
+            List {
+                if let tagLoadError {
+                    Text(tagLoadError).foregroundStyle(.secondary)
+                    Button("重试") { Task { await loadTags() } }
+                } else if availableTags.isEmpty {
+                    Text("暂无标签，可以在账单中手动填写。")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(availableTags) { tag in
+                    Button {
+                        store.draft.tags = LedgerBillTagSelection.toggling(tag.name, in: store.draft.tags)
+                    } label: {
+                        HStack {
+                            Text(tag.name)
+                            Spacer()
+                            if LedgerBillTagSelection.names(in: store.draft.tags).contains(tag.name) {
+                                Image(systemName: "checkmark")
                             }
                         }
                     }
-                    .navigationTitle("选择标签")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showingTags = false } } }
-                    .task { await loadTags() }
                 }
             }
+            .navigationTitle("选择标签")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { activeSheet = nil } } }
+            .task { await loadTags() }
         }
     }
 
