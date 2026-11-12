@@ -7,10 +7,16 @@ enum NativePresentationTarget: Equatable {
     case recording(DailyRecordingIntent)
     case review(AssistantLaunchIntent)
 
+    /// Two targets with the same key cannot wait in the queue at the same time; the newer one
+    /// replaces the pending one instead of stacking a second presentation.
+    ///
+    /// A manual "记一笔" tap has no frozen identity of its own — it mints a fresh
+    /// `DailyRecordingIntent` every time — so every recording shares one slot. Previously each
+    /// tap became its own request and the editor opened once per tap, one after another.
     var key: String {
         switch self {
         case .workspace(let route): return "workspace:" + route.id
-        case .recording(let intent): return "recording:" + intent.id.uuidString
+        case .recording: return "recording"
         case .review(let intent): return "review:" + intent.id
         }
     }

@@ -65,6 +65,8 @@ signed-device acceptance, not claims inferred from notification mocks.
 
 Use the API client's per-session `ledgerRevision` publisher after actual successful writes. Reading or cancelling a pending draft does not change ledger state. Invalidated clients cannot broadcast updates into new sessions.
 
+Account-to-account transfers are edited against `/transfers`: two distinct enabled accounts, integer cents, an epoch-millisecond date and a note, never a type, category or refund link. That endpoint has no operation ID, so the editor cannot reconcile an ambiguous write by replaying it; an unconfirmed submission freezes the draft (`needsVerification`) and the user verifies the result in the transfer list before submitting again, because a second POST would move the money twice. Deletions require confirmation and broadcast `ledgerRevision`.
+
 Historical-organization analysis is started in the background and polled: one assistant generation must never await the whole batched analysis, because the server caps a generation at `MAX_GENERATION_DEADLINE_MS` (180 s) and the second clarification turn would then fail. Template proposals are neither produced nor selectable.
 
 `AssistantSpendingRunStore` owns progress by immutable API identity and run ID. Poll only
@@ -165,6 +167,12 @@ startup/foreground/reconnection do not. Persist the owner/date/request outbox be
 submission. `NativePresentationGate` retains FIFO intents until the true presenter is
 available and acknowledges only actual destination appearance. Multiple delivery dates
 must retain separate tap authority and serialize their conversation/generation handoff.
+A manual `记一笔` tap mints a fresh intent every time, so all recording targets share one
+queue slot: a repeat tap replaces the pending request instead of stacking a second editor
+presentation after dismissal. Review intents keep their own identity and FIFO order, and
+the recording slot only suppresses duplicates — it never blocks a later recording in the
+same session. A request whose bounded wait times out is re-armed automatically a bounded number of times
+(falling back to the explicit retry button) instead of waiting for a manual retry tap.
 
 ## 8. Wrong vs correct
 

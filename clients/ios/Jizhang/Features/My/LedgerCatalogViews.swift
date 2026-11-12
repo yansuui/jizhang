@@ -159,23 +159,102 @@ import Combine
 
 @MainActor struct LedgerTransfersView: View {
     let api: APIClient
+    @State private var creating = false
     var body: some View {
         LedgerReadList(api: api, title: "账户转账", path: "/transfers", paginated: true, footer: "转账改变两个账户的余额，不计入收入或支出。") { (transfer: LedgerTransfer, metadata) in
             NavigationLink {
-                LedgerLiveDetail(api: api, initial: transfer, metadata: metadata, source: .item("/transfers/" + LedgerURL.segment(transfer.id))) { transfer, metadata in
-                    List {
-                        Section {
-                            LedgerFieldRow(title: "转出账户", value: metadata.accountName(transfer.fromAccountId))
-                            LedgerFieldRow(title: "转入账户", value: metadata.accountName(transfer.toAccountId))
-                            LedgerFieldRow(title: "金额", value: LedgerFormat.money(transfer.amountCents))
-                            LedgerFieldRow(title: "日期", value: LedgerFormat.date(transfer.date, time: true))
-                            LedgerFieldRow(title: "备注", value: transfer.note.isEmpty ? "无" : transfer.note)
-                        }
-                    }.navigationTitle("转账详情").navigationBarTitleDisplayMode(.inline)
-                }
+                LedgerTransferDetailView(api: api, initial: transfer, metadata: metadata)
             } label: {
                 LedgerCatalogRow(title: metadata.accountName(transfer.fromAccountId) + " → " + metadata.accountName(transfer.toAccountId),
                                  subtitle: LedgerFormat.date(transfer.date), symbol: "arrow.left.arrow.right", detail: LedgerFormat.money(transfer.amountCents))
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { creating = true } label: { Label("新建转账", systemImage: "plus") }
+                    .accessibilityLabel("新建账户转账")
+            }
+        }
+        .sheet(isPresented: $creating) {
+            LedgerTransferEditor(api: api, onSaved: { creating = false })
+        }
+    }
+}
+
+@MainActor private struct LedgerTransferDetailView: View {
+    let api: APIClient
+    let initial: LedgerTransfer
+    let metadata: LedgerMetadata
+    @Environment(\.dismiss) private var dismiss
+    @State private var editing: LedgerTransfer?
+    @State private var confirmingDelete = false
+    @State private var deleting = false
+    @State private var deleteError: String?
+
+    var body: some View {
+        LedgerLiveDetail(api: api, initial: initial, metadata: metadata,
+                         source: .item("/transfers/" + LedgerURL.segment(initial.id))) { transfer, metadata in
+            List {
+                Section {
+                    LedgerFieldRow(title: "转出账户", value: metadata.accountName(transfer.fromAccountId))
+                    LedgerFieldRow(title: "转入账户", value: metadata.accountName(transfer.toAccountId))
+                    LedgerFieldRow(title: "金额", value: LedgerFormat.money(transfer.amountCents))
+                    LedgerFieldRow(title: "日期", value: LedgerFormat.date(transfer.date, time: true))
+                    LedgerFieldRow(title: "备注", value: transfer.note.isEmpty ? "无" : transfer.note)
+                }
+                if let deleteError {
+                    Section {
+                        Text(deleteError).font(.footnote).foregroundStyle(.red)
+                        Button("重试删除") { remove(transfer) }.font(.footnote).disabled(deleting)
+                    }
+                }
+                Section {
+                    Button(role: .destructive) { confirmingDelete = true } label: {
+                        HStack {
+                            Spacer()
+                            if deleting { ProgressView() } else { Text("删除这笔转账") }
+                            Spacer()
+                        }
+                    }.disabled(deleting)
+                }
+            }
+            .navigationTitle("转账详情").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("编辑") { editing = transfer }.disabled(deleting)
+                }
+            }
+            .confirmationDialog("删除这笔转账？", isPresented: $confirmingDelete, titleVisibility: .visible) {
+                Button("删除", role: .destructive) { remove(transfer) }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("删除后这笔转账不再影响两个账户的余额。转账没有回收站。")
+            }
+            .sheet(item: $editing) { current in
+                LedgerTransferEditor(api: api, transfer: current, onSaved: { editing = nil })
+            }
+        }
+    }
+
+    private func remove(_ transfer: LedgerTransfer) {
+        guard !deleting else { return }
+        deleting = true
+        deleteError = nil
+        Task {
+            defer { deleting = false }
+            do {
+                let _: EmptyResponse = try await api.request("/transfers/" + LedgerURL.segment(transfer.id), method: "DELETE")
+                api.notifyLedgerChanged()
+                dismiss()
+            } catch let error as APIError where error.status == 404 {
+                // A lost 204 response, or another client already deleted it: the row is gone.
+                api.notifyLedgerChanged()
+                dismiss()
+            } catch {
+                // Re-read either way: the revision reloads this detail and reports whether the row
+                // still exists, which a blind retry cannot.
+                api.notifyLedgerChanged()
+                deleteError = "删除结果尚未确认：" + error.localizedDescription + " 已重新读取服务器，请以当前详情为准。"
             }
         }
     }

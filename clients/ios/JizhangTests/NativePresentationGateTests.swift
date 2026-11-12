@@ -98,6 +98,43 @@ final class NativePresentationGateTests: XCTestCase {
         XCTAssertEqual(queue.first?.target, .recording(recording))
     }
 
+    @MainActor func testRepeatManualRecordingTapsCollapseIntoOnePendingPresentation() throws {
+        let owner = UUID()
+        let queue = NativePresentationQueue(ownerIdentity: owner)
+        let firstTap = DailyRecordingIntent(apiIdentity: owner)
+        let secondTap = DailyRecordingIntent(apiIdentity: owner)
+        XCTAssertNotEqual(firstTap.id, secondTap.id, "The entry point mints a fresh intent for every tap")
+        queue.enqueue(.recording(firstTap), owner: owner)
+        let id = try XCTUnwrap(queue.first?.id)
+        XCTAssertTrue(queue.enqueue(.recording(secondTap), owner: owner))
+        XCTAssertEqual(queue.requests.count, 1, "A second + tap must not stack another editor presentation")
+        XCTAssertEqual(queue.first?.id, id)
+        XCTAssertEqual(queue.first?.target, .recording(secondTap))
+        queue.beginPresentation(id); queue.acknowledgeAppearance(id)
+        XCTAssertTrue(queue.requests.isEmpty)
+    }
+
+    @MainActor func testTheRecordingSlotOnlySuppressesDuplicatesNotLaterRecordings() throws {
+        let owner = UUID()
+        let queue = NativePresentationQueue(ownerIdentity: owner)
+        queue.enqueue(.recording(DailyRecordingIntent(apiIdentity: owner)), owner: owner)
+        let id = try XCTUnwrap(queue.first?.id)
+        queue.beginPresentation(id); queue.acknowledgeAppearance(id)
+        XCTAssertTrue(queue.enqueue(.recording(DailyRecordingIntent(apiIdentity: owner)), owner: owner),
+                      "One recording being delivered must not block the next one in the same session")
+        XCTAssertEqual(queue.requests.count, 1)
+    }
+
+    @MainActor func testRecordingWaitingBehindAWorkspaceStaysOneRequest() throws {
+        let owner = UUID()
+        let queue = NativePresentationQueue(ownerIdentity: owner)
+        queue.enqueue(.workspace(NativeWorkspaceRoute(destination: .reminders)), owner: owner)
+        queue.enqueue(.recording(DailyRecordingIntent(apiIdentity: owner)), owner: owner)
+        queue.enqueue(.recording(DailyRecordingIntent(apiIdentity: owner)), owner: owner)
+        XCTAssertEqual(queue.requests.count, 2)
+        XCTAssertEqual(queue.first?.target, .workspace(NativeWorkspaceRoute(destination: .reminders)))
+    }
+
     @MainActor func testCoveredTabReappearanceDoesNotReplayAnAlreadyOpenedNotification() throws {
         let owner = UUID()
         let queue = NativePresentationQueue(ownerIdentity: owner)

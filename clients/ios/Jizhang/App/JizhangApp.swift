@@ -72,6 +72,7 @@ private struct MainTabView: View {
     @State private var activeReviewID: String?
     @State private var assistantVisible = false
     @State private var presentedReview: UUID?
+    @State private var presentationRetryCounts: [UUID: Int] = [:]
 
     init(api: APIClient, user: AuthenticatedUser, onLogout: @escaping () -> Void) {
         self.api = api; self.user = user; self.onLogout = onLogout
@@ -121,14 +122,12 @@ private struct MainTabView: View {
                 .padding(12)
                 .background(.regularMaterial)
             }
-            if presentation.first != nil {
+            if let notice = presentation.notice {
                 HStack(alignment: .top, spacing: 12) {
-                    Label(presentation.notice ?? "正在等待当前弹窗关闭后继续打开…", systemImage: "clock")
+                    Label(notice, systemImage: "clock")
                         .font(.footnote)
                     Spacer(minLength: 0)
-                    if presentation.notice != nil {
-                        Button("继续打开") { presentation.retry() }.font(.footnote.weight(.semibold))
-                    }
+                    Button("继续打开") { presentation.retry() }.font(.footnote.weight(.semibold))
                 }
                 .padding(12)
                 .background(.regularMaterial)
@@ -171,6 +170,8 @@ private struct MainTabView: View {
     private var recordButton: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             Button {
+                // The editor is already up, so a second request would re-open it after dismissal.
+                guard !recording, workspace == nil else { return }
                 presentation.enqueue(.recording(DailyRecordingIntent(apiIdentity: api.identity)), owner: api.identity)
             } label: {
                 Label("记一笔", systemImage: "plus.circle.fill")
@@ -208,7 +209,7 @@ private struct MainTabView: View {
         })
         let available = await gate.wait(stillCurrent: stillCurrent)
         guard available == .ready, !Task.isCancelled, stillCurrent() else {
-            if available == .timedOut { presentation.deferPresentation(request.id) }
+            if available == .timedOut { deferPresentationAndRetry(request.id) }
             return
         }
         guard let current = presentation.first, presentation.beginPresentation(current.id) else { return }
@@ -229,7 +230,7 @@ private struct MainTabView: View {
             }, maximumChecks: 80).wait(stillCurrent: stillCurrent)
             guard visible == .ready, !Task.isCancelled, stillCurrent(),
                   let latest = presentation.first, case .review(let latestIntent) = latest.target else {
-                if visible == .timedOut { presentation.deferPresentation(current.id) }
+                if visible == .timedOut { deferPresentationAndRetry(current.id) }
                 return
             }
             presentedReview = latestIntent.presentationID
@@ -243,6 +244,23 @@ private struct MainTabView: View {
         guard appeared == .timedOut, !Task.isCancelled, presentation.first?.id == current.id else { return }
         if workspaceRequestID == current.id { workspace = nil; workspaceRequestID = nil }
         if recordingRequestID == current.id { recording = false; recordingRequestID = nil }
-        presentation.deferPresentation(current.id)
+        deferPresentationAndRetry(current.id)
+    }
+
+    /// A bounded wait can time out while UIKit is still draining an earlier transition. Keep the
+    /// request and re-arm the observation, but only a few times: if the presenter stays unavailable
+    /// the explicit "继续打开" button takes over, instead of retrying forever and flickering the
+    /// notice.
+    private func deferPresentationAndRetry(_ id: UUID) {
+        presentation.deferPresentation(id)
+        let attempts = (presentationRetryCounts[id] ?? 0) + 1
+        presentationRetryCounts[id] = attempts
+        guard attempts <= 3 else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, reminders.owner?.apiIdentity == api.identity,
+                  presentation.first?.id == id else { return }
+            presentation.retry()
+        }
     }
 }
