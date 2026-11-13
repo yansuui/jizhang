@@ -26,13 +26,14 @@ import SwiftUI
 
     private var categories: [LedgerCategory] { store.metadata.categories.filter { $0.type == store.draft.type.rawValue } }
     private var blocked: Bool { store.loading || store.saving || store.awaitingReconciliation || !store.ready }
-    /// Salary-like money belongs to 收入分配, which the server splits by the current ratios;
-    /// a recorded bill only reaches a purpose the user picks here.
+    /// New income never becomes a bill: it is recorded as a 收入分配 so the server can split it
+    /// by the current ratios. Only a pre-existing income bill still chooses a single purpose.
     private var purposeHint: String {
         if store.draft.purpose != nil { return "用途只决定这笔钱计入哪一类，不改变金额与账户。" }
-        return store.draft.type == .income
-            ? "不指定时这笔收入不计入四用途余额；工资类收入请用「计划 → 新增收入分配」，会按当前比例自动拆分。"
-            : "不指定时这笔账单不计入四用途拆分，可在「计划 → 未归类账单」里补选。"
+        if store.draft.type == .income {
+            return "这是以前记的收入账单。现在记收入请到「计划 → 新增收入分配」，会按当前比例自动拆分。"
+        }
+        return "不指定时这笔账单不计入四用途拆分，可在「计划 → 未归类账单」里补选。"
     }
 
     var body: some View {
@@ -66,7 +67,8 @@ import SwiftUI
                     Section {
                         if store.draft.isRefund {
                             Label("退款收入", systemImage: "arrow.uturn.backward")
-                        } else {
+                        } else if editing {
+                            // Historical income bills stay editable; new income never becomes a bill.
                             Picker("收支类型", selection: Binding(get: { store.draft.type }, set: { type in
                                 store.draft.type = type
                                 store.draft.categoryId = store.metadata.categories.first { $0.type == type.rawValue }?.id ?? ""
@@ -91,7 +93,7 @@ import SwiftUI
                             Text("= " + total).font(.footnote).monospacedDigit().foregroundStyle(.secondary)
                         }
                     }
-                    Section("账单信息") {
+                    Section {
                         Picker("分类", selection: $store.draft.categoryId) {
                             if !categories.contains(where: { $0.id == store.draft.categoryId }) {
                                 Text(store.draft.categoryId.isEmpty ? "请选择分类" : "保留原分类（已停用）").tag(store.draft.categoryId)
@@ -113,6 +115,12 @@ import SwiftUI
                             }
                             Text(purposeHint)
                                 .font(.footnote).foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        Text("账单信息")
+                    } footer: {
+                        if !editing && !store.draft.isRefund {
+                            Text("记收入请到「计划 → 新增收入分配」，服务器会按当前比例自动分到四用途，不产生账单。")
                         }
                     }
                     if store.draft.type == .income {

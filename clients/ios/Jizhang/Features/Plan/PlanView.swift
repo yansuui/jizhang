@@ -34,11 +34,13 @@ import SwiftUI
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
                     }.accessibilityIdentifier("plan.history")
                 }
+                Text("收入只在这里记录：按当前比例自动分到四用途，不产生收入账单。")
+                    .font(.caption).foregroundStyle(.secondary)
                 if let value = summary.value {
                     if !value.coverage.complete { coverageNotice(value.coverage) }
                     ForEach(LedgerPurpose.allCases) { purpose in
                         NavigationLink {
-                            LedgerFundDetailView(purpose: purpose, summary: value)
+                            LedgerFundDetailView(api: api, purpose: purpose, summary: value)
                         } label: {
                             fundCard(purpose, summary: value)
                         }.buttonStyle(.plain)
@@ -150,7 +152,7 @@ import SwiftUI
                 NavigationLink { LedgerUnclassifiedBillsView(api: api) } label: {
                     coverageLine("未归类账单 \(coverage.unassignedTransactionCount) 笔 · " +
                                  LedgerFormat.money(coverage.unassignedTransactionCents), action: "选用途",
-                                 detail: "含收入和支出。工资请用「新增收入分配」，由服务器按比例拆开。")
+                                 detail: "含以前记的收入和支出。现在收入统一用「新增收入分配」，按当前比例自动拆分。")
                 }.buttonStyle(.plain)
             }
             if coverage.invalidRefundCount > 0 {
@@ -192,36 +194,6 @@ import SwiftUI
             try result.validate()
             return result
         }
-    }
-}
-
-private struct LedgerFundDetailView: View {
-    let purpose: LedgerPurpose
-    let summary: LedgerFundSummary
-    var body: some View {
-        List {
-            Section {
-                VStack(alignment: .leading, spacing: 12) {
-                    Label(purpose.title, systemImage: purpose.symbol).font(.headline).foregroundStyle(AppTheme.accent)
-                    Text(LedgerFormat.money(summary.balances[purpose]))
-                        .font(.system(.largeTitle, design: .rounded).weight(.semibold)).monospacedDigit()
-                    Text(summary.coverage.complete ? "当前累计余额" : "已确认部分的暂计余额，仍有数据待核对")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }.padding(.vertical, 12)
-            }
-            Section("累计构成") {
-                LedgerFieldRow(title: "工资分配", value: LedgerFormat.money(summary.totals.funded[purpose]))
-                LedgerFieldRow(title: "其他已归类收入", value: LedgerFormat.money(summary.totals.income[purpose]))
-                LedgerFieldRow(title: "原始支出", value: LedgerFormat.money(summary.totals.grossSpent[purpose]))
-                LedgerFieldRow(title: "已确认归属退款", value: LedgerFormat.money(summary.totals.refunded[purpose]))
-            }
-            Section {
-                Text("资金余额按累计记录持续结转。账户之间的转账不计为收入或支出，退款按确认归属计入对应用途。")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Text("数据时间：" + LedgerFormat.date(summary.asOf, time: true))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }.navigationTitle(purpose.title).navigationBarTitleDisplayMode(.inline)
     }
 }
 

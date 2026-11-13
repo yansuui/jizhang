@@ -261,6 +261,41 @@ final class PlanEditingTests: XCTestCase {
         XCTAssertEqual(api.ledgerRevision, 1)
     }
 
+    @MainActor func testFundRecordsKeepOnlyThatPurposeAndReadItsFrozenShare() async throws {
+        let api = try makeClient()
+        defer { api.invalidate() }
+        CoreMockURLProtocol.setHandler { incoming in
+            let path = incoming.url?.path ?? ""
+            if path.hasSuffix("/categories") || path.hasSuffix("/accounts") {
+                return try Self.response(incoming, json: #"{"items":[]}"#)
+            }
+            if path == "/api/v1/salaries" {
+                return try Self.response(incoming, json: #"{"items":[{"id":"salary-1","amountCents":10000,"date":1793836800000,"note":"工资","accountId":"account-1","updatedAt":1793836800000},{"id":"salary-2","amountCents":20000,"date":1793836700000,"note":"","accountId":"account-1","updatedAt":1793836700000}]}"#)
+            }
+            if path.hasPrefix("/api/v1/salaries/") {
+                return try Self.response(incoming, json: Self.salaryJSON)
+            }
+            if path == "/api/v1/transactions" {
+                let page = #"{"items":["# + Self.billJSON(id: "bill-1", purpose: "joy") + ","
+                    + Self.billJSON(id: "bill-2", purpose: "growth") + #"],"total":2,"limit":100,"offset":0}"#
+                return try Self.response(incoming, json: page)
+            }
+            XCTFail("Unexpected request " + path)
+            throw URLError(.badServerResponse)
+        }
+        let store = LedgerFundRecordsStore(purpose: .joy)
+        await store.load(api: api)
+        XCTAssertEqual(store.bills.map(\.id), ["bill-1"])
+        XCTAssertEqual(store.allocations.map(\.id), ["salary-1", "salary-2"])
+        XCTAssertEqual(store.scanned, 2)
+        XCTAssertFalse(store.hasMore)
+        let allocation = try XCTUnwrap(store.allocations.first)
+        await store.loadShare(for: allocation, api: api)
+        // The list endpoint omits the grant; the frozen share comes from /salaries/:id.
+        XCTAssertEqual(store.shares["salary-1"], 1000)
+        XCTAssertEqual(store.sharesBps["salary-1"], 1000)
+    }
+
     @MainActor private func makeClient() throws -> APIClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [CoreMockURLProtocol.self]
