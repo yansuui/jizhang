@@ -5,6 +5,14 @@ import { readFundSummary, type FundSummaryView } from './financial-fund-summary.
 import { reviewLegacyFundGrant, type LegacyFundGrantReviewResult } from './financial-fund-review.js';
 import { requireFinancialOperationId, runFinancialOperation } from './financial-operation-store.js';
 import {
+  INCOME_ALLOCATION_RESOURCE,
+  allocateIncome as allocateFundIncome,
+  parseAllocateIncomeBody,
+  readIncomeAllocation,
+  type FundIncomeAllocationResponse,
+  type FundIncomeAllocationView,
+} from './financial-fund-income-allocation.js';
+import {
   DEFAULT_PAGE_SIZE,
   FINANCIAL_LIMITS,
   nextFinancialRevision,
@@ -45,6 +53,7 @@ export interface FundCapabilities {
     readonly migrationIssues: true;
     readonly legacyGrantReview: true;
     readonly unclaimedSalaryReview: true;
+    readonly incomeAllocation: true;
     readonly activity: false;
     readonly ratioChangeIsProspective: true;
   };
@@ -132,6 +141,7 @@ export class FinancialFundService {
         migrationIssues: true,
         legacyGrantReview: true,
         unclaimedSalaryReview: true,
+        incomeAllocation: true,
         activity: false,
         ratioChangeIsProspective: true,
       },
@@ -145,9 +155,46 @@ export class FinancialFundService {
     return readFundSummary(this.db, this.now());
   }
 
+  /**
+   * Splits one non-salary income (including a refund) by the current ratios.
+   *
+   * This never writes `salary_records`: the decision belongs to the transaction, so the
+   * income does not appear in the salary history while still joining the four purposes.
+   */
+  allocateIncome(raw: unknown, actorId: string): FundIncomeAllocationResponse {
+    const body = parseAllocateIncomeBody(raw);
+    const now = this.now();
+    return runFinancialOperation<FundIncomeAllocationResponse>(this.db, {
+      operationId: body.operationId,
+      actorId,
+      method: 'POST',
+      resource: INCOME_ALLOCATION_RESOURCE,
+      canonicalPayload: body,
+      now,
+    }, () => {
+      const config = this.getConfig().config;
+      return {
+        statusCode: 200,
+        response: allocateFundIncome(this.db, {
+          transactionId: body.transactionId,
+          expectedTransactionToken: body.expectedTransactionToken,
+          expectedFundConfigRevision: body.expectedFundConfigRevision,
+          operationId: body.operationId,
+          actorId,
+          now,
+        }, config.ratiosBps, config.revision),
+      };
+    }).response;
+  }
+
+  /** `null` when the income was never confirmed; the caller shows the allocation entry point. */
+  getIncomeAllocation(transactionId: string): { contractVersion: 1; allocation: FundIncomeAllocationView | null } {
+    if (!transactionId.trim()) throw new FinancialInvalidError('transactionId is required.');
+    return { contractVersion: 1, allocation: readIncomeAllocation(this.db, transactionId) ?? null };
+  }
+
   /** Bounded archival issue queue; never presented as current coverage by itself. */
-  listIssues(rawLimit: unknown, rawOffset: unknown): FundIssuePage {
-    const limit = parsePaging(rawLimit, 'limit', DEFAULT_PAGE_SIZE);
+  listIssues(rawLimit: unknown, rawOffset: unknown): FundIssuePage {    const limit = parsePaging(rawLimit, 'limit', DEFAULT_PAGE_SIZE);
     const offset = parsePaging(rawOffset, 'offset', 0, Number.MAX_SAFE_INTEGER);
     return this.db.transaction(() => {
       const total = (this.db.prepare('SELECT COUNT(*) AS c FROM financial_fund_migration_issues').get() as { c: number }).c;

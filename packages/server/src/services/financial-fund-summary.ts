@@ -3,6 +3,7 @@ import { allocateFundIncomeCents, projectFundBalances, validateFinancialRatiosBp
 import type { Db } from '../db/index.js';
 import { canonicalFinancialPayload } from './financial-operation-store.js';
 import { fundGrantNeedsReview } from './financial-fund-store.js';
+import { financialTransactionToken } from './financial-purpose-store.js';
 import { financialCriticalFactsEqual, parseFinancialCriticalFacts, type FinancialCriticalFacts } from './financial-source-lifecycle.js';
 
 /** Lifetime summary. Amounts are integer cents; asOf is the caller's epoch milliseconds.
@@ -38,10 +39,13 @@ export function readFundSummary(db: Db, now: number): FundSummaryView {
     const grantRows = get('SELECT * FROM financial_fund_grants ORDER BY id');
     const revisions = get('SELECT * FROM financial_fund_grant_revisions ORDER BY grant_id,revision');
     const members = get('SELECT * FROM financial_fund_grant_sources ORDER BY salary_id');
-    const txRows = get('SELECT t.id,t.type,t.amount_cents,t.date,t.is_refund,t.deleted,p.purpose,p.revision,p.source FROM transactions t LEFT JOIN financial_fund_purposes p ON p.transaction_id=t.id ORDER BY t.id');
+    const txRows = get('SELECT t.id,t.type,t.amount_cents,t.date,t.is_refund,t.deleted,t.category_id,t.account_id,p.purpose,p.revision,p.source FROM transactions t LEFT JOIN financial_fund_purposes p ON p.transaction_id=t.id ORDER BY t.id');
     const splitRows = get('SELECT * FROM financial_refund_splits ORDER BY refund_tx_id,original_tx_id,id');
     const setRows = get('SELECT * FROM financial_refund_split_sets ORDER BY refund_tx_id,revision');
-    const issues = get('SELECT * FROM financial_fund_migration_issues WHERE status=\'open\' ORDER BY source_kind,source_id,reason');
+    const issueRows = get('SELECT * FROM financial_fund_migration_issues WHERE status=\'open\' ORDER BY source_kind,source_id,reason');
+    const allocationRows = get(`SELECT transaction_id,revision,source_token,amount_cents,ratios_json,targets_json,status
+      FROM financial_fund_income_allocations WHERE status='active' ORDER BY transaction_id`);
+    const txMap = new Map(txRows.map((r) => [r['id'], r]));
     const salaryMap = new Map(salaries.map((r) => [r['id'], r]));
     const claimed = new Set<unknown>(); const unknown = new Set<string>(); const issueIds = new Set<string>();
     const grants: FundGrantFact[] = [];
@@ -69,23 +73,54 @@ export function readFundSummary(db: Db, now: number): FundSummaryView {
         for (const m of owned) if (salaryMap.get(m['salary_id']) === undefined && text(m['salary_id'])) unknown.add(m['salary_id']);
       }
     }
-    const unallocated: FundUnallocatedSalaryFact[] = [];
-    for (const salary of salaries) {
+    // A confirmed income allocation replaces the bill's own single-purpose facts: it funds the
+    // four purposes by the frozen ratios and stops a refund from also crediting its original.
+    const allocatedIncome = new Set<string>();
+    for (const row of allocationRows) {
+      const id = row['transaction_id'];
+      const tx = text(id) ? txMap.get(id) : undefined;
+      try {
+        if (!text(id) || tx === undefined || !positive(row['revision']) || !positive(row['amount_cents'])) throw new Error('missing');
+        if (tx['deleted'] !== 0 || tx['type'] !== 1) throw new Error('not a live income');
+        if (!positive(tx['amount_cents']) || tx['amount_cents'] !== row['amount_cents']) throw new Error('amount changed');
+        const token = financialTransactionToken({
+          id: tx['id'] as string, type: tx['type'] as number, amountCents: tx['amount_cents'] as number,
+          categoryId: tx['category_id'] as string, date: tx['date'] as number,
+          isRefund: tx['is_refund'] as number, deleted: tx['deleted'] as number, accountId: tx['account_id'] as string,
+        });
+        if (token !== row['source_token']) throw new Error('source changed');
+        const ratios = validateFinancialRatiosBps(parse(row['ratios_json']));
+        const expected = allocateFundIncomeCents(row['amount_cents'], ratios);
+        const targets = object(parse(row['targets_json']));
+        if (targets === null || purposes.some((p) => targets[p] !== expected[p])) throw new Error('invalid targets');
+        grants.push({ grantId: `income:${id}`, amounts: expected });
+        allocatedIncome.add(id);
+      } catch {
+        // The stored decision no longer matches its source: report it, never invent a split.
+        issueIds.add(`income-allocation:${String(id)}`);
+      }
+    }
+    const unallocated: FundUnallocatedSalaryFact[] = [];    for (const salary of salaries) {
       if (salary['deleted'] === 1 || claimed.has(salary['id'])) continue;
       if (salary['deleted'] !== 0 || !text(salary['id'])) throw new Error('Malformed salary status');
       if (positive(salary['amount_cents'])) unallocated.push({ salaryId: salary['id'], amountCents: salary['amount_cents'] });
       else unknown.add(salary['id']);
     }
-    const transactions: FundTransactionFact[] = txRows.map((r) => {
+    const transactions: FundTransactionFact[] = txRows
+      .filter((r) => !allocatedIncome.has(r['id'] as string))
+      .map((r) => {
       if (!text(r['id']) || !positive(r['amount_cents']) || !safe(r['date']) || (r['type'] !== 0 && r['type'] !== 1) || (r['is_refund'] !== 0 && r['is_refund'] !== 1) || (r['deleted'] !== 0 && r['deleted'] !== 1)) throw new Error('Malformed transaction');
       const p = r['purpose'];
       if (p !== null && !purposes.includes(p as FundPurpose)) throw new Error('Malformed fund purpose');
       if (p !== null && (!positive(r['revision']) || !text(r['source']))) throw new Error('Malformed purpose revision');
       return { transactionId:r['id'], type:r['type'] === 0 ? 'expense' : 'income', isRefund:r['is_refund'] === 1, amountCents:r['amount_cents'], date:r['date'], purpose:p as FundPurpose | null, purposeStatus:p === null ? 'unresolved' : 'resolved', status:r['deleted'] === 0 ? 'live' : 'deleted' };
     });
-    const txMap = new Map(txRows.map((r) => [r['id'], r]));
     const groups = new Map<unknown, Row[]>();
-    for (const row of splitRows) { const list = groups.get(row['refund_tx_id']) ?? []; list.push(row); groups.set(row['refund_tx_id'], list); }
+    for (const row of splitRows) {
+      // An allocated refund is funded by ratio instead; its old split must not credit again.
+      if (allocatedIncome.has(row['refund_tx_id'] as string)) continue;
+      const list = groups.get(row['refund_tx_id']) ?? []; list.push(row); groups.set(row['refund_tx_id'], list);
+    }
     const splits: FundRefundSplitFact[] = [];
     for (const [refundId, rows] of groups) {
       const latest = setRows.filter((s) => s['refund_tx_id'] === refundId).at(-1);
@@ -103,14 +138,14 @@ export function readFundSummary(db: Db, now: number): FundSummaryView {
         splits.push({ splitId:row['id'], refundTransactionId:row['refund_tx_id'], originalTransactionId:row['original_tx_id'], amountCents:row['amount_cents'], validity:valid ? 'valid' : 'invalid' });
       }
     }
-    for (const issue of issues) {
+    for (const issue of issueRows) {
       const kind = issue['source_kind'];
       // Salary and transaction issues are represented by their current live source, not their archival evidence.
       if (kind === 'salary' || kind === 'transaction' || kind === 'period') continue;
       issueIds.add(`${String(kind)}:${String(issue['source_id'])}:${String(issue['reason'])}`);
     }
     const projection = projectFundBalances({ grants, transactions, refundSplits:splits, unallocatedSalaries:unallocated, issues:[...issueIds].sort() });
-    const snapshotToken = createHash('sha256').update(JSON.stringify({ salaries, grantRows, revisions, members, txRows, splitRows, setRows, issues })).digest('hex');
+    const snapshotToken = createHash('sha256').update(JSON.stringify({ salaries, grantRows, revisions, members, txRows, splitRows, setRows, issues: issueRows, allocationRows })).digest('hex');
     return { contractVersion:1 as const, asOf:now, ...projection, coverage:{ ...projection.coverage, complete:projection.coverage.complete && unknown.size === 0, unknownUnallocatedSalaryCount:unknown.size }, snapshotToken };
   })();
 }

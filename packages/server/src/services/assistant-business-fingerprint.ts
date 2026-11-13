@@ -11,6 +11,7 @@ const BUSINESS_TABLES = [
   'financial_period_sources', 'financial_refund_splits', 'financial_refund_split_sets', 'financial_bill_purpose_events',
   'financial_fund_config_revisions', 'financial_fund_grants', 'financial_fund_grant_revisions', 'financial_fund_grant_sources',
   'financial_fund_purposes', 'financial_fund_purpose_events', 'financial_fund_migration_issues',
+  'financial_fund_income_allocations', 'financial_fund_income_allocation_revisions',
   'manual_goal_openings', 'manual_goal_entries', 'manual_goal_state', 'ai_organization_audit', 'ai_organization_operations',
 ] as const;
 

@@ -39,6 +39,7 @@ import { MIGRATION_022_TEMPLATE_TAGS, backfillTemplateTags } from './migrations/
 import { MIGRATION_023_ASSISTANT_TRACE } from './migrations/023-assistant-trace.js';
 import { MIGRATION_024_ASSISTANT_WORKSPACE } from './migrations/024-assistant-workspace.js';
 import { MIGRATION_025_NATIVE_COMPLETION_RECEIPTS } from './migrations/025-native-completion-receipts.js';
+import { MIGRATION_026_INCOME_ALLOCATIONS } from './migrations/026-income-allocations.js';
 
 export interface Migration {
   readonly version: number;
@@ -81,6 +82,9 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 23, name: 'assistant-trace', sql: MIGRATION_023_ASSISTANT_TRACE },
   { version: 24, name: 'assistant-workspace', sql: MIGRATION_024_ASSISTANT_WORKSPACE },
   { version: 25, name: 'native-completion-receipts', sql: MIGRATION_025_NATIVE_COMPLETION_RECEIPTS },
+  // 26 lets a non-salary income join the four-purpose split without becoming a salary record.
+  // Deliberately no backfill: an unconfirmed income stays unresolved instead of being guessed.
+  { version: 26, name: 'income-allocations', sql: MIGRATION_026_INCOME_ALLOCATIONS },
 ];
 
 interface AppliedRow {

@@ -37,6 +37,13 @@ export interface TransactionDto {
   readonly fundPurposeRevision: number;
   readonly fundPurposeStatus: 'resolved' | 'unresolved';
   readonly fundPurposeSource: string;
+  /**
+   * True once this income was confirmed into the four-purpose split by ratio.
+   *
+   * Such an income no longer carries a single `fundPurpose`; the allocation table owns
+   * the decision. Additive field: older servers simply omit it.
+   */
+  readonly fundIncomeAllocated?: boolean;
   readonly refundLinkedTxIds?: string[];
   readonly refundSummary?: RefundSummary;
   readonly refundDetails?: RefundDetail[];

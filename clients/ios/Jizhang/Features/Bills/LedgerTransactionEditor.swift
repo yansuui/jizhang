@@ -106,7 +106,10 @@ import SwiftUI
                         }
                         DatePicker("日期", selection: $store.draft.date, displayedComponents: [.date, .hourAndMinute])
                             .environment(\.timeZone, LedgerBillDates.calendar.timeZone)
-                        if !store.draft.isRefund {
+                        // Income does not pick one purpose: it is split by the plan's ratios on the
+                        // plan page. Only a legacy income that already carries one keeps the control
+                        // so the value can be reviewed or cleared.
+                        if !store.draft.isRefund && (store.draft.type == .expense || store.draft.purpose != nil) {
                             Picker("资金用途", selection: $store.draft.purpose) {
                                 Text("不指定").tag(LedgerPurpose?.none)
                                 ForEach(LedgerPurpose.allCases) { Text($0.title).tag(Optional($0)) }
@@ -119,7 +122,7 @@ import SwiftUI
                     } footer: {
                         if !store.draft.isRefund {
                             Text(store.draft.type == .income
-                                 ? "这里记的是工资以外的收入，只计入所选用途。工资请用「计划 → 新增收入分配」，那边按比例拆分且不需要分类。"
+                                 ? "收入不选单一用途：保存后到「计划 → 未归类账单」点「按当前比例拆四份」。工资请用「计划 → 新增收入分配」。"
                                  : "工资类收入不记账单，请用「计划 → 新增收入分配」。")
                         }
                     }

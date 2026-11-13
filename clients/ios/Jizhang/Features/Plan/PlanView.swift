@@ -152,11 +152,15 @@ import SwiftUI
                 NavigationLink { LedgerUnclassifiedBillsView(api: api) } label: {
                     coverageLine("未归类账单 \(coverage.unassignedTransactionCount) 笔 · " +
                                  LedgerFormat.money(coverage.unassignedTransactionCents), action: "选用途",
-                                 detail: "工资以外的收入在这里选择计入哪一类；工资用「新增收入分配」按比例拆分。")
+                                 detail: "工资以外的收入和退款按当前比例拆四份，不进工资记录。")
                 }.buttonStyle(.plain)
             }
             if coverage.invalidRefundCount > 0 {
-                Text("退款待核对 \(coverage.invalidRefundCount) 笔 · " + LedgerFormat.money(coverage.unresolvedRefundCents))
+                NavigationLink { LedgerUnallocatedRefundView(api: api) } label: {
+                    coverageLine("退款待核对 \(coverage.invalidRefundCount) 笔 · " +
+                                 LedgerFormat.money(coverage.unresolvedRefundCents), action: "去分配",
+                                 detail: "退款也按当前比例拆进四用途，不会记成工资。")
+                }.buttonStyle(.plain)
             }
             if coverage.unknownUnallocatedSalaryCount > 0 {
                 Text("另有 \(coverage.unknownUnallocatedSalaryCount) 笔工资金额需要核对")

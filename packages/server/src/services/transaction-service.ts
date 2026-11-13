@@ -81,6 +81,7 @@ interface TransactionRow {
   readonly fund_purpose?: FundPurpose | null;
   readonly fund_purpose_revision?: number | null;
   readonly fund_purpose_source?: string | null;
+  readonly fund_income_allocated?: number | null;
   readonly updated_at: number;
 }
 
@@ -106,6 +107,9 @@ function toDto(
     fundPurposeRevision: row.fund_purpose_revision ?? 0,
     fundPurposeStatus: row.fund_purpose == null ? 'unresolved' : 'resolved',
     fundPurposeSource: row.fund_purpose_source ?? 'unresolved',
+    // Only present when true: the assistant's read projection has a fixed byte ceiling, and an
+    // extra always-false field on every row would shrink otherwise-valid pages.
+    ...(row.fund_income_allocated === 1 ? { fundIncomeAllocated: true } : {}),
     refundLinkedTxIds,
     refundSummary,
     refundDetails,
@@ -116,7 +120,8 @@ function toDto(
 // Scalar subqueries keep the ledger scope and row cardinality unchanged.
 const FUND_COLUMNS = `(SELECT purpose FROM financial_fund_purposes WHERE transaction_id=transactions.id) AS fund_purpose,
   (SELECT revision FROM financial_fund_purposes WHERE transaction_id=transactions.id) AS fund_purpose_revision,
-  (SELECT source FROM financial_fund_purposes WHERE transaction_id=transactions.id) AS fund_purpose_source`;
+  (SELECT source FROM financial_fund_purposes WHERE transaction_id=transactions.id) AS fund_purpose_source,
+  (SELECT 1 FROM financial_fund_income_allocations WHERE transaction_id=transactions.id AND status='active') AS fund_income_allocated`;
 
 function hasFundPurpose(input: UpdateTransactionInput): boolean {
   return Object.prototype.hasOwnProperty.call(input, 'fundPurpose') && input.fundPurpose !== undefined;

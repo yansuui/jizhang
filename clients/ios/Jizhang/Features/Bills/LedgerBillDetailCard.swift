@@ -14,12 +14,12 @@ import SwiftUI
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     @StateObject private var resource = LedgerResource<LedgerTransaction>()
-    @StateObject private var converter = LedgerIncomeConverter()
+    @StateObject private var allocation = LedgerIncomeAllocationStore()
     @State private var trail: [String] = []
     @State private var editSelection: LedgerBillCardEdit?
     @State private var confirmingDelete = false
-    @State private var confirmingConvert = false
-    @State private var converting = false
+    @State private var confirmingAllocation = false
+    @State private var allocating = false
     @State private var deleting = false
     @State private var deleteError: String?
     @State private var dragOffset: CGFloat = 0
@@ -77,11 +77,11 @@ import SwiftUI
         } message: {
             Text("删除后账单移入回收站，账本合计会立即更新。")
         }
-        .confirmationDialog("这笔收入是工资吗？", isPresented: $confirmingConvert, titleVisibility: .visible) {
-            Button("是工资，按比例分配") { convert() }
+        .confirmationDialog("按当前比例拆四份？", isPresented: $confirmingAllocation, titleVisibility: .visible) {
+            Button("确认分配") { allocate() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("只有工资才应转成收入分配：会按当前比例分到四用途，并在「工资记录」里新增一条；原账单同时被删除，避免同一笔钱算两次。不是工资请用「编辑」选择资金用途。")
+            Text("这笔收入会按当前四用途比例拆成四份，并冻结本次比例与金额。它不会记成工资，也不会出现在工资记录里；原账单保留。")
         }
         .task(id: "\(currentID):\(api.ledgerRevision)") { await load() }
     }
@@ -191,9 +191,14 @@ import SwiftUI
             }
             if let purpose = value.fundPurpose {
                 LedgerBillDetailRow(label: "资金用途", value: purpose.title)
+            } else if value.fundIncomeAllocated == true {
+                LedgerBillDetailRow(label: "资金用途", value: "按比例分配（已确认）")
+                Text("这笔收入按确认当时的比例拆进四用途，修改默认比例不会重算。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .padding(.bottom, 4)
             } else if value.isRefund {
-                LedgerBillDetailRow(label: "资金用途", value: "按原支出用途回补")
-                Text("退款不参加按比例分配，它回补原支出已经占用的那一类。")
+                LedgerBillDetailRow(label: "资金用途", value: "待按比例分配")
+                Text("退款不占用单一用途：确认按比例拆四份后才计入余额。")
                     .font(.footnote).foregroundStyle(.secondary)
                     .padding(.bottom, 4)
             } else if value.type == .expense {
@@ -266,7 +271,7 @@ import SwiftUI
                     .frame(maxWidth: .infinity)
                     .padding(.top, 2)
             }
-            if let message = converter.errors[value.id] {
+            if let message = allocation.errors[value.id] {
                 Text(message)
                     .font(.footnote).foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
@@ -289,14 +294,14 @@ import SwiftUI
             }
             .accessibilityHint("为这笔支出记录一笔关联退款收入")
         }
-        if value.type == .income && !value.isRefund {
-            capsuleButton(converting ? "转换中…" : "转为工资分配",
+        if value.type == .income && value.fundIncomeAllocated != true {
+            capsuleButton(allocating ? "分配中…" : "按比例拆四份",
                           fill: AppTheme.accent.opacity(0.14), textColor: AppTheme.accent) {
-                confirmingConvert = true
+                confirmingAllocation = true
             }
-            .disabled(converting)
-            .accessibilityIdentifier("bill-detail-convert")
-            .accessibilityHint("仅当这笔收入是工资时使用；转换后按当前比例分到四用途并删除原账单")
+            .disabled(allocating)
+            .accessibilityIdentifier("bill-detail-allocate")
+            .accessibilityHint("按当前四用途比例把这一笔收入拆成四份，不会记成工资")
         }
         capsuleButton(deleting ? "删除中…" : "删除",
                       fill: Self.deleteTint.opacity(0.12), textColor: Self.deleteTint) {
@@ -379,15 +384,13 @@ import SwiftUI
         }
     }
 
-    /// 旧收入账单可以转成收入分配：服务器建分配记录后删除账单，避免同一笔钱算两次。
-    private func convert() {
-        guard let value = resource.value, !converting else { return }
+    /// 收入按当前比例拆四份：服务器为一笔交易保存分配决定，不写工资记录、不删除账单。
+    private func allocate() {
+        guard let value = resource.value, !allocating else { return }
         Task {
-            converting = true
-            let done = await converter.convert(value, api: api)
-            converting = false
-            guard done else { return }
-            if let onClose { onClose() } else { resource.clear() }
+            allocating = true
+            _ = await allocation.allocate(value, api: api)
+            allocating = false
         }
     }
 

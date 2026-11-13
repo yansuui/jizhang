@@ -296,7 +296,7 @@ final class PlanEditingTests: XCTestCase {
         XCTAssertEqual(store.sharesBps["salary-1"], 1000)
     }
 
-    @MainActor func testConvertingAnIncomeBillCreatesTheAllocationThenDeletesIt() async throws {
+    @MainActor func testAllocatingAnIncomeSplitsItWithoutCreatingASalaryRecord() async throws {
         let api = try makeClient()
         defer { api.invalidate() }
         var posted: JSONValue?
@@ -305,28 +305,51 @@ final class PlanEditingTests: XCTestCase {
             if path.hasSuffix("/financial-funds/config") {
                 return try Self.response(incoming, json: Self.configJSON)
             }
-            if path == "/api/v1/salaries" && incoming.httpMethod == "POST" {
+            if path.contains("/financial-planning/bill-purposes/tx-income") {
+                return try Self.response(incoming, json: #"{"billPurpose":{"transactionId":"tx-income","transactionToken":"tok-1","fundPurposeRevision":0,"fundPurpose":null}}"#)
+            }
+            if path == "/api/v1/financial-funds/income-allocations" && incoming.httpMethod == "POST" {
                 posted = try Self.body(incoming)
-                return try Self.response(incoming, status: 201, json: Self.salaryJSON)
+                return try Self.response(incoming, json: #"{"contractVersion":1,"allocation":{"transactionId":"tx-income","revision":1,"amountCents":10000,"ratiosBps":{"growth":2500,"reserve":1500,"essentials":5000,"joy":1000},"targets":{"growth":2500,"reserve":1500,"essentials":5000,"joy":1000},"createdAt":1793836800000}}"#)
             }
-            if path == "/api/v1/transactions/tx-income" && incoming.httpMethod == "DELETE" {
-                return try Self.response(incoming, status: 204, json: "")
-            }
+            // A salary write here would mean the income was recorded as 工资.
             XCTFail("Unexpected request " + path)
             throw URLError(.badServerResponse)
         }
         let bill = try JSONDecoder().decode(LedgerTransaction.self, from: Data(Self.billJSON(
             id: "tx-income", purpose: nil, type: 1, amountCents: 10000).utf8))
-        let converter = LedgerIncomeConverter()
-        let done = await converter.convert(bill, api: api)
+        let store = LedgerIncomeAllocationStore()
+        let done = await store.allocate(bill, api: api)
         XCTAssertTrue(done)
         XCTAssertEqual(api.ledgerRevision, 1)
         let body = try XCTUnwrap(posted)
-        XCTAssertEqual(body["amountCents"], .integer(10000))
-        XCTAssertEqual(body["accountId"], .string("account-1"))
+        XCTAssertEqual(body["transactionId"], .string("tx-income"))
+        XCTAssertEqual(body["expectedTransactionToken"], .string("tok-1"))
         XCTAssertEqual(body["expectedFundConfigRevision"], .integer(3))
-        XCTAssertEqual(body["contractVersion"], .integer(1))
         XCTAssertNotNil(body["operationId"].stringValue)
+    }
+
+    func testAllocationRequestFreezesGuardsForReplay() {
+        let facts = LedgerBillPurposeSnapshot.Facts(transactionId: "tx-1", transactionToken: "tok-1",
+                                                    fundPurposeRevision: 2, fundPurpose: nil)
+        let request = LedgerIncomeAllocationRequest(transactionId: "tx-1", facts: facts,
+                                                    configRevision: 4, operationId: "op-1")
+        XCTAssertEqual(request.body, .object([
+            "operationId": .string("op-1"), "transactionId": .string("tx-1"),
+            "expectedTransactionToken": .string("tok-1"), "expectedFundConfigRevision": .integer(4)
+        ]))
+        XCTAssertFalse(LedgerIncomeAllocationRequest.isAmbiguous(APIError(status: 409, code: "X", message: "x")))
+        XCTAssertTrue(LedgerIncomeAllocationRequest.isAmbiguous(APIError(status: 0, code: "TIMEOUT", message: "x")))
+    }
+
+    @MainActor func testOnlyUnconfirmedRefundsNeedAnAllocation() throws {
+        let json = "[" + Self.billJSON(id: "r1", purpose: nil, refund: true, type: 1) + ","
+            + Self.billJSON(id: "r2", purpose: nil, refund: true, type: 1, allocated: true) + ","
+            + Self.billJSON(id: "i1", purpose: nil, type: 1) + "]"
+        let rows = try JSONDecoder().decode([LedgerTransaction].self, from: Data(json.utf8))
+        XCTAssertEqual(rows.filter(LedgerUnallocatedRefundStore.needsAllocation).map(\.id), ["r1"])
+        XCTAssertTrue(rows[1].fundIncomeAllocated == true)
+        XCTAssertNil(rows[2].fundIncomeAllocated)
     }
 
     @MainActor private func makeClient() throws -> APIClient {
@@ -361,8 +384,13 @@ final class PlanEditingTests: XCTestCase {
     private static let ratios = LedgerPurposeAmounts(growth: 2500, reserve: 1500, essentials: 5000, joy: 1000)
     private static let configJSON = #"{"contractVersion":1,"config":{"revision":3,"ratiosBps":{"growth":2500,"reserve":1500,"essentials":5000,"joy":1000},"timeZone":"Asia/Shanghai","updatedAt":1793836800000}}"#
     private static func billJSON(id: String, purpose: String?, refund: Bool = false, type: Int = 0,
-                                 amountCents: Int = 1200) -> String {
-        #"{"id":"\#(id)","type":\#(type),"amountCents":\#(amountCents),"categoryId":"cat-1","accountId":"account-1","date":1793836800000,"note":"账单","tags":[],"isRefund":\#(refund ? "true" : "false"),"fundPurpose":\#(purpose.map { "\"" + $0 + "\"" } ?? "null"),"updatedAt":1793836800000}"#
+                                 amountCents: Int = 1200, allocated: Bool = false) -> String {
+        let purposeValue = purpose.map { "\"" + $0 + "\"" } ?? "null"
+        let allocatedField = allocated ? "\"fundIncomeAllocated\":true," : ""
+        return "{\"id\":\"\(id)\",\"type\":\(type),\"amountCents\":\(amountCents),"
+            + "\"categoryId\":\"cat-1\",\"accountId\":\"account-1\",\"date\":1793836800000,"
+            + "\"note\":\"账单\",\"tags\":[],\"isRefund\":\(refund ? "true" : "false"),"
+            + "\"fundPurpose\":\(purposeValue),\(allocatedField)\"updatedAt\":1793836800000}"
     }
     private static let issuePageJSON = #"{"contractVersion":1,"total":6,"limit":50,"offset":0,"items":[{"sourceKind":"transaction","sourceId":"tx-1","reason":"unassigned","status":"open"},{"sourceKind":"period","sourceId":"period-1","reason":"unverified-group","status":"open"},{"sourceKind":"salary","sourceId":"salary-gone","reason":"unallocated","status":"open"},{"sourceKind":"salary","sourceId":"salary-2","reason":"unallocated","status":"open","source":{"salaryId":"salary-2","amountCents":10000,"date":1793836800000,"accountId":"account-1","sourceToken":"token-1"}},{"sourceKind":"salary","sourceId":"salary-done","reason":"unallocated","status":"resolved"},{"sourceKind":"config","sourceId":"3","reason":"invalid-current-config","status":"open"}]}"#
     private static let salaryJSON = #"{"id":"salary-1","amountCents":10000,"date":1793836800000,"note":"","accountId":"account-1","updatedAt":1793836800000,"fundGrant":{"grantId":"salary:salary-1","revision":1,"status":"active","sourceAmountCents":10000,"ratiosBps":{"growth":2500,"reserve":1500,"essentials":5000,"joy":1000},"targets":{"growth":2500,"reserve":1500,"essentials":5000,"joy":1000}}}"#

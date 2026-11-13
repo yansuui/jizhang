@@ -45,6 +45,20 @@ export async function registerFinancialFundRoutes(
     const query = (request.query ?? {}) as Record<string, unknown>;
     return service.listIssues(query['limit'], query['offset']);
   });
+  // Non-salary income (a wage-like receipt or a refund) can join the four-purpose split
+  // without becoming a salary record.
+  app.post('/api/v1/financial-funds/income-allocations', async (request) =>
+    {
+      const { service } = getServices(request);
+      return service.allocateIncome(request.body, requireUserId(request));
+    },
+  );
+  app.get('/api/v1/financial-funds/income-allocations/:transactionId', async (request) => {
+      const { service } = getServices(request);
+    const params = (request.params ?? {}) as Record<string, unknown>;
+    const transactionId = params['transactionId'];
+    return service.getIncomeAllocation(typeof transactionId === 'string' ? transactionId : '');
+  });
   app.post('/api/v1/financial-funds/grants/review', async (request) =>
     {
       const { service } = getServices(request);

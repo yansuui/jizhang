@@ -39,6 +39,8 @@ struct LedgerTransaction: Decodable, Identifiable {
     let tags: [String]
     let isRefund: Bool
     let fundPurpose: LedgerPurpose?
+    /// Present only when the server confirmed this income into the four-purpose split by ratio.
+    let fundIncomeAllocated: Bool?
     let refundSummary: LedgerRefundSummary?
     let refundDetails: [LedgerRefundDetail]?
     let refundLinkedTxIds: [String]?
