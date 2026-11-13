@@ -141,6 +141,9 @@ struct LedgerPurposeAssignment: Equatable {
         await submit(retained, for: bill, api: api)
     }
 
+    /// Drops a row once another surface finished converting or classifying it.
+    func forget(_ id: String) { items.removeAll { $0.id == id } }
+
     private func submit(_ assignment: LedgerPurposeAssignment, for bill: LedgerTransaction, api: APIClient) async {
         assigning = bill.id
         rowErrors[bill.id] = nil
@@ -178,13 +181,14 @@ extension LedgerTransaction {
 @MainActor struct LedgerUnclassifiedBillsView: View {
     let api: APIClient
     @StateObject private var store = LedgerUnclassifiedBillsStore()
+    @StateObject private var converter = LedgerIncomeConverter()
 
     var body: some View {
         List {
             Section {
                 Text("这些账单还没有选择「资金用途」，四用途余额只能按已归类的部分统计。给每笔选一个用途后，它会立即计入对应用途。")
                     .font(.footnote).foregroundStyle(.secondary)
-                Text("收入行是以前记的收入账单：归到哪一类，余额就加在那一类。现在记收入请用「计划 → 新增收入分配」，服务器会按当前比例自动拆成四份，不再产生收入账单。")
+                Text("收入行不选用途：点「按比例分配到四用途」会把这条旧收入账单转成一次收入分配（金额、日期、账户、备注保留），原账单随之删除，避免同一笔钱算两次。现在记收入也可以直接用「计划 → 新增收入分配」。")
                     .font(.caption).foregroundStyle(.secondary)
                 if store.scanned > 0 {
                     Text("已检查 \(store.scanned) 笔账单，找到 \(store.items.count) 笔未归类。")
@@ -205,7 +209,9 @@ extension LedgerTransaction {
             ForEach(store.items) { bill in
                 VStack(alignment: .leading, spacing: 10) {
                     LedgerTransactionRow(transaction: bill, metadata: store.metadata)
-                    if store.needsRetry.contains(bill.id) {
+                    if bill.type == .income {
+                        incomeAction(bill)
+                    } else if store.needsRetry.contains(bill.id) {
                         Button { Task { await store.retry(bill, api: api) } } label: {
                             Label("重试上次提交", systemImage: "arrow.clockwise").font(.footnote)
                         }.disabled(store.assigning != nil)
@@ -214,13 +220,13 @@ extension LedgerTransaction {
                             Task { await store.assign(purpose, to: bill, api: api) }
                         }
                     }
-                    if store.assigning == bill.id {
+                    if store.assigning == bill.id || converter.busyId == bill.id {
                         HStack(spacing: 6) {
                             ProgressView()
                             Text("正在保存…").font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    if let message = store.rowErrors[bill.id] {
+                    if let message = store.rowErrors[bill.id] ?? converter.errors[bill.id] {
                         Text(message).font(.caption).foregroundStyle(.orange)
                     }
                 }.padding(.vertical, 4)
@@ -239,6 +245,27 @@ extension LedgerTransaction {
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await store.reload(api: api) }
         .task { if !store.hasLoaded { await store.reload(api: api) } }
+    }
+
+    /// An income bill is money the plan should split, so the only action here is conversion.
+    @ViewBuilder private func incomeAction(_ bill: LedgerTransaction) -> some View {
+        if converter.needsRetry.contains(bill.id) {
+            Button { Task { await convert(bill) } } label: {
+                Label("重试上次分配", systemImage: "arrow.clockwise").font(.footnote)
+            }.disabled(converter.busyId != nil)
+        } else {
+            Button { Task { await convert(bill) } } label: {
+                Label(converter.busyId == bill.id ? "正在分配…" : "按比例分配到四用途", systemImage: "chart.pie")
+                    .font(.subheadline.weight(.medium))
+                    .frame(maxWidth: .infinity, minHeight: 36)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(converter.busyId != nil)
+        }
+    }
+
+    private func convert(_ bill: LedgerTransaction) async {
+        if await converter.convert(bill, api: api) { store.forget(bill.id) }
     }
 }
 

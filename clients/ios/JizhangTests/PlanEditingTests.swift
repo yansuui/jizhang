@@ -296,6 +296,39 @@ final class PlanEditingTests: XCTestCase {
         XCTAssertEqual(store.sharesBps["salary-1"], 1000)
     }
 
+    @MainActor func testConvertingAnIncomeBillCreatesTheAllocationThenDeletesIt() async throws {
+        let api = try makeClient()
+        defer { api.invalidate() }
+        var posted: JSONValue?
+        CoreMockURLProtocol.setHandler { incoming in
+            let path = incoming.url?.path ?? ""
+            if path.hasSuffix("/financial-funds/config") {
+                return try Self.response(incoming, json: Self.configJSON)
+            }
+            if path == "/api/v1/salaries" && incoming.httpMethod == "POST" {
+                posted = try Self.body(incoming)
+                return try Self.response(incoming, status: 201, json: Self.salaryJSON)
+            }
+            if path == "/api/v1/transactions/tx-income" && incoming.httpMethod == "DELETE" {
+                return try Self.response(incoming, status: 204, json: "")
+            }
+            XCTFail("Unexpected request " + path)
+            throw URLError(.badServerResponse)
+        }
+        let bill = try JSONDecoder().decode(LedgerTransaction.self, from: Data(Self.billJSON(
+            id: "tx-income", purpose: nil, type: 1, amountCents: 10000).utf8))
+        let converter = LedgerIncomeConverter()
+        let done = await converter.convert(bill, api: api)
+        XCTAssertTrue(done)
+        XCTAssertEqual(api.ledgerRevision, 1)
+        let body = try XCTUnwrap(posted)
+        XCTAssertEqual(body["amountCents"], .integer(10000))
+        XCTAssertEqual(body["accountId"], .string("account-1"))
+        XCTAssertEqual(body["expectedFundConfigRevision"], .integer(3))
+        XCTAssertEqual(body["contractVersion"], .integer(1))
+        XCTAssertNotNil(body["operationId"].stringValue)
+    }
+
     @MainActor private func makeClient() throws -> APIClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [CoreMockURLProtocol.self]
@@ -327,8 +360,9 @@ final class PlanEditingTests: XCTestCase {
     }
     private static let ratios = LedgerPurposeAmounts(growth: 2500, reserve: 1500, essentials: 5000, joy: 1000)
     private static let configJSON = #"{"contractVersion":1,"config":{"revision":3,"ratiosBps":{"growth":2500,"reserve":1500,"essentials":5000,"joy":1000},"timeZone":"Asia/Shanghai","updatedAt":1793836800000}}"#
-    private static func billJSON(id: String, purpose: String?, refund: Bool = false) -> String {
-        #"{"id":"\#(id)","type":0,"amountCents":1200,"categoryId":"cat-1","accountId":"acc-1","date":1793836800000,"note":"账单","tags":[],"isRefund":\#(refund ? "true" : "false"),"fundPurpose":\#(purpose.map { "\"" + $0 + "\"" } ?? "null"),"updatedAt":1793836800000}"#
+    private static func billJSON(id: String, purpose: String?, refund: Bool = false, type: Int = 0,
+                                 amountCents: Int = 1200) -> String {
+        #"{"id":"\#(id)","type":\#(type),"amountCents":\#(amountCents),"categoryId":"cat-1","accountId":"account-1","date":1793836800000,"note":"账单","tags":[],"isRefund":\#(refund ? "true" : "false"),"fundPurpose":\#(purpose.map { "\"" + $0 + "\"" } ?? "null"),"updatedAt":1793836800000}"#
     }
     private static let issuePageJSON = #"{"contractVersion":1,"total":6,"limit":50,"offset":0,"items":[{"sourceKind":"transaction","sourceId":"tx-1","reason":"unassigned","status":"open"},{"sourceKind":"period","sourceId":"period-1","reason":"unverified-group","status":"open"},{"sourceKind":"salary","sourceId":"salary-gone","reason":"unallocated","status":"open"},{"sourceKind":"salary","sourceId":"salary-2","reason":"unallocated","status":"open","source":{"salaryId":"salary-2","amountCents":10000,"date":1793836800000,"accountId":"account-1","sourceToken":"token-1"}},{"sourceKind":"salary","sourceId":"salary-done","reason":"unallocated","status":"resolved"},{"sourceKind":"config","sourceId":"3","reason":"invalid-current-config","status":"open"}]}"#
     private static let salaryJSON = #"{"id":"salary-1","amountCents":10000,"date":1793836800000,"note":"","accountId":"account-1","updatedAt":1793836800000,"fundGrant":{"grantId":"salary:salary-1","revision":1,"status":"active","sourceAmountCents":10000,"ratiosBps":{"growth":2500,"reserve":1500,"essentials":5000,"joy":1000},"targets":{"growth":2500,"reserve":1500,"essentials":5000,"joy":1000}}}"#

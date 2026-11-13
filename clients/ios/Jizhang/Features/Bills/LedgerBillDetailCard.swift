@@ -14,9 +14,12 @@ import SwiftUI
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     @StateObject private var resource = LedgerResource<LedgerTransaction>()
+    @StateObject private var converter = LedgerIncomeConverter()
     @State private var trail: [String] = []
     @State private var editSelection: LedgerBillCardEdit?
     @State private var confirmingDelete = false
+    @State private var confirmingConvert = false
+    @State private var converting = false
     @State private var deleting = false
     @State private var deleteError: String?
     @State private var dragOffset: CGFloat = 0
@@ -73,6 +76,12 @@ import SwiftUI
             Button("取消", role: .cancel) {}
         } message: {
             Text("删除后账单移入回收站，账本合计会立即更新。")
+        }
+        .confirmationDialog("转为收入分配？", isPresented: $confirmingConvert, titleVisibility: .visible) {
+            Button("确认转换") { convert() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("这笔收入会按当前比例分到四用途，金额、日期、账户和备注保留；原账单会被删除，避免同一笔钱算两次。")
         }
         .task(id: "\(currentID):\(api.ledgerRevision)") { await load() }
     }
@@ -252,6 +261,13 @@ import SwiftUI
                     .frame(maxWidth: .infinity)
                     .padding(.top, 2)
             }
+            if let message = converter.errors[value.id] {
+                Text(message)
+                    .font(.footnote).foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 2)
+            }
         }
         .padding(.top, 12)
     }
@@ -267,6 +283,15 @@ import SwiftUI
                 editSelection = LedgerBillCardEdit(transaction: value, refund: true)
             }
             .accessibilityHint("为这笔支出记录一笔关联退款收入")
+        }
+        if value.type == .income && !value.isRefund {
+            capsuleButton(converting ? "转换中…" : "转为分配",
+                          fill: AppTheme.accent.opacity(0.14), textColor: AppTheme.accent) {
+                confirmingConvert = true
+            }
+            .disabled(converting)
+            .accessibilityIdentifier("bill-detail-convert")
+            .accessibilityHint("把这笔收入按当前比例转成收入分配记录，原账单会被删除")
         }
         capsuleButton(deleting ? "删除中…" : "删除",
                       fill: Self.deleteTint.opacity(0.12), textColor: Self.deleteTint) {
@@ -349,8 +374,19 @@ import SwiftUI
         }
     }
 
-    // MARK: - 展示规则
+    /// 旧收入账单可以转成收入分配：服务器建分配记录后删除账单，避免同一笔钱算两次。
+    private func convert() {
+        guard let value = resource.value, !converting else { return }
+        Task {
+            converting = true
+            let done = await converter.convert(value, api: api)
+            converting = false
+            guard done else { return }
+            if let onClose { onClose() } else { resource.clear() }
+        }
+    }
 
+    // MARK: - 展示规则
     private static let expenseTint = Color(red: 0.87, green: 0.29, blue: 0.22)
     private static let deleteTint = Color(red: 0.87, green: 0.29, blue: 0.22)
 
