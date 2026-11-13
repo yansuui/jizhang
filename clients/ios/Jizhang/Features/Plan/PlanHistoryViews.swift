@@ -37,16 +37,24 @@ import SwiftUI
                             } else if issue.status != "open" {
                                 Label("历史核对项已处理", systemImage: "checkmark.circle")
                                     .font(.subheadline).foregroundStyle(.secondary)
-                            } else {
+                            } else if issue.needsServerAttention {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(issue.sourceKind == "salary" ? "历史收入待核对" : "历史资金数据待核对")
-                                    Text("来源状态尚不完整，请先核对对应收入或账单。")
+                                    Text("资金数据待核对")
+                                    Text("服务器上仍有无法自动处理的资金数据，处理完才能继续修改分配设置。")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                             }
+                            // Open archival rows are summarized below; they are not tasks.
+                        }
+                        if archivedIssueCount > 0 {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("另有 \(archivedIssueCount) 项历史记录已归档")
+                                Text("升级时无法自动归类的旧记录。现在余额是否完整由账单的「资金用途」和收入的分配记录决定，这里不需要逐条处理。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                         }
                         if history.hasMoreIssues {
-                            Button("加载更多待核对项") { Task { await history.loadMoreIssues(api: api) } }.disabled(history.loading)
+                            Button("加载更多核对记录") { Task { await history.loadMoreIssues(api: api) } }.disabled(history.loading)
                         }
                     } header: { Text("历史核对记录 · \(history.issueTotal)") } footer: {
                         Text("分配已有收入不会再次记入到账金额。确认比例后，由服务器计算四用途分配。")
@@ -81,6 +89,8 @@ import SwiftUI
                 .sheet(item: $review) { PlanReviewView(api: api, state: $0) }
         }
     }
+
+    private var archivedIssueCount: Int { history.issues.filter(\.isArchived).count }
 }
 
 @MainActor private struct PlanSalaryDetailView: View {

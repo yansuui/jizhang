@@ -110,6 +110,13 @@ struct PlanFundIssue: Decodable, Identifiable {
     let source: PlanSalarySource?
     var id: String { sourceKind + ":" + sourceId + ":" + reason }
     var canAllocate: Bool { sourceKind == "salary" && reason == "unallocated" && status == "open" && source != nil }
+    /// Mirrors the server's archival contract: `salary`/`transaction`/`period` issues are
+    /// represented by their live source facts (grant, bill purpose), so an open one has no
+    /// corrective action in the app and must not read as an outstanding task.
+    var isArchived: Bool { status == "open" && !canAllocate && Self.liveFactKinds.contains(sourceKind) }
+    /// Open issues outside those kinds still keep the fund summary incomplete.
+    var needsServerAttention: Bool { status == "open" && !canAllocate && !isArchived }
+    private static let liveFactKinds: Set<String> = ["salary", "transaction", "period"]
 }
 
 struct PlanIssuePage: Decodable {

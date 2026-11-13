@@ -185,6 +185,19 @@ final class PlanEditingTests: XCTestCase {
         XCTAssertThrowsError(try malformed.validate())
     }
 
+    func testMigrationIssueQueueSeparatesActionableArchivedAndServerOnlyRows() throws {
+        let page = try JSONDecoder().decode(PlanIssuePage.self, from: Data(Self.issuePageJSON.utf8))
+        XCTAssertEqual(page.total, 6)
+        XCTAssertEqual(Set(page.items.map(\.id)).count, page.items.count)
+        XCTAssertEqual(page.items.map(\.canAllocate), [false, false, false, true, false, false])
+        // Live bill/salary facts drive the balances, so open archival rows are not tasks.
+        XCTAssertEqual(page.items.map(\.isArchived), [true, true, true, false, false, false])
+        XCTAssertEqual(page.items.map(\.needsServerAttention), [false, false, false, false, false, true])
+        XCTAssertEqual(page.items[3].source?.sourceToken, "token-1")
+        XCTAssertNil(page.items[2].source)
+        try page.items.compactMap(\.source).forEach { try $0.validate() }
+    }
+
     @MainActor private func makeClient() throws -> APIClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [CoreMockURLProtocol.self]
@@ -216,5 +229,6 @@ final class PlanEditingTests: XCTestCase {
     }
     private static let ratios = LedgerPurposeAmounts(growth: 2500, reserve: 1500, essentials: 5000, joy: 1000)
     private static let configJSON = #"{"contractVersion":1,"config":{"revision":3,"ratiosBps":{"growth":2500,"reserve":1500,"essentials":5000,"joy":1000},"timeZone":"Asia/Shanghai","updatedAt":1793836800000}}"#
+    private static let issuePageJSON = #"{"contractVersion":1,"total":6,"limit":50,"offset":0,"items":[{"sourceKind":"transaction","sourceId":"tx-1","reason":"unassigned","status":"open"},{"sourceKind":"period","sourceId":"period-1","reason":"unverified-group","status":"open"},{"sourceKind":"salary","sourceId":"salary-gone","reason":"unallocated","status":"open"},{"sourceKind":"salary","sourceId":"salary-2","reason":"unallocated","status":"open","source":{"salaryId":"salary-2","amountCents":10000,"date":1793836800000,"accountId":"account-1","sourceToken":"token-1"}},{"sourceKind":"salary","sourceId":"salary-done","reason":"unallocated","status":"resolved"},{"sourceKind":"config","sourceId":"3","reason":"invalid-current-config","status":"open"}]}"#
     private static let salaryJSON = #"{"id":"salary-1","amountCents":10000,"date":1793836800000,"note":"","accountId":"account-1","updatedAt":1793836800000,"fundGrant":{"grantId":"salary:salary-1","revision":1,"status":"active","sourceAmountCents":10000,"ratiosBps":{"growth":2500,"reserve":1500,"essentials":5000,"joy":1000},"targets":{"growth":2500,"reserve":1500,"essentials":5000,"joy":1000}}}"#
 }
