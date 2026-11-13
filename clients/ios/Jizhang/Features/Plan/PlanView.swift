@@ -138,13 +138,19 @@ import SwiftUI
     private func coverageNotice(_ coverage: LedgerFundSummary.Coverage) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("部分资金待核对", systemImage: "exclamationmark.circle.fill").font(.headline)
-            Text("下面的余额仅反映已确认部分，尚不能作为完整可用额度。")
+            Text("下面的余额仅反映已归类部分，尚不能作为完整可用额度。")
                 .font(.subheadline)
             if coverage.unallocatedSalaryCount > 0 {
-                Text("待分配工资 \(coverage.unallocatedSalaryCount) 笔 · " + LedgerFormat.money(coverage.unallocatedSalaryCents))
+                Button { activeSheet = .history } label: {
+                    coverageLine("待分配工资 \(coverage.unallocatedSalaryCount) 笔 · " +
+                                 LedgerFormat.money(coverage.unallocatedSalaryCents), action: "去核对")
+                }.buttonStyle(.plain)
             }
             if coverage.unassignedTransactionCount > 0 {
-                Text("未归类账单 \(coverage.unassignedTransactionCount) 笔 · " + LedgerFormat.money(coverage.unassignedTransactionCents))
+                NavigationLink { LedgerUnclassifiedBillsView(api: api) } label: {
+                    coverageLine("未归类账单 \(coverage.unassignedTransactionCount) 笔 · " +
+                                 LedgerFormat.money(coverage.unassignedTransactionCents), action: "选用途")
+                }.buttonStyle(.plain)
             }
             if coverage.invalidRefundCount > 0 {
                 Text("退款待核对 \(coverage.invalidRefundCount) 笔 · " + LedgerFormat.money(coverage.unresolvedRefundCents))
@@ -156,6 +162,15 @@ import SwiftUI
         }.font(.footnote).foregroundStyle(Color.orange)
             .frame(maxWidth: .infinity, alignment: .leading).padding(18)
             .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 22))
+    }
+
+    private func coverageLine(_ text: String, action: String) -> some View {
+        HStack(spacing: 6) {
+            Text(text)
+            Spacer(minLength: 8)
+            Text(action).fontWeight(.semibold)
+            Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+        }.contentShape(Rectangle())
     }
 
     private func loadSummary() async {

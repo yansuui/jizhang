@@ -103,6 +103,10 @@ import SwiftUI
                                 Text("不指定").tag(LedgerPurpose?.none)
                                 ForEach(LedgerPurpose.allCases) { Text($0.title).tag(Optional($0)) }
                             }
+                            Text(store.draft.purpose == nil
+                                 ? "不指定时这笔账单不计入四用途拆分，可在「计划 → 未归类账单」里补选。"
+                                 : "用途只决定这笔钱计入哪一类，不改变金额与账户。")
+                                .font(.footnote).foregroundStyle(.secondary)
                         }
                     }
                     if store.draft.type == .income {

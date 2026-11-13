@@ -198,6 +198,69 @@ final class PlanEditingTests: XCTestCase {
         try page.items.compactMap(\.source).forEach { try $0.validate() }
     }
 
+    func testPurposeAssignmentSendsTheGuardedCanonicalBody() {
+        let facts = LedgerBillPurposeSnapshot.Facts(transactionId: "tx-1", transactionToken: "tok-1",
+                                                    fundPurposeRevision: 4, fundPurpose: nil)
+        let assignment = LedgerPurposeAssignment(transactionId: "tx-1", purpose: .reserve, facts: facts,
+                                                 operationId: "op-1")
+        XCTAssertEqual(assignment.body, .object([
+            "operationId": .string("op-1"), "fundPurpose": .string("reserve"),
+            "expectedFundPurposeRevision": .integer(4), "expectedTransactionToken": .string("tok-1")
+        ]))
+    }
+
+    func testPurposeWriteAmbiguityFollowsTheHTTPStatus() {
+        XCTAssertFalse(LedgerPurposeAssignment.isAmbiguous(APIError(status: 400, code: "X", message: "x")))
+        XCTAssertFalse(LedgerPurposeAssignment.isAmbiguous(APIError(status: 409, code: "X", message: "x")))
+        XCTAssertTrue(LedgerPurposeAssignment.isAmbiguous(APIError(status: 408, code: "X", message: "x")))
+        XCTAssertTrue(LedgerPurposeAssignment.isAmbiguous(APIError(status: 503, code: "X", message: "x")))
+        XCTAssertTrue(LedgerPurposeAssignment.isAmbiguous(APIError(status: 0, code: "TIMEOUT", message: "x")))
+        XCTAssertTrue(LedgerPurposeAssignment.isAmbiguous(URLError(.timedOut)))
+    }
+
+    @MainActor func testUnclassifiedFilterMatchesTheSummaryRule() throws {
+        let json = "[" + Self.billJSON(id: "a", purpose: nil) + ","
+            + Self.billJSON(id: "b", purpose: "joy") + ","
+            + Self.billJSON(id: "c", purpose: nil, refund: true) + "]"
+        let rows = try JSONDecoder().decode([LedgerTransaction].self, from: Data(json.utf8))
+        XCTAssertEqual(rows.filter(\.isUnclassifiedForFunds).map(\.id), ["a"])
+    }
+
+    @MainActor func testAssigningAPurposeForgetsTheBillAndRefreshesTheLedger() async throws {
+        let api = try makeClient()
+        defer { api.invalidate() }
+        CoreMockURLProtocol.setHandler { incoming in
+            let path = incoming.url?.path ?? ""
+            if path.hasSuffix("/categories") || path.hasSuffix("/accounts") {
+                return try Self.response(incoming, json: #"{"items":[]}"#)
+            }
+            if path.contains("/bill-purposes/tx-1") {
+                return try Self.response(incoming, json: #"{"billPurpose":{"transactionId":"tx-1","transactionToken":"tok-1","fundPurposeRevision":0,"fundPurpose":null}}"#)
+            }
+            if path.hasSuffix("/transactions/tx-1") && incoming.httpMethod == "PATCH" {
+                return try Self.response(incoming, json: Self.billJSON(id: "tx-1", purpose: "joy"))
+            }
+            if path.hasSuffix("/transactions") {
+                let page = #"{"items":["# + Self.billJSON(id: "tx-1", purpose: nil) + ","
+                    + Self.billJSON(id: "tx-2", purpose: "essentials") + #"],"total":2,"limit":100,"offset":0}"#
+                return try Self.response(incoming, json: page)
+            }
+            XCTFail("Unexpected request " + path)
+            throw URLError(.badServerResponse)
+        }
+        let store = LedgerUnclassifiedBillsStore()
+        await store.reload(api: api)
+        XCTAssertEqual(store.items.map(\.id), ["tx-1"])
+        XCTAssertEqual(store.scanned, 2)
+        XCTAssertFalse(store.hasMore)
+        let bill = try XCTUnwrap(store.items.first)
+        await store.assign(.joy, to: bill, api: api)
+        XCTAssertTrue(store.items.isEmpty)
+        XCTAssertTrue(store.rowErrors.isEmpty)
+        XCTAssertTrue(store.needsRetry.isEmpty)
+        XCTAssertEqual(api.ledgerRevision, 1)
+    }
+
     @MainActor private func makeClient() throws -> APIClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [CoreMockURLProtocol.self]
@@ -229,6 +292,9 @@ final class PlanEditingTests: XCTestCase {
     }
     private static let ratios = LedgerPurposeAmounts(growth: 2500, reserve: 1500, essentials: 5000, joy: 1000)
     private static let configJSON = #"{"contractVersion":1,"config":{"revision":3,"ratiosBps":{"growth":2500,"reserve":1500,"essentials":5000,"joy":1000},"timeZone":"Asia/Shanghai","updatedAt":1793836800000}}"#
+    private static func billJSON(id: String, purpose: String?, refund: Bool = false) -> String {
+        #"{"id":"\#(id)","type":0,"amountCents":1200,"categoryId":"cat-1","accountId":"acc-1","date":1793836800000,"note":"账单","tags":[],"isRefund":\#(refund ? "true" : "false"),"fundPurpose":\#(purpose.map { "\"" + $0 + "\"" } ?? "null"),"updatedAt":1793836800000}"#
+    }
     private static let issuePageJSON = #"{"contractVersion":1,"total":6,"limit":50,"offset":0,"items":[{"sourceKind":"transaction","sourceId":"tx-1","reason":"unassigned","status":"open"},{"sourceKind":"period","sourceId":"period-1","reason":"unverified-group","status":"open"},{"sourceKind":"salary","sourceId":"salary-gone","reason":"unallocated","status":"open"},{"sourceKind":"salary","sourceId":"salary-2","reason":"unallocated","status":"open","source":{"salaryId":"salary-2","amountCents":10000,"date":1793836800000,"accountId":"account-1","sourceToken":"token-1"}},{"sourceKind":"salary","sourceId":"salary-done","reason":"unallocated","status":"resolved"},{"sourceKind":"config","sourceId":"3","reason":"invalid-current-config","status":"open"}]}"#
     private static let salaryJSON = #"{"id":"salary-1","amountCents":10000,"date":1793836800000,"note":"","accountId":"account-1","updatedAt":1793836800000,"fundGrant":{"grantId":"salary:salary-1","revision":1,"status":"active","sourceAmountCents":10000,"ratiosBps":{"growth":2500,"reserve":1500,"essentials":5000,"joy":1000},"targets":{"growth":2500,"reserve":1500,"essentials":5000,"joy":1000}}}"#
 }
