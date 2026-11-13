@@ -78,7 +78,7 @@ import SwiftUI
                         }
                     }
                 } header: { Text("全部收入分配记录") } footer: {
-                    Text("这里只列出收入分配记录。以前用「记一笔」记的收入还在账单里，可在账单详情用「转为分配」转成收入分配；现在记收入直接新增收入分配即可。")
+                    Text("这里只列出工资收入分配记录。其他收入留在账单里，按单一用途计入；退款按原支出用途回补。只有工资才应转成收入分配。")
                 }
             }.navigationTitle("收入分配记录").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }

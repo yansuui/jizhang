@@ -34,7 +34,7 @@ import SwiftUI
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
                     }.accessibilityIdentifier("plan.history")
                 }
-                Text("收入只在这里记录：按当前比例自动分到四用途，不产生收入账单。")
+                Text("工资在这里记录：按当前比例自动分到四用途。工资以外的收入仍记账单，选择计入哪一类。")
                     .font(.caption).foregroundStyle(.secondary)
                 if let value = summary.value {
                     if !value.coverage.complete { coverageNotice(value.coverage) }
@@ -152,7 +152,7 @@ import SwiftUI
                 NavigationLink { LedgerUnclassifiedBillsView(api: api) } label: {
                     coverageLine("未归类账单 \(coverage.unassignedTransactionCount) 笔 · " +
                                  LedgerFormat.money(coverage.unassignedTransactionCents), action: "选用途",
-                                 detail: "含以前记的收入和支出。现在收入统一用「新增收入分配」，按当前比例自动拆分。")
+                                 detail: "工资以外的收入在这里选择计入哪一类；工资用「新增收入分配」按比例拆分。")
                 }.buttonStyle(.plain)
             }
             if coverage.invalidRefundCount > 0 {

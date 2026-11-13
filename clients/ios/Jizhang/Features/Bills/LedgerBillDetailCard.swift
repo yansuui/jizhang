@@ -77,11 +77,11 @@ import SwiftUI
         } message: {
             Text("删除后账单移入回收站，账本合计会立即更新。")
         }
-        .confirmationDialog("转为收入分配？", isPresented: $confirmingConvert, titleVisibility: .visible) {
-            Button("确认转换") { convert() }
+        .confirmationDialog("这笔收入是工资吗？", isPresented: $confirmingConvert, titleVisibility: .visible) {
+            Button("是工资，按比例分配") { convert() }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("这笔收入会按当前比例分到四用途，金额、日期、账户和备注保留；原账单会被删除，避免同一笔钱算两次。")
+            Text("只有工资才应转成收入分配：会按当前比例分到四用途，并在「工资记录」里新增一条；原账单同时被删除，避免同一笔钱算两次。不是工资请用「编辑」选择资金用途。")
         }
         .task(id: "\(currentID):\(api.ledgerRevision)") { await load() }
     }
@@ -191,7 +191,12 @@ import SwiftUI
             }
             if let purpose = value.fundPurpose {
                 LedgerBillDetailRow(label: "资金用途", value: purpose.title)
-            } else if value.type == .expense && !value.isRefund {
+            } else if value.isRefund {
+                LedgerBillDetailRow(label: "资金用途", value: "按原支出用途回补")
+                Text("退款不参加按比例分配，它回补原支出已经占用的那一类。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .padding(.bottom, 4)
+            } else if value.type == .expense {
                 LedgerBillDetailRow(label: "资金用途", value: "跟随分类规则")
             }
             LedgerBillDetailRow(label: "状态", value: Self.statusTitle(value), valueColor: Self.amountColor(value))
@@ -285,13 +290,13 @@ import SwiftUI
             .accessibilityHint("为这笔支出记录一笔关联退款收入")
         }
         if value.type == .income && !value.isRefund {
-            capsuleButton(converting ? "转换中…" : "转为分配",
+            capsuleButton(converting ? "转换中…" : "转为工资分配",
                           fill: AppTheme.accent.opacity(0.14), textColor: AppTheme.accent) {
                 confirmingConvert = true
             }
             .disabled(converting)
             .accessibilityIdentifier("bill-detail-convert")
-            .accessibilityHint("把这笔收入按当前比例转成收入分配记录，原账单会被删除")
+            .accessibilityHint("仅当这笔收入是工资时使用；转换后按当前比例分到四用途并删除原账单")
         }
         capsuleButton(deleting ? "删除中…" : "删除",
                       fill: Self.deleteTint.opacity(0.12), textColor: Self.deleteTint) {

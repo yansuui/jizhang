@@ -182,13 +182,14 @@ extension LedgerTransaction {
     let api: APIClient
     @StateObject private var store = LedgerUnclassifiedBillsStore()
     @StateObject private var converter = LedgerIncomeConverter()
+    @State private var confirmConvert: LedgerTransaction?
 
     var body: some View {
         List {
             Section {
                 Text("这些账单还没有选择「资金用途」，四用途余额只能按已归类的部分统计。给每笔选一个用途后，它会立即计入对应用途。")
                     .font(.footnote).foregroundStyle(.secondary)
-                Text("收入行不选用途：点「按比例分配到四用途」会把这条旧收入账单转成一次收入分配（金额、日期、账户、备注保留），原账单随之删除，避免同一笔钱算两次。现在记收入也可以直接用「计划 → 新增收入分配」。")
+                Text("收入行分两种：「这是工资」才转成收入分配，按当前比例拆到四用途；其他收入直接选一个计入的用途，和支出一样只进一类。退款不在这里，它按原支出的用途回补。")
                     .font(.caption).foregroundStyle(.secondary)
                 if store.scanned > 0 {
                     Text("已检查 \(store.scanned) 笔账单，找到 \(store.items.count) 笔未归类。")
@@ -243,24 +244,46 @@ extension LedgerTransaction {
         }
         .navigationTitle("未归类账单")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("这笔收入是工资吗？",
+                            isPresented: Binding(get: { confirmConvert != nil },
+                                                 set: { if !$0 { confirmConvert = nil } }),
+                            titleVisibility: .visible, presenting: confirmConvert) { bill in
+            Button("是工资，按比例分配") { Task { await convert(bill) } }
+            Button("取消", role: .cancel) {}
+        } message: { _ in
+            Text("转换会把它记成一条工资收入分配（按当前比例拆分，出现在「工资记录」），并删除原收入账单，避免同一笔钱算两次。不是工资请直接选上面的用途。")
+        }
         .refreshable { await store.reload(api: api) }
         .task { if !store.hasLoaded { await store.reload(api: api) } }
     }
 
-    /// An income bill is money the plan should split, so the only action here is conversion.
+    /// Income is only salary when it is recorded as a salary. Other income is a bill and reaches
+    /// exactly one purpose, exactly like an expense; refunds are never listed here.
     @ViewBuilder private func incomeAction(_ bill: LedgerTransaction) -> some View {
         if converter.needsRetry.contains(bill.id) {
             Button { Task { await convert(bill) } } label: {
-                Label("重试上次分配", systemImage: "arrow.clockwise").font(.footnote)
+                Label("重试上次转换", systemImage: "arrow.clockwise").font(.footnote)
             }.disabled(converter.busyId != nil)
+        } else if store.needsRetry.contains(bill.id) {
+            Button { Task { await store.retry(bill, api: api) } } label: {
+                Label("重试上次提交", systemImage: "arrow.clockwise").font(.footnote)
+            }.disabled(store.assigning != nil)
         } else {
-            Button { Task { await convert(bill) } } label: {
-                Label(converter.busyId == bill.id ? "正在分配…" : "按比例分配到四用途", systemImage: "chart.pie")
-                    .font(.subheadline.weight(.medium))
-                    .frame(maxWidth: .infinity, minHeight: 36)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("其他收入：选择计入的用途")
+                    .font(.caption).foregroundStyle(.secondary)
+                LedgerPurposeChoices(busy: store.assigning != nil) { purpose in
+                    Task { await store.assign(purpose, to: bill, api: api) }
+                }
+                Button { confirmConvert = bill } label: {
+                    Label(converter.busyId == bill.id ? "正在转换…" : "这是工资，转为收入分配",
+                          systemImage: "banknote")
+                        .font(.footnote)
+                }
+                .buttonStyle(.bordered)
+                .disabled(converter.busyId != nil)
+                .accessibilityHint("仅当这笔收入是工资时使用；转换后按当前比例分到四用途，并删除原账单")
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(converter.busyId != nil)
         }
     }
 

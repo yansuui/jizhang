@@ -26,12 +26,11 @@ import SwiftUI
 
     private var categories: [LedgerCategory] { store.metadata.categories.filter { $0.type == store.draft.type.rawValue } }
     private var blocked: Bool { store.loading || store.saving || store.awaitingReconciliation || !store.ready }
-    /// New income never becomes a bill: it is recorded as a 收入分配 so the server can split it
-    /// by the current ratios. Only a pre-existing income bill still chooses a single purpose.
+    /// Only salary is split by the plan's ratios; any other income bill reaches one purpose.
     private var purposeHint: String {
         if store.draft.purpose != nil { return "用途只决定这笔钱计入哪一类，不改变金额与账户。" }
         if store.draft.type == .income {
-            return "这是以前记的收入账单。现在记收入请到「计划 → 新增收入分配」，会按当前比例自动拆分。"
+            return "这是其他收入，只计入你选择的这一类。工资请用「计划 → 新增收入分配」，那里才按比例拆分。"
         }
         return "不指定时这笔账单不计入四用途拆分，可在「计划 → 未归类账单」里补选。"
     }
@@ -67,8 +66,7 @@ import SwiftUI
                     Section {
                         if store.draft.isRefund {
                             Label("退款收入", systemImage: "arrow.uturn.backward")
-                        } else if editing {
-                            // Historical income bills stay editable; new income never becomes a bill.
+                        } else {
                             Picker("收支类型", selection: Binding(get: { store.draft.type }, set: { type in
                                 store.draft.type = type
                                 store.draft.categoryId = store.metadata.categories.first { $0.type == type.rawValue }?.id ?? ""
@@ -119,8 +117,10 @@ import SwiftUI
                     } header: {
                         Text("账单信息")
                     } footer: {
-                        if !editing && !store.draft.isRefund {
-                            Text("记收入请到「计划 → 新增收入分配」，服务器会按当前比例自动分到四用途，不产生账单。")
+                        if !store.draft.isRefund {
+                            Text(store.draft.type == .income
+                                 ? "这里记的是工资以外的收入，只计入所选用途。工资请用「计划 → 新增收入分配」，那边按比例拆分且不需要分类。"
+                                 : "工资类收入不记账单，请用「计划 → 新增收入分配」。")
                         }
                     }
                     if store.draft.type == .income {
