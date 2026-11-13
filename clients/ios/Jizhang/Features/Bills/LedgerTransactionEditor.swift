@@ -26,6 +26,14 @@ import SwiftUI
 
     private var categories: [LedgerCategory] { store.metadata.categories.filter { $0.type == store.draft.type.rawValue } }
     private var blocked: Bool { store.loading || store.saving || store.awaitingReconciliation || !store.ready }
+    /// Salary-like money belongs to 收入分配, which the server splits by the current ratios;
+    /// a recorded bill only reaches a purpose the user picks here.
+    private var purposeHint: String {
+        if store.draft.purpose != nil { return "用途只决定这笔钱计入哪一类，不改变金额与账户。" }
+        return store.draft.type == .income
+            ? "不指定时这笔收入不计入四用途余额；工资类收入请用「计划 → 新增收入分配」，会按当前比例自动拆分。"
+            : "不指定时这笔账单不计入四用途拆分，可在「计划 → 未归类账单」里补选。"
+    }
 
     var body: some View {
         NavigationStack {
@@ -103,9 +111,7 @@ import SwiftUI
                                 Text("不指定").tag(LedgerPurpose?.none)
                                 ForEach(LedgerPurpose.allCases) { Text($0.title).tag(Optional($0)) }
                             }
-                            Text(store.draft.purpose == nil
-                                 ? "不指定时这笔账单不计入四用途拆分，可在「计划 → 未归类账单」里补选。"
-                                 : "用途只决定这笔钱计入哪一类，不改变金额与账户。")
+                            Text(purposeHint)
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                     }

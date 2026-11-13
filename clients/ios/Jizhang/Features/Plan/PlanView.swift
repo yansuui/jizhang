@@ -149,7 +149,8 @@ import SwiftUI
             if coverage.unassignedTransactionCount > 0 {
                 NavigationLink { LedgerUnclassifiedBillsView(api: api) } label: {
                     coverageLine("未归类账单 \(coverage.unassignedTransactionCount) 笔 · " +
-                                 LedgerFormat.money(coverage.unassignedTransactionCents), action: "选用途")
+                                 LedgerFormat.money(coverage.unassignedTransactionCents), action: "选用途",
+                                 detail: "含收入和支出。工资请用「新增收入分配」，由服务器按比例拆开。")
                 }.buttonStyle(.plain)
             }
             if coverage.invalidRefundCount > 0 {
@@ -164,12 +165,17 @@ import SwiftUI
             .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 22))
     }
 
-    private func coverageLine(_ text: String, action: String) -> some View {
-        HStack(spacing: 6) {
-            Text(text)
-            Spacer(minLength: 8)
-            Text(action).fontWeight(.semibold)
-            Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+    private func coverageLine(_ text: String, action: String, detail: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(text)
+                Spacer(minLength: 8)
+                Text(action).fontWeight(.semibold)
+                Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            if let detail {
+                Text(detail).font(.caption2).foregroundStyle(Color.orange.opacity(0.85))
+            }
         }.contentShape(Rectangle())
     }
 

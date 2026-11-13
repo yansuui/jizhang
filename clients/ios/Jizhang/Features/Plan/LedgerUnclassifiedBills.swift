@@ -184,6 +184,8 @@ extension LedgerTransaction {
             Section {
                 Text("这些账单还没有选择「资金用途」，四用途余额只能按已归类的部分统计。给每笔选一个用途后，它会立即计入对应用途。")
                     .font(.footnote).foregroundStyle(.secondary)
+                Text("收入行同理：归到哪一类，余额就加在那一类。工资类收入请用「计划 → 新增收入分配」，服务器会按当前比例自动拆成四份。")
+                    .font(.caption).foregroundStyle(.secondary)
                 if store.scanned > 0 {
                     Text("已检查 \(store.scanned) 笔账单，找到 \(store.items.count) 笔未归类。")
                         .font(.caption).foregroundStyle(.secondary)
