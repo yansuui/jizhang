@@ -249,6 +249,12 @@ private struct AssistantChatView: View {
                 .accessibilityLabel("对话操作")
             }
         }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("收起") { composerFocused = false }
+            }
+        }
         .task(id: conversation.id) { await store.open(conversation.id) }
         .task { await store.loadLedgerMetadataIfNeeded() }
         .environment(\.assistantLedgerMetadata, store.ledgerMetadata)
@@ -319,7 +325,7 @@ private struct AssistantChatView: View {
                     }.padding(.horizontal, 16).padding(.top, 20).padding(.bottom, 12)
                 }
                 .coordinateSpace(name: "assistant-scroll")
-                .scrollDismissesKeyboard(.interactively)
+                .scrollDismissesKeyboard(.immediately)
                 .simultaneousGesture(DragGesture(minimumDistance: 4).onChanged { _ in
                     dragging = true; followTail = false
                 }.onEnded { _ in

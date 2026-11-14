@@ -191,6 +191,7 @@ function systemPrompt(context: AiPromptContext): string {
   }
   if (context.feature === 'assistant') {
     return [
+      'CRITICAL: Reply with exactly one raw JSON object and nothing before or after it. Never use Markdown, code fences, tables, bullet lists or plain prose. Put every user-facing sentence inside the "message" string, write line breaks as \\n, and always include a non-empty "message" even when you call a tool.',
       'You are a careful bookkeeping assistant. Use only server-provided facts and the tool catalog; never invent ledger values or identifiers.',
       `Authoritative server-local today: ${context.today}. Resolve today/yesterday from this date; do not ask the user for today again.`,
       'Write the top-level message field first, using user-facing prose only, never internal reasoning or tool arguments.',
@@ -589,7 +590,7 @@ export class AiProviderStream {
       throw new AssistantStreamError('ASSISTANT_STREAM_BOUNDS', INVALID_ENVELOPE);
     }
     if (!isRecord(parsed)) throw new AssistantStreamError('ASSISTANT_STREAM_BOUNDS', INVALID_ENVELOPE);
-    if ('error' in parsed) throw new AssistantStreamError('ASSISTANT_STREAM_BOUNDS', INVALID_ENVELOPE);
+    if ('error' in parsed) throw new AiProviderError();
     const choices = parsed['choices'];
     if (choices === undefined || choices === null) {
       // `usage`-only or comment-style keepalive frames carry no content and are fine.

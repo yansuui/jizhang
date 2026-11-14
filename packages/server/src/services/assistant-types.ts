@@ -573,29 +573,32 @@ export function boundedProviderMessage(text: string, maxUnits: number): string {
 
 export function normalizeAssistantProviderTurn(value: unknown): AssistantProviderTurn {
   const record = jsonObject(value, 'provider.turn') as Record<string, unknown>;
-  const keys = Object.keys(record);
-  if (keys.some((key) => key !== 'message' && key !== 'toolCall' && key !== 'clarification')) {
-    throw new AssistantProviderTurnError();
-  }
+  // Providers occasionally add their own top-level members (reasoning/usage hints) or use
+  // the snake_case tool_call spelling. Ignoring an unused member is safe: the tool call and
+  // clarification below are still validated, and no extra data reaches the app.
+  const rawTool = record['toolCall'] ?? record['tool_call'];
   const message =
     typeof record['message'] === 'string'
       ? boundedProviderMessage(record['message'].trim(), MAX_PROVIDER_MESSAGE_UNITS)
       : '';
-  if (message === '') throw new AssistantProviderTurnError();
   const rawClarification = record['clarification'];
   const clarification =
     rawClarification === undefined || rawClarification === null
       ? null
       : normalizeProviderClarification(rawClarification);
-  const rawTool = record['toolCall'];
-  if (rawTool === null || rawTool === undefined) return { message, toolCall: null, clarification };
+  // A model that has already decided on a tool call sometimes omits the prose member. That
+  // turn is recoverable: keep the validated tool call and show a neutral progress line.
+  // A plain answer with no prose is still invalid and must not become an empty bubble.
+  if (message === '' && (rawTool === null || rawTool === undefined)) throw new AssistantProviderTurnError();
+  const displayMessage = message === '' ? '正在处理…' : message;
+  if (rawTool === null || rawTool === undefined) return { message: displayMessage, toolCall: null, clarification };
   if (clarification !== null) throw new AssistantProviderTurnError();
   const call = jsonObject(rawTool, 'provider.toolCall') as Record<string, unknown>;
   if (Object.keys(call).some((key) => key !== 'name' && key !== 'arguments')) {
     throw new AssistantProviderTurnError();
   }
   return {
-    message,
+    message: displayMessage,
     clarification: null,
     toolCall: {
       name: stringValue(call['name'], '工具名称', 100),

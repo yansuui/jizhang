@@ -69,15 +69,80 @@ export function extractBalancedObject(text: string): string | null {
   return null;
 }
 
-function parseObject(candidate: string): unknown {
-  const trimmed = candidate.trim();
-  if (trimmed === '' || trimmed[0] !== '{') return undefined;
+function parseJsonObject(text: string): unknown | undefined {
   try {
-    const parsed = JSON.parse(trimmed) as unknown;
+    const parsed = JSON.parse(text) as unknown;
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed : undefined;
   } catch {
     return undefined;
   }
+}
+
+const JSON_WHITESPACE = ' \t\r\n';
+
+/**
+ * Repairs only JSON-syntax accidents that do not change any value: raw control characters
+ * inside a string become their escapes, and a comma directly before `}` or `]` is dropped.
+ * Models routinely emit a literal newline inside `message` or a trailing comma, which
+ * `JSON.parse` rejects even though the intended object is unambiguous.
+ */
+function repairJsonSyntax(text: string): string {
+  let output = '';
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index] as string;
+    if (inString) {
+      if (escaped) {
+        output += character;
+        escaped = false;
+        continue;
+      }
+      if (character === '\\') {
+        output += character;
+        escaped = true;
+        continue;
+      }
+      if (character === '"') {
+        output += character;
+        inString = false;
+        continue;
+      }
+      const code = text.charCodeAt(index);
+      if (code < 0x20) {
+        if (character === '\n') output += '\\n';
+        else if (character === '\r') output += '\\r';
+        else if (character === '\t') output += '\\t';
+        else output += '\\u' + code.toString(16).padStart(4, '0');
+        continue;
+      }
+      output += character;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      output += character;
+      continue;
+    }
+    if (character === ',') {
+      let next = index + 1;
+      while (next < text.length && JSON_WHITESPACE.includes(text[next] as string)) next += 1;
+      if (text[next] === '}' || text[next] === ']') continue;
+    }
+    output += character;
+  }
+  return output;
+}
+
+function parseObject(candidate: string): { readonly value: unknown; readonly repaired: boolean } | undefined {
+  const trimmed = candidate.trim();
+  if (trimmed === '' || trimmed[0] !== '{') return undefined;
+  const direct = parseJsonObject(trimmed);
+  if (direct !== undefined) return { value: direct, repaired: false };
+  const fixed = repairJsonSyntax(trimmed);
+  if (fixed === trimmed) return undefined;
+  const repaired = parseJsonObject(fixed);
+  return repaired === undefined ? undefined : { value: repaired, repaired: true };
 }
 
 /**
@@ -115,16 +180,16 @@ function looksLikeJsonValue(text: string): boolean {
  */
 export function recoverProviderEnvelope(raw: string): RecoveredEnvelope | null {
   const direct = parseObject(raw);
-  if (direct !== undefined) return { object: direct, repaired: false };
+  if (direct !== undefined) return { object: direct.value, repaired: direct.repaired };
 
   const unfenced = stripEnvelopeFence(raw);
   const fromFence = unfenced !== raw ? parseObject(unfenced) : undefined;
-  if (fromFence !== undefined) return { object: fromFence, repaired: true };
+  if (fromFence !== undefined) return { object: fromFence.value, repaired: true };
 
   for (const candidate of unfenced === raw ? [raw] : [unfenced, raw]) {
     const balanced = extractBalancedObject(candidate);
     const fromSlice = balanced === null ? undefined : parseObject(balanced);
-    if (fromSlice !== undefined) return { object: fromSlice, repaired: true };
+    if (fromSlice !== undefined) return { object: fromSlice.value, repaired: true };
   }
 
   // Plain prose: a reply with no braces at all cannot be a truncated object, so it is safe

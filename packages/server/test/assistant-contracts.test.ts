@@ -112,6 +112,28 @@ describe('provider clarification and persisted choice cards', () => {
     expect(turn.clarification).toBeNull();
   });
 
+  it('ignores provider-only members and accepts the snake_case tool_call spelling', () => {
+    const turn = normalizeAssistantProviderTurn({
+      message: '查一下',
+      tool_call: { name: 'transactions.query', arguments: { q: '淘宝' } },
+      reasoning: 'internal hint',
+    });
+    expect(turn.message).toBe('查一下');
+    expect(turn.toolCall?.name).toBe('transactions.query');
+  });
+
+  it('keeps a decided tool call when the provider omits the prose', () => {
+    const turn = normalizeAssistantProviderTurn({
+      toolCall: { name: 'transactions.query', arguments: {} },
+    });
+    expect(turn.message).toBe('正在处理…');
+    expect(turn.toolCall?.name).toBe('transactions.query');
+  });
+
+  it('still rejects an empty answer without a tool call', () => {
+    expect(() => normalizeAssistantProviderTurn({ message: '   ', toolCall: null })).toThrow(AssistantProviderTurnError);
+  });
+
   it('bounds a buffered provider message without cutting a surrogate pair', () => {
     // 3999 BMP units + one astral character: a raw UTF-16 `slice(0, 4000)` keeps the lone
     // high surrogate and persists half an emoji (JSON escapes it, the client renders '�').

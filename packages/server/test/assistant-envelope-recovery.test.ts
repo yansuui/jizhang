@@ -56,6 +56,15 @@ describe('provider envelope recovery', () => {
     expect(recovered?.object).toEqual(JSON.parse(ENVELOPE));
   });
 
+  it('repairs a raw newline inside a string and a trailing comma without changing values', () => {
+    const raw = '{"message":"第一行\n第二行","toolCall":null,}';
+    const recovered = recoverProviderEnvelope(raw);
+    expect(recovered?.object).toEqual({ message: '第一行\n第二行', toolCall: null });
+    expect(recovered?.repaired).toBe(true);
+    expect(recoverProviderEnvelope('{"message":"含,逗号","toolCall":null}')?.object)
+      .toEqual({ message: '含,逗号', toolCall: null });
+  });
+
   it('treats brace-free prose as a plain answer', () => {
     const recovered = recoverProviderEnvelope('这个月餐饮支出偏高，建议减少外卖。');
     expect(recovered?.text).toBe('这个月餐饮支出偏高，建议减少外卖。');

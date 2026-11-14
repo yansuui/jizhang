@@ -137,7 +137,9 @@ struct AssistantWorkspaceResultCard: View {
     private var readableFacts: some View {
         let rows = AssistantToolPresentation.rows(data)
         return VStack(alignment: .leading, spacing: 10) {
-            if let transaction = AssistantResultPresentation.transaction(from: data) {
+            if page.result["toolName"].stringValue == "daily.review" {
+                AssistantDailyReviewCard(data: data, metadata: assistant.ledgerMetadata)
+            } else if let transaction = AssistantResultPresentation.transaction(from: data) {
                 AssistantTransactionReceipt(transaction: transaction, metadata: assistant.ledgerMetadata)
                 let related = AssistantResultPresentation.facts(data, excluding: ["transaction"])
                 if AssistantResultPresentation.hasFacts(related) {

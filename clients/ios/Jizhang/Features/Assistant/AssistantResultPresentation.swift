@@ -160,3 +160,138 @@ struct AssistantTransactionLine: View {
         .accessibilityElement(children: .combine)
     }
 }
+
+/// Human summary of the read-only daily review tool result. The raw payload is an
+/// envelope (`from`/`to`/`calculatedAt`, paginated groups); a person needs the day's
+/// totals, the split behind them and the duplicates worth checking.
+struct AssistantDailyReviewCard: View {
+    let data: JSONValue
+    let metadata: LedgerMetadata?
+
+    private var totals: JSONValue { data["totals"] }
+    private var categoryItems: [JSONValue] { data["categories"]["items"].arrayValue ?? [] }
+    private var accountItems: [JSONValue] { data["accounts"]["items"].arrayValue ?? [] }
+    private var issueItems: [JSONValue] { data["potentialIssues"]["items"].arrayValue ?? [] }
+    private var issueTotal: Int64 { data["potentialIssues"]["total"].intValue ?? 0 }
+    private var dayTitle: String {
+        if let from = data["from"].intValue, from > 1_000_000_000_000 { return LedgerFormat.date(from) }
+        return data["date"].stringValue ?? "每日复盘"
+    }
+    private var incomeCents: Int64 { totals["incomeCents"].intValue ?? 0 }
+    private var expenseCents: Int64 { totals["expenseCents"].intValue ?? 0 }
+    private var netCents: Int64 { totals["netCents"].intValue ?? 0 }
+    private var salaryCents: Int64 { totals["salaryCents"].intValue ?? 0 }
+    private var refundCents: Int64 { totals["refundIncomeCents"].intValue ?? 0 }
+    private var transactionCount: Int64 { totals["transactionCount"].intValue ?? 0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "sun.max.fill").font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(AppTheme.accent).frame(width: 32, height: 32)
+                    .background(AppTheme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(dayTitle + " 每日复盘").font(.headline)
+                    Text("只读 · 不修改账本").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            HStack(alignment: .top, spacing: 12) {
+                metric("收入", incomeCents, tint: AppTheme.accent)
+                metric("支出", expenseCents)
+                metric("结余", netCents)
+            }
+            Text(dayDetail).font(.caption).foregroundStyle(.secondary)
+            if !categoryItems.isEmpty {
+                Divider()
+                sectionTitle("分类", total: data["categories"]["total"].intValue)
+                ForEach(Array(categoryItems.prefix(5).enumerated()), id: \.offset) { _, item in
+                    HStack(spacing: 8) {
+                        Text(item["categoryName"].stringValue ?? "未分类").font(.subheadline).lineLimit(1)
+                        Spacer(minLength: 6)
+                        Text(LedgerFormat.money(item["amountCents"].intValue ?? 0))
+                            .font(.subheadline).monospacedDigit().lineLimit(1)
+                    }
+                }
+                if categoryItems.count > 5 { moreText("还有 \(categoryItems.count - 5) 个分类，可在统计页查看") }
+            }
+            if !accountItems.isEmpty {
+                Divider()
+                sectionTitle("账户", total: data["accounts"]["total"].intValue)
+                ForEach(Array(accountItems.prefix(5).enumerated()), id: \.offset) { _, item in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 8) {
+                            Text(item["name"].stringValue ?? "账户").font(.subheadline).lineLimit(1)
+                            Spacer(minLength: 6)
+                            Text("\(item["count"].intValue ?? 0) 笔").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Text(accountDetail(item)).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if accountItems.count > 5 { moreText("还有 \(accountItems.count - 5) 个账户，可在统计页查看") }
+            }
+            Divider()
+            issueSection
+            if let note = data["note"].stringValue, !note.isEmpty {
+                Text(note).font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.primary.opacity(0.06), lineWidth: 1))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var dayDetail: String {
+        var parts: [String] = ["账单 \(transactionCount) 笔"]
+        if salaryCents > 0 { parts.append("含工资 \(LedgerFormat.money(salaryCents))") }
+        if refundCents > 0 { parts.append("退款收入 \(LedgerFormat.money(refundCents))") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func metric(_ title: String, _ cents: Int64, tint: Color = .primary) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption2).foregroundStyle(.secondary)
+            Text(LedgerFormat.money(cents)).font(.subheadline.weight(.semibold)).monospacedDigit()
+                .foregroundStyle(tint).minimumScaleFactor(0.7).lineLimit(1)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func sectionTitle(_ title: String, total: Int64?) -> some View {
+        HStack {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Spacer(minLength: 6)
+            if let total { Text("共 \(total) 项").font(.caption2).foregroundStyle(.secondary) }
+        }
+    }
+
+    private func moreText(_ value: String) -> some View {
+        Text(value).font(.caption2).foregroundStyle(.secondary)
+    }
+
+    private func accountDetail(_ item: JSONValue) -> String {
+        var parts: [String] = []
+        if let expense = item["expenseCents"].intValue, expense != 0 { parts.append("支出 \(LedgerFormat.money(expense))") }
+        if let income = item["incomeCents"].intValue, income != 0 { parts.append("收入 \(LedgerFormat.money(income))") }
+        if let salary = item["salaryCents"].intValue, salary != 0 { parts.append("含工资 \(LedgerFormat.money(salary))") }
+        return parts.isEmpty ? "当日没有金额变动" : parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder private var issueSection: some View {
+        if issueTotal == 0 {
+            Label("没有发现同金额同账户的待核对线索", systemImage: "checkmark.circle")
+                .font(.caption).foregroundStyle(.secondary)
+        } else {
+            Label("\(issueTotal) 组同金额同账户线索，供核对", systemImage: "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(.secondary)
+            ForEach(Array(issueItems.prefix(3).enumerated()), id: \.offset) { _, item in
+                let accountID = item["accountId"].stringValue ?? ""
+                let account = metadata?.accountName(accountID) ?? "账户"
+                let type = item["type"].intValue == 1 ? "收入" : "支出"
+                Text("\(LedgerFormat.money(item["amountCents"].intValue ?? 0)) · \(type) · \(account) · \(item["count"].intValue ?? 0) 笔")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            if issueTotal > 3 { moreText("其余 \(issueTotal - 3) 组请按原日期和账户查询明细核对") }
+        }
+    }
+}
