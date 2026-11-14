@@ -28,19 +28,24 @@ struct AssistantActionResponse: Decodable {
     }
 }
 
-/// Labels are shared by read results and confirmation previews. Unknown fields remain inspectable.
+/// Labels are shared by read results and confirmation previews. Machine-only
+/// fields (revisions, tokens, fingerprints, page envelopes) never become rows.
 enum AssistantPreviewFormat {
     static let internalFields: Set<String> = ["fingerprint", "__fingerprint", "expectedRevision", "expectedFundConfigRevision",
         "expectedFundPurposeRevision", "expectedTransactionToken", "transactionToken", "expectedTopologyToken",
-        "expectedRefundToken", "previewToken", "token", "contractVersion", "sourceToken", "expectedToken"]
+        "expectedRefundToken", "previewToken", "token", "contractVersion", "sourceToken", "expectedToken",
+        "version", "toolName", "actionId", "operationId", "updatedAt", "createdAt", "conversationId", "generationId",
+        "sourceMessageId", "nativeAction", "financialPurposeRevision", "fundPurposeRevision", "fundPurposeSource",
+        "fundPurposeStatus", "textProjection", "pageReducedForDisplay", "fullNoteOmitted", "refundDetailsHaveMore",
+        "refundLinkedHaveMore", "refundDetailsTotal", "refundLinkedTotal", "sortOrder", "icon", "color"]
     static let labels: [String: String] = [
         "amountCents": "金额", "incomeCents": "收入", "expenseCents": "支出", "balanceCents": "余额",
         "totalCents": "合计", "refundCents": "退款", "availableCents": "可用金额", "date": "日期",
         "startDate": "开始日期", "endDate": "结束日期", "note": "备注", "name": "名称", "type": "类型",
-        "categoryName": "分类", "accountName": "账户", "categoryId": "分类编号", "accountId": "账户编号",
-        "fundPurpose": "资金用途", "tags": "标签", "isRefund": "是否退款", "refundLinkedTxIds": "关联支出",
-        "items": "记录", "rows": "明细", "actions": "整理建议", "changes": "变更", "before": "修改前",
-        "after": "修改后", "title": "标题", "summary": "说明", "reason": "原因", "warnings": "提示",
+        "categoryName": "分类", "accountName": "账户", "categoryId": "分类", "accountId": "账户",
+        "fundPurpose": "资金用途", "financialPurpose": "旧版用途", "tags": "标签", "isRefund": "是否退款",
+        "refundLinkedTxIds": "关联支出", "items": "记录", "rows": "明细", "actions": "整理建议", "changes": "变更",
+        "before": "修改前", "after": "修改后", "title": "标题", "summary": "说明", "reason": "原因", "warnings": "提示",
         "selectedIds": "选中记录", "actionIds": "选中建议", "count": "数量", "total": "总数",
         "allocations": "分配", "ratios": "比例", "ratiosBps": "比例（万分比）", "purpose": "用途",
         "development": "发展", "emergency": "应急", "enjoyment": "享受", "living": "生活",
@@ -53,18 +58,80 @@ enum AssistantPreviewFormat {
         "salaryCents": "分配收入", "targetCents": "目标金额", "openingCents": "期初金额",
         "limit": "本页条数", "offset": "起始位置", "nextOffset": "后续位置", "hasMore": "还有后续记录",
         "startMonth": "开始月份", "month": "月份", "effectiveMonth": "生效月份", "interval": "间隔",
-        "frequency": "频率", "dayOfMonth": "每月日期", "dayOfWeek": "每周日期"
+        "frequency": "频率", "dayOfMonth": "每月日期", "dayOfWeek": "每周日期",
+        "transaction": "账单", "transfer": "转账", "category": "分类", "account": "账户", "item": "物品",
+        "salary": "工资", "goal": "目标", "rule": "周期规则", "budget": "预算", "record": "记录",
+        "settings": "设置", "funds": "资金", "plan": "计划", "deleted": "删除状态", "completed": "已完成",
+        "checkedAt": "核对时间", "expiresAt": "过期时间", "confirmedAt": "确认时间", "periodStart": "周期开始",
+        "refundSummary": "退款信息", "refundDetails": "退款明细", "kind": "类别", "page": "分页",
+        "fileName": "文件名", "sizeBytes": "文件大小", "sha256": "SHA-256", "url": "链接", "links": "链接",
+        "what": "内容", "backup": "备份", "model": "模型", "provider": "服务商", "configured": "已配置",
+        "message": "说明", "state": "状态", "progress": "进度", "path": "路径", "role": "角色",
+        "username": "用户名", "email": "邮箱", "seenAt": "查看时间",
+        "refundDetailsPage": "退款明细分页", "refundLinkedTxIdsPage": "关联支出分页"
     ]
+    static let dateFields: Set<String> = ["date", "startDate", "endDate", "periodStart", "checkedAt", "confirmedAt",
+        "expiresAt", "startedAt", "finishedAt"]
+    /// The reading order of a receipt: what, how much, where, when, why.
+    static let fieldOrder: [String] = ["type", "amountCents", "incomeCents", "expenseCents", "balanceCents", "totalCents",
+        "refundCents", "name", "title", "categoryName", "accountName", "categoryId", "accountId", "fromAccountId",
+        "toAccountId", "fromAccountName", "toAccountName", "date", "startDate", "endDate", "note", "fundPurpose",
+        "purpose", "financialPurpose", "isRefund", "tags", "status", "deleted", "reason", "summary"]
+
+    static func isInternal(_ key: String) -> Bool {
+        let lower = key.lowercased()
+        return internalFields.contains(key) || lower.contains("revision") || lower.contains("fingerprint") ||
+            lower.contains("token") || lower == "operationid" || lower == "contractversion"
+    }
+
     static func label(_ key: String) -> String { labels[key] ?? key }
-    static func scalar(_ value: JSONValue, key: String, context: String = "") -> String? {
+
+    static func ordered(_ keys: [String]) -> [String] {
+        keys.filter { !isInternal($0) }.sorted { left, right in
+            let l = fieldOrder.firstIndex(of: left) ?? Int.max
+            let r = fieldOrder.firstIndex(of: right) ?? Int.max
+            return l == r ? left < right : l < r
+        }
+    }
+
+    static func statusTitle(_ value: String) -> String {
+        switch value {
+        case "pending": return "待确认"
+        case "confirmed": return "已确认"
+        case "cancelled": return "已取消"
+        case "expired": return "已过期"
+        case "running": return "进行中"
+        case "complete", "completed": return "已完成"
+        case "failed": return "失败"
+        case "ready": return "已就绪"
+        case "applied": return "已应用"
+        case "undone": return "已撤销"
+        case "ok": return "正常"
+        default: return value
+        }
+    }
+
+    static func scalar(_ value: JSONValue, key: String, context: String = "", metadata: LedgerMetadata? = nil) -> String? {
         switch value {
         case .string(let value):
-            if ["fundPurpose", "purpose", "financialPurpose"].contains(key) { return LedgerPurpose(rawValue: value)?.title ?? value }
+            if ["fundPurpose", "purpose", "financialPurpose"].contains(key) {
+                return LedgerPurpose(rawValue: value)?.title ?? value
+            }
+            if key == "status" { return statusTitle(value) }
+            if ["categoryId", "parentId"].contains(key) {
+                guard let metadata else { return value }
+                return metadata.categoryName(value)
+            }
+            if ["accountId", "fromAccountId", "toAccountId"].contains(key) {
+                guard let metadata else { return value }
+                return metadata.accountName(value)
+            }
             return value.isEmpty ? "未填写" : value
         case .integer(let value):
             if key.hasSuffix("Cents") { return LedgerFormat.money(value) }
-            if key == "date", value > 1_000_000_000_000 {
-                return Date(timeIntervalSince1970: Double(value) / 1_000).formatted(date: .abbreviated, time: .omitted)
+            if dateFields.contains(key) {
+                if value == 0 { return "未设置" }
+                if value > 1_000_000_000_000 { return LedgerFormat.date(value) }
             }
             if key == "type" {
                 if context.hasPrefix("account") { return LedgerFormat.accountType(Int(value)) }
@@ -86,10 +153,11 @@ struct AssistantPreviewValues: View {
     var field = ""
     var depth = 0
     var context = ""
+    @Environment(\.assistantLedgerMetadata) private var metadata: LedgerMetadata?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            if let scalar = AssistantPreviewFormat.scalar(value, key: field, context: context) {
+            if let scalar = AssistantPreviewFormat.scalar(value, key: field, context: context, metadata: metadata) {
                 if field.isEmpty { Text(scalar).textSelection(.enabled) }
                 else {
                     VStack(alignment: .leading, spacing: 3) {
@@ -98,9 +166,9 @@ struct AssistantPreviewValues: View {
                     }
                 }
             } else if let object = value.objectValue {
-                ForEach(object.keys.filter { !AssistantPreviewFormat.internalFields.contains($0) }.sorted(), id: \.self) { key in
+                ForEach(AssistantPreviewFormat.ordered(Array(object.keys)), id: \.self) { key in
                     if let child = object[key] {
-                        if AssistantPreviewFormat.scalar(child, key: key, context: context) != nil {
+                        if AssistantPreviewFormat.scalar(child, key: key, context: context, metadata: metadata) != nil {
                             nested(child, field: key)
                         } else {
                             DisclosureGroup(AssistantPreviewFormat.label(key)) {
@@ -112,7 +180,7 @@ struct AssistantPreviewValues: View {
             } else if let array = value.arrayValue {
                 if array.isEmpty { Text("无").foregroundStyle(.secondary) }
                 ForEach(Array(array.enumerated()), id: \.offset) { index, child in
-                    if AssistantPreviewFormat.scalar(child, key: field, context: context) != nil {
+                    if AssistantPreviewFormat.scalar(child, key: field, context: context, metadata: metadata) != nil {
                         nested(child)
                     } else {
                         DisclosureGroup("第 \(index + 1) 项") {

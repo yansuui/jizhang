@@ -250,6 +250,8 @@ private struct AssistantChatView: View {
             }
         }
         .task(id: conversation.id) { await store.open(conversation.id) }
+        .task { await store.loadLedgerMetadataIfNeeded() }
+        .environment(\.assistantLedgerMetadata, store.ledgerMetadata)
         .onDisappear { store.leave(conversation.id) }
         .sheet(item: $actionReview) { review in
             NavigationStack { AssistantActionReviewView(store: store, conversationID: conversation.id, review: review) }
@@ -465,7 +467,11 @@ private struct AssistantMessageBubble: View {
                 }
                 if let card = message.content.card { actionCard(card) }
                 if let result = message.content.result, let summary = result["summary"].stringValue, !summary.isEmpty {
-                    Label(summary, systemImage: "doc.text.magnifyingglass").font(.subheadline).textSelection(.enabled)
+                    // A confirmed write uses its server summary as the message text;
+                    // do not print the same sentence twice above the result card.
+                    if summary != (message.content.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines) {
+                        Label(summary, systemImage: "doc.text.magnifyingglass").font(.subheadline).textSelection(.enabled)
+                    }
                     AssistantWorkspaceResultCard(assistant: assistant, conversationID: message.conversationId, messageID: message.id, result: result)
                 }
                 if let attachment = message.content.attachment {

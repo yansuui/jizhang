@@ -133,28 +133,27 @@ struct AssistantWorkspaceResultCard: View {
             }
         }
     }
+    private var toolContext: String { page.result["toolName"].stringValue ?? "" }
     private var readableFacts: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            let rows = AssistantToolPresentation.rows(data)
-            ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
-                DisclosureGroup {
-                    AssistantPreviewValues(value: row, context: page.result["toolName"].stringValue ?? "")
-                } label: {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(AssistantToolPresentation.rowTitle(row, index: index)).lineLimit(2)
-                        HStack {
-                            if let account = row["accountName"].stringValue { Text(account) }
-                            if let category = row["categoryName"].stringValue { Text(category) }
-                            if let cents = row["amountCents"].intValue ?? row["balanceCents"].intValue { Text(LedgerFormat.money(cents)).monospacedDigit() }
-                        }.font(.caption).foregroundStyle(.secondary)
+        let rows = AssistantToolPresentation.rows(data)
+        return VStack(alignment: .leading, spacing: 10) {
+            if let transaction = AssistantResultPresentation.transaction(from: data) {
+                AssistantTransactionReceipt(transaction: transaction, metadata: assistant.ledgerMetadata)
+                let related = AssistantResultPresentation.facts(data, excluding: ["transaction"])
+                if AssistantResultPresentation.hasFacts(related) {
+                    DisclosureGroup("关联信息") {
+                        AssistantPreviewValues(value: related, context: toolContext)
                     }
-                }.padding(.vertical, 3)
-            }
-            if rows.isEmpty || data.objectValue?.keys.contains(where: { !["items", "rows", "entries", "transactions", "records"].contains($0) }) == true {
-                DisclosureGroup(rows.isEmpty ? "查看结果" : "汇总与范围") {
-                    let excluded = Set(["items", "rows", "entries", "transactions", "records", "nativeAction"])
-                    AssistantPreviewValues(value: .object((data.objectValue ?? [:]).filter { !excluded.contains($0.key) }), context: page.result["toolName"].stringValue ?? "")
                 }
+            } else if let transactions = AssistantResultPresentation.transactions(from: data) {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(transactions.enumerated()), id: \.offset) { index, transaction in
+                        AssistantTransactionLine(transaction: transaction, metadata: assistant.ledgerMetadata)
+                        if index < transactions.count - 1 { Divider() }
+                    }
+                }
+            } else if !AssistantResultPresentation.isTrivial(data) {
+                genericFacts(rows)
             }
             if let offset = data["offset"].intValue, let total = data["total"].intValue {
                 HStack {
@@ -168,6 +167,41 @@ struct AssistantWorkspaceResultCard: View {
             }
             if page.loading { ProgressView("正在读取…") }
             if let error = page.error { Text(error).font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+
+    /// Unknown tools keep their facts, but labelled and filtered: no raw JSON dump.
+    @ViewBuilder private func genericFacts(_ rows: [JSONValue]) -> some View {
+        if rows.isEmpty {
+            if let primary = AssistantResultPresentation.primaryObject(from: data) {
+                AssistantPreviewValues(value: primary, context: toolContext)
+            } else {
+                let facts = AssistantResultPresentation.facts(data)
+                if AssistantResultPresentation.hasFacts(facts) {
+                    AssistantPreviewValues(value: facts, context: toolContext)
+                }
+            }
+        } else {
+            ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                DisclosureGroup {
+                    AssistantPreviewValues(value: row, context: toolContext)
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(AssistantToolPresentation.rowTitle(row, index: index)).lineLimit(2)
+                        HStack {
+                            if let account = row["accountName"].stringValue { Text(account) }
+                            if let category = row["categoryName"].stringValue { Text(category) }
+                            if let cents = row["amountCents"].intValue ?? row["balanceCents"].intValue { Text(LedgerFormat.money(cents)).monospacedDigit() }
+                        }.font(.caption).foregroundStyle(.secondary)
+                    }
+                }.padding(.vertical, 3)
+            }
+            let supporting = AssistantResultPresentation.facts(data)
+            if AssistantResultPresentation.hasFacts(supporting) {
+                DisclosureGroup("汇总与范围") {
+                    AssistantPreviewValues(value: supporting, context: toolContext)
+                }
+            }
         }
     }
 }

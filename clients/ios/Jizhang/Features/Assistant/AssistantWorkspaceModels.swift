@@ -38,9 +38,11 @@ enum AssistantToolPresentation {
     }
 
     static func rowTitle(_ item: JSONValue, index: Int) -> String {
-        for field in ["title", "name", "note", "description", "dateLabel", "id"] {
+        for field in ["title", "name", "note", "description", "dateLabel"] {
             if let value = item[field].stringValue, !value.isEmpty { return value }
         }
+        if let month = item["month"].stringValue, !month.isEmpty { return month }
+        if let date = item["date"].intValue, date > 1_000_000_000_000 { return LedgerFormat.date(date) }
         return "第 \(index + 1) 项"
     }
 

@@ -225,6 +225,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "723D9A635D957B8269FD0DE6";
 		};
+		"DA66542ED4704AEC76161A96" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "Jizhang/Features/Assistant/AssistantResultPresentation.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"097A12A01C99CAF7CBFDD7C5" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "DA66542ED4704AEC76161A96";
+		};
 		"F8EDD8B94EC04B395AB70CBE" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -735,6 +745,16 @@
 			"isa" = "PBXBuildFile";
 			"fileRef" = "80043992FCFE15B3855AD66E";
 		};
+		"4D7D8D009A242E8DCA127BBE" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "JizhangTests/AssistantResultPresentationTests.swift";
+			"sourceTree" = "SOURCE_ROOT";
+		};
+		"E758B57C45005D15250B8B5D" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "4D7D8D009A242E8DCA127BBE";
+		};
 		"1CC61DD5197C3CD3587B9514" = {
 			"isa" = "PBXFileReference";
 			"lastKnownFileType" = "sourcecode.swift";
@@ -990,6 +1010,7 @@
 				"150262C7DE54887539490F09",
 				"2C480AC978134B22BA9DA464",
 				"723D9A635D957B8269FD0DE6",
+				"DA66542ED4704AEC76161A96",
 				"F8EDD8B94EC04B395AB70CBE",
 				"80A4FFB947BDF4C63D177180",
 				"EE45EB9BE5D4E57C23762B0B",
@@ -1048,6 +1069,7 @@
 			"isa" = "PBXGroup";
 			"children" = (
 				"80043992FCFE15B3855AD66E",
+				"4D7D8D009A242E8DCA127BBE",
 				"1CC61DD5197C3CD3587B9514",
 				"9747A7A40056BA4F24B6BDEB",
 				"51C3A3BD9C3F647323AE2F8F",
@@ -1126,6 +1148,7 @@
 				"E4026D32711A71CF76E126FB",
 				"DA4C7EF2CA25CA0452FFEF09",
 				"D3F87E161BF87C090732F608",
+				"097A12A01C99CAF7CBFDD7C5",
 				"1FB00D5D25AEE480F4891A07",
 				"750E25B4920B5D8140584332",
 				"B24F32CE2F5ADD1C33DC4895",
@@ -1184,6 +1207,7 @@
 			"buildActionMask" = 2147483647;
 			"files" = (
 				"B8CF0D4255E9872207E90B1B",
+				"E758B57C45005D15250B8B5D",
 				"6CE0469DEE7A4D86550E655A",
 				"DEB2E92658D7751C8867A20D",
 				"D7789329F0C4A09E2BE9A0B2",

@@ -75,6 +75,10 @@ final class AssistantStore: ObservableObject {
     @Published private(set) var workspacePendingBodies: [String: JSONValue] = [:]
     @Published private(set) var nativeCompletionNotices: [String: String] = [:]
     @Published private(set) var nativeCompletionRetries: [String: NativeWorkspaceCompletion] = [:]
+    /// Read names for result cards. Absent until the first chat appears; the
+    /// cards then fall back to generic labels rather than inventing a name.
+    @Published private(set) var ledgerMetadata: LedgerMetadata?
+    private var ledgerMetadataLoading = false
     private var billFiles: [String: AssistantBillFile] = [:]
     private var listTicket = UUID()
     private var selectionTicket = UUID()
@@ -126,6 +130,21 @@ final class AssistantStore: ObservableObject {
             try Task.checkCancellation()
             providerEnabled = response.configured && response.enabled
         } catch { if !Task.isCancelled { providerEnabled = nil } }
+    }
+
+    /// Names for tool-result cards. Fetched once per assistant store; a failure
+    /// leaves cards usable with generic labels and never blocks the conversation.
+    func loadLedgerMetadataIfNeeded() async {
+        guard ledgerMetadata == nil, !ledgerMetadataLoading else { return }
+        ledgerMetadataLoading = true
+        defer { ledgerMetadataLoading = false }
+        do {
+            let value = try await LedgerMetadata.load(api: api)
+            guard !Task.isCancelled else { return }
+            ledgerMetadata = value
+        } catch {
+            // A later card appearance retries; no error banner for read-only naming.
+        }
     }
 
     func createConversation() async -> AssistantConversation? {
