@@ -10,6 +10,10 @@ final class AppSession: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var username = ""
     @Published private(set) var user: AuthenticatedUser?
+    /// Incremented whenever this session can no longer be used without a new login. The shell uses
+    /// it to end account-scoped local state that does not belong to AppSession itself (the widget
+    /// snapshot), including a cold start whose saved cookie was already gone or rejected.
+    @Published private(set) var endedSessionCount = 0
 
     private let preferences: UserDefaults
     private let credentialStore: SessionCredentialStore
@@ -45,6 +49,7 @@ final class AppSession: ObservableObject {
             guard client.hasSession else {
                 client.invalidate()
                 canRetryRestore = false
+                endSession()
                 return
             }
             let user: AuthenticatedUser = try await client.request("/auth/me")
@@ -54,9 +59,15 @@ final class AppSession: ObservableObject {
             // Cancellation belongs to this attempt; a newer attempt owns UI state.
         } catch {
             guard operation == ticket else { return }
-            canRetryRestore = candidate?.hasSession == true
+            let hadClient = candidate != nil
+            let retryable = candidate?.hasSession == true
+            canRetryRestore = retryable
             errorMessage = error.localizedDescription
             candidate?.invalidate()
+            // Only a client that was built and has no usable session proves the session is over. If
+            // the client itself could not be created (for example a locked keychain), the saved
+            // cookie may still be valid and account-scoped local data must survive.
+            if hadClient, !retryable { endSession() }
         }
     }
 
@@ -133,7 +144,12 @@ final class AppSession: ObservableObject {
         user = nil
         canRetryRestore = false
         errorMessage = logoutNotice
+        endSession()
         finish(ticket)
+    }
+
+    private func endSession() {
+        endedSessionCount &+= 1
     }
 
     private func begin(restoring: Bool) -> UUID {
@@ -170,6 +186,7 @@ final class AppSession: ObservableObject {
             self.isRestoring = false
             self.canRetryRestore = false
             self.errorMessage = APIError.unauthorized.localizedDescription
+            self.endSession()
         }
         preferences.set(client.baseURL.absoluteString, forKey: "jizhang.serverAddress")
         preferences.set(user.username, forKey: "jizhang.username")

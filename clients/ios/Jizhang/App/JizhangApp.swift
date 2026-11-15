@@ -1,26 +1,21 @@
 import SwiftUI
 
-enum AppTheme {
-    static let accent = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.35, green: 0.83, blue: 0.66, alpha: 1)
-            : UIColor(red: 0.08, green: 0.47, blue: 0.35, alpha: 1)
-    })
-}
-
 @main
 @MainActor
 struct JizhangApp: App {
     @UIApplicationDelegateAdaptor(JizhangNotificationDelegate.self) private var notificationDelegate
     @StateObject private var session = AppSession()
     @StateObject private var reminders = DailyReminderStore.shared
+    @State private var selectedTab: JizhangTab = .home
+    /// A widget tap can arrive before session restoration finishes; hold it until the shell exists.
+    @State private var pendingDeepLinkTab: JizhangTab?
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             Group {
                 if let api = session.api, let user = session.user {
-                    MainTabView(api: api, user: user, onLogout: {
+                    MainTabView(api: api, user: user, selectedTab: $selectedTab, onLogout: {
                         NativeWorkspaceSessions.clear(apiIdentity: api.identity)
                         reminders.deactivate()
                         Task { await session.signOut() }
@@ -44,14 +39,62 @@ struct JizhangApp: App {
                 await session.restore()
                 reminders.updateSession(api: session.api, user: session.user)
             }
-            .onChange(of: session.api?.identity) { old, _ in
+            .onOpenURL { url in
+                guard let link = JizhangDeepLink.parse(url) else { return }
+                if session.api == nil {
+                    pendingDeepLinkTab = link.tab
+                } else {
+                    selectedTab = link.tab
+                }
+            }
+            .onChange(of: session.endedSessionCount) { _, _ in
+                // Signing out, a 401 or a cold start whose saved session was already gone all end
+                // this account's local surface; the previous account's money must leave the Home
+                // Screen too. A restore that failed on the network keeps its cookie and snapshot.
+                LedgerWidgetSync.shared.clear()
+            }
+            .onChange(of: session.api?.identity) { old, new in
                 if let old { NativeWorkspaceSessions.clear(apiIdentity: old) }
                 reminders.updateSession(api: session.api, user: session.user)
+                if old != nil, new == nil {
+                    // The shell is gone; a later login starts at Home instead of inheriting the tab
+                    // that belonged to the ended session.
+                    selectedTab = .home
+                    pendingDeepLinkTab = nil
+                }
+                if old == nil, new != nil {
+                    // A widget tap may have arrived on the login/restore screen; otherwise keep the
+                    // tab the shell already shows.
+                    selectedTab = pendingDeepLinkTab ?? selectedTab
+                    pendingDeepLinkTab = nil
+                }
+                if let old, let new, old != new {
+                    // The session was replaced by another account without an intermediate logout:
+                    // that account's tab and widget amounts cannot stay visible under the new one.
+                    selectedTab = .home
+                    pendingDeepLinkTab = nil
+                    LedgerWidgetSync.shared.clear()
+                }
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active { Task { await reminders.refresh() } }
+                if phase == .active {
+                    Task { await reminders.refresh() }
+                    if let api = session.api, let user = session.user, widgetSnapshotIsStale {
+                        Task { await LedgerWidgetSync.shared.refresh(api: api, userID: user.id ?? "") }
+                    }
+                }
             }
         }
+    }
+
+    /// Foreground returns refresh a day-old snapshot, but a launch seconds after a sync does not
+    /// repeat the same three reads that the shell's task already performs. Without an App Group
+    /// container there is nothing a widget could display, so no reads are made for it.
+    private var widgetSnapshotIsStale: Bool {
+        guard LedgerWidgetSync.shared.isAvailable else { return false }
+        guard let snapshot = LedgerWidgetSync.shared.snapshot else { return true }
+        let age = Int64(Date().timeIntervalSince1970 * 1_000) - snapshot.updatedAt
+        return age >= 60_000
     }
 }
 
@@ -59,10 +102,9 @@ struct JizhangApp: App {
 private struct MainTabView: View {
     let api: APIClient
     let user: AuthenticatedUser
+    @Binding var selectedTab: JizhangTab
     let onLogout: () -> Void
     @EnvironmentObject private var reminders: DailyReminderStore
-    private enum Tab: Hashable { case home, bills, plan, assistant, my }
-    @State private var selectedTab = Tab.home
     @State private var recording = false
     @State private var workspace: NativeWorkspaceRoute?
     @StateObject private var presentation: NativePresentationQueue
@@ -74,8 +116,8 @@ private struct MainTabView: View {
     @State private var presentedReview: UUID?
     @State private var presentationRetryCounts: [UUID: Int] = [:]
 
-    init(api: APIClient, user: AuthenticatedUser, onLogout: @escaping () -> Void) {
-        self.api = api; self.user = user; self.onLogout = onLogout
+    init(api: APIClient, user: AuthenticatedUser, selectedTab: Binding<JizhangTab>, onLogout: @escaping () -> Void) {
+        self.api = api; self.user = user; self._selectedTab = selectedTab; self.onLogout = onLogout
         _presentation = StateObject(wrappedValue: NativePresentationQueue(ownerIdentity: api.identity))
         _workspaceCompletions = StateObject(wrappedValue: NativeWorkspaceCompletionRelay(ownerIdentity: api.identity))
     }
@@ -93,24 +135,27 @@ private struct MainTabView: View {
         TabView(selection: $selectedTab) {
             NavigationStack { HomeView(api: api).toolbar { recordButton } }
                 .tabItem { Label("首页", systemImage: "house") }
-                .tag(Tab.home)
+                .tag(JizhangTab.home)
             NavigationStack { BillsView(api: api).toolbar { recordButton } }
                 .tabItem { Label("账单", systemImage: "list.bullet.rectangle") }
-                .tag(Tab.bills)
+                .tag(JizhangTab.bills)
             NavigationStack { PlanView(api: api).toolbar { recordButton } }
                 .tabItem { Label("计划", systemImage: "chart.pie") }
-                .tag(Tab.plan)
+                .tag(JizhangTab.plan)
             NavigationStack {
                 AssistantView(api: api, launch: assistantLaunch, onLaunchCheckpoint: reminders.checkpoint)
             }
                 .onAppear { assistantVisible = true }
                 .onDisappear { assistantVisible = false }
                 .tabItem { Label("AI 助手", systemImage: "sparkles") }
-                .tag(Tab.assistant)
+                .tag(JizhangTab.assistant)
             NavigationStack { MyView(api: api, user: user, onLogout: onLogout) }
                 .tabItem { Label("我的", systemImage: "person.crop.circle") }
-                .tag(Tab.my)
+                .tag(JizhangTab.my)
         }
+        // Keeps the home-screen widgets current without making any tab own the snapshot: one
+        // coalesced read after startup and after every successful ledger write.
+        .ledgerWidgetSnapshot(api: api, userID: user.id ?? "")
         .safeAreaInset(edge: .top, spacing: 0) {
             if let notice = reminders.notice {
                 HStack(alignment: .top, spacing: 12) {

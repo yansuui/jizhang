@@ -38,17 +38,32 @@ def serialize(value, depth: int = 0) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def source_objects(folder: str) -> tuple[list[str], list[str]]:
+def source_objects(folder: str, build_prefix: str = "") -> tuple[list[str], list[str]]:
+    """Register one file reference per Swift file and one build file per compilation phase.
+
+    Shared sources belong to more than one target, so the reference is reused while the build
+    file name carries the owning phase. `build_prefix` must therefore be unique per phase.
+    """
     refs, builds = [], []
     for path in sorted((ROOT / folder).rglob("*.swift")):
         relative = path.relative_to(ROOT).as_posix()
-        ref = add(f"ref:{relative}", "PBXFileReference", lastKnownFileType="sourcecode.swift",
-                  path=relative, sourceTree="SOURCE_ROOT")
-        refs.append(ref)
-        builds.append(add(f"build:{relative}", "PBXBuildFile", fileRef=ref))
+        ref_name = f"ref:{relative}"
+        key = identifier(ref_name)
+        if key not in objects:
+            add(ref_name, "PBXFileReference", lastKnownFileType="sourcecode.swift",
+                path=relative, sourceTree="SOURCE_ROOT")
+        refs.append(key)
+        builds.append(add(f"build:{build_prefix}{relative}", "PBXBuildFile", fileRef=key))
     if not refs:
         raise SystemExit(f"No Swift source found in {folder}")
     return refs, builds
+
+
+def require_file(relative: str, file_type: str, object_name: str) -> str:
+    if not (ROOT / relative).exists():
+        raise SystemExit(f"Required file missing: {relative}")
+    return add(object_name, "PBXFileReference", lastKnownFileType=file_type,
+               path=relative, sourceTree="SOURCE_ROOT")
 
 
 def configuration_list(name: str, settings: dict) -> str:
@@ -76,40 +91,67 @@ def build_reference(parent: ET.Element, target: str, product: str) -> None:
 
 def main() -> None:
     app_refs, app_builds = source_objects("Jizhang")
+    shared_refs, shared_app_builds = source_objects("Shared", "shared-app:")
+    _, shared_widget_builds = source_objects("Shared", "shared-widgets:")
+    widget_refs, widget_builds = source_objects("JizhangWidgets", "widgets:")
     test_refs, test_builds = source_objects("JizhangTests")
     resource_refs, resource_builds = [], []
     for path, file_type in (("Jizhang/Assets.xcassets", "folder.assetcatalog"),
                             ("Jizhang/PrivacyInfo.xcprivacy", "text.xml")):
-        if not (ROOT / path).exists():
-            raise SystemExit(f"Required resource missing: {path}")
-        ref = add(f"ref:{path}", "PBXFileReference", lastKnownFileType=file_type,
-                  path=path, sourceTree="SOURCE_ROOT")
-        resource_refs.append(ref)
-        resource_builds.append(add(f"build:{path}", "PBXBuildFile", fileRef=ref))
-    info_ref = add("info", "PBXFileReference", lastKnownFileType="text.plist.xml",
-                   path="Jizhang/Info.plist", sourceTree="SOURCE_ROOT")
+        resource_refs.append(require_file(path, file_type, f"ref:{path}"))
+        resource_builds.append(add(f"build:{path}", "PBXBuildFile", fileRef=resource_refs[-1]))
+    info_ref = require_file("Jizhang/Info.plist", "text.plist.xml", "info")
+    app_entitlements_ref = require_file("Jizhang/Jizhang.entitlements", "text.plist.entitlements",
+                                        "ref:Jizhang/Jizhang.entitlements")
+    widget_plist_ref = require_file("JizhangWidgets/Info.plist", "text.plist.xml",
+                                    "ref:JizhangWidgets/Info.plist")
+    widget_entitlements_ref = require_file("JizhangWidgets/JizhangWidgets.entitlements",
+                                           "text.plist.entitlements",
+                                           "ref:JizhangWidgets/JizhangWidgets.entitlements")
     app_product = add("product:app", "PBXFileReference", explicitFileType="wrapper.application",
                       includeInIndex=0, path="Jizhang.app", sourceTree="BUILT_PRODUCTS_DIR")
+    widget_product = add("product:widgets", "PBXFileReference", explicitFileType="wrapper.app-extension",
+                         includeInIndex=0, path="JizhangWidgets.appex", sourceTree="BUILT_PRODUCTS_DIR")
     test_product = add("product:tests", "PBXFileReference", explicitFileType="wrapper.cfbundle",
                        includeInIndex=0, path="JizhangTests.xctest", sourceTree="BUILT_PRODUCTS_DIR")
     sources_group = add("group:sources", "PBXGroup", children=app_refs, name="Sources", sourceTree="<group>")
+    shared_group = add("group:shared", "PBXGroup", children=shared_refs, name="Shared", sourceTree="<group>")
+    widgets_group = add("group:widgets", "PBXGroup",
+                        children=widget_refs + [widget_plist_ref, widget_entitlements_ref],
+                        name="Widgets", sourceTree="<group>")
     tests_group = add("group:tests", "PBXGroup", children=test_refs, name="Tests", sourceTree="<group>")
-    resources_group = add("group:resources", "PBXGroup", children=resource_refs + [info_ref],
+    resources_group = add("group:resources", "PBXGroup",
+                          children=resource_refs + [info_ref, app_entitlements_ref],
                           name="Resources", sourceTree="<group>")
-    products_group = add("group:products", "PBXGroup", children=[app_product, test_product],
+    products_group = add("group:products", "PBXGroup",
+                         children=[app_product, widget_product, test_product],
                          name="Products", sourceTree="<group>")
-    main_group = add("group:main", "PBXGroup", children=[sources_group, tests_group, resources_group, products_group],
+    main_group = add("group:main", "PBXGroup",
+                     children=[sources_group, shared_group, widgets_group, tests_group,
+                               resources_group, products_group],
                      sourceTree="<group>")
     app_sources = add("phase:app-sources", "PBXSourcesBuildPhase", buildActionMask=2147483647,
-                      files=app_builds, runOnlyForDeploymentPostprocessing=0)
+                      files=app_builds + shared_app_builds, runOnlyForDeploymentPostprocessing=0)
+    widget_sources = add("phase:widget-sources", "PBXSourcesBuildPhase", buildActionMask=2147483647,
+                         files=widget_builds + shared_widget_builds, runOnlyForDeploymentPostprocessing=0)
     test_sources = add("phase:test-sources", "PBXSourcesBuildPhase", buildActionMask=2147483647,
                        files=test_builds, runOnlyForDeploymentPostprocessing=0)
     resources = add("phase:resources", "PBXResourcesBuildPhase", buildActionMask=2147483647,
                     files=resource_builds, runOnlyForDeploymentPostprocessing=0)
+    widget_resources = add("phase:widget-resources", "PBXResourcesBuildPhase", buildActionMask=2147483647,
+                           files=[], runOnlyForDeploymentPostprocessing=0)
     app_frameworks = add("phase:app-frameworks", "PBXFrameworksBuildPhase", buildActionMask=2147483647,
                          files=[], runOnlyForDeploymentPostprocessing=0)
+    widget_frameworks = add("phase:widget-frameworks", "PBXFrameworksBuildPhase", buildActionMask=2147483647,
+                            files=[], runOnlyForDeploymentPostprocessing=0)
     test_frameworks = add("phase:test-frameworks", "PBXFrameworksBuildPhase", buildActionMask=2147483647,
                           files=[], runOnlyForDeploymentPostprocessing=0)
+    embed_widget = add("build:embed-widgets", "PBXBuildFile", fileRef=widget_product,
+                       settings={"ATTRIBUTES": ["RemoveHeadersOnCopy"]})
+    embed_extensions = add("phase:embed-extensions", "PBXCopyFilesBuildPhase",
+                           buildActionMask=2147483647, dstPath="", dstSubfolderSpec=13,
+                           files=[embed_widget], name="Embed Foundation Extensions",
+                           runOnlyForDeploymentPostprocessing=0)
     common = dict(SDKROOT="iphoneos", IPHONEOS_DEPLOYMENT_TARGET="17.0", SWIFT_VERSION="5.0",
                   CLANG_ENABLE_MODULES="YES", CLANG_ENABLE_OBJC_ARC="YES", GCC_C_LANGUAGE_STANDARD="gnu17",
                   SWIFT_STRICT_CONCURRENCY="targeted", ENABLE_USER_SCRIPT_SANDBOXING="YES")
@@ -120,12 +162,28 @@ def main() -> None:
                        LD_RUNPATH_SEARCH_PATHS=["$(inherited)", "@executable_path/Frameworks"])
     app_configs = configuration_list("app", dict(target_base,
         PRODUCT_BUNDLE_IDENTIFIER="com.yansuu1.jizhang.ios", GENERATE_INFOPLIST_FILE="NO",
-        INFOPLIST_FILE="Jizhang/Info.plist", ASSETCATALOG_COMPILER_APPICON_NAME="AppIcon",
+        INFOPLIST_FILE="Jizhang/Info.plist", CODE_SIGN_ENTITLEMENTS="Jizhang/Jizhang.entitlements",
+        ASSETCATALOG_COMPILER_APPICON_NAME="AppIcon",
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME="AccentColor"))
+    widget_configs = configuration_list("widgets", dict(target_base,
+        PRODUCT_BUNDLE_IDENTIFIER="com.yansuu1.jizhang.ios.widgets", GENERATE_INFOPLIST_FILE="NO",
+        INFOPLIST_FILE="JizhangWidgets/Info.plist",
+        CODE_SIGN_ENTITLEMENTS="JizhangWidgets/JizhangWidgets.entitlements",
+        APPLICATION_EXTENSION_API_ONLY="YES", SKIP_INSTALL="YES", SWIFT_EMIT_LOC_STRINGS="NO",
+        LD_RUNPATH_SEARCH_PATHS=["$(inherited)", "@executable_path/Frameworks",
+                                 "@executable_path/../../Frameworks"]))
+    widget_target = add("target:JizhangWidgets", "PBXNativeTarget", buildConfigurationList=widget_configs,
+        buildPhases=[widget_sources, widget_frameworks, widget_resources], buildRules=[], dependencies=[],
+        name="JizhangWidgets", productName="JizhangWidgets", productReference=widget_product,
+        productType="com.apple.product-type.app-extension")
+    widget_proxy = add("proxy:widgets", "PBXContainerItemProxy", containerPortal=identifier("project"),
+                       proxyType=1, remoteGlobalIDString=widget_target, remoteInfo="JizhangWidgets")
+    widget_dependency = add("dependency:widgets", "PBXTargetDependency", target=widget_target,
+                            targetProxy=widget_proxy)
     app_target = add("target:Jizhang", "PBXNativeTarget", buildConfigurationList=app_configs,
-        buildPhases=[app_sources, app_frameworks, resources], buildRules=[], dependencies=[],
-        name="Jizhang", productName="Jizhang", productReference=app_product,
-        productType="com.apple.product-type.application")
+        buildPhases=[app_sources, app_frameworks, resources, embed_extensions], buildRules=[],
+        dependencies=[widget_dependency], name="Jizhang", productName="Jizhang",
+        productReference=app_product, productType="com.apple.product-type.application")
     proxy = add("proxy:app", "PBXContainerItemProxy", containerPortal=identifier("project"),
                  proxyType=1, remoteGlobalIDString=app_target, remoteInfo="Jizhang")
     dependency = add("dependency:app", "PBXTargetDependency", target=app_target, targetProxy=proxy)
@@ -137,11 +195,14 @@ def main() -> None:
         name="JizhangTests", productName="JizhangTests", productReference=test_product,
         productType="com.apple.product-type.bundle.unit-test")
     project = add("project", "PBXProject", attributes={"BuildIndependentTargetsInParallel": "YES",
-        "LastUpgradeCheck": "1600", "TargetAttributes": {app_target: {"CreatedOnToolsVersion": "16.4"},
-        test_target: {"CreatedOnToolsVersion": "16.4", "TestTargetID": app_target}}},
+        "LastUpgradeCheck": "1600", "TargetAttributes": {
+            app_target: {"CreatedOnToolsVersion": "16.4"},
+            widget_target: {"CreatedOnToolsVersion": "16.4"},
+            test_target: {"CreatedOnToolsVersion": "16.4", "TestTargetID": app_target}}},
         buildConfigurationList=project_configs, compatibilityVersion="Xcode 14.0", developmentRegion="zh-Hans",
         hasScannedForEncodings=0, knownRegions=["en", "zh-Hans", "Base"], mainGroup=main_group,
-        productRefGroup=products_group, projectDirPath="", projectRoot="", targets=[app_target, test_target])
+        productRefGroup=products_group, projectDirPath="", projectRoot="",
+        targets=[app_target, widget_target, test_target])
     PROJECT.mkdir(parents=True, exist_ok=True)
     data = dict(archiveVersion=1, classes={}, objectVersion=56, objects=objects, rootObject=project)
     (PROJECT / "project.pbxproj").write_text("// !$*UTF8*$!\n" + serialize(data) + "\n", encoding="utf-8", newline="\n")
@@ -173,7 +234,8 @@ def main() -> None:
     scheme_dir = PROJECT / "xcshareddata" / "xcschemes"
     scheme_dir.mkdir(parents=True, exist_ok=True)
     ET.ElementTree(scheme).write(scheme_dir / "Jizhang.xcscheme", encoding="utf-8", xml_declaration=True)
-    print(f"Generated project: {len(app_refs)} application and {len(test_refs)} test Swift files.")
+    print(f"Generated project: {len(app_refs)} application, {len(shared_refs)} shared, "
+          f"{len(widget_refs)} widget and {len(test_refs)} test Swift files.")
 
 
 if __name__ == "__main__":

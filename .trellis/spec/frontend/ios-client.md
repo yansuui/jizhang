@@ -79,6 +79,8 @@ signed-device acceptance, not claims inferred from notification mocks.
 
 Use the API client's per-session `ledgerRevision` publisher after actual successful writes. Reading or cancelling a pending draft does not change ledger state. Invalidated clients cannot broadcast updates into new sessions.
 
+Home-screen widgets are a display mirror of server aggregates, never a second accounting path. The app writes one App Group JSON snapshot (`group.com.yansuu1.jizhang.ios`) from `/accounts/balances`, `/stats/monthly-trend?months=1` and `/financial-funds/summary`; the `JizhangWidgets` extension renders it with no network, session or ledger access. The file holds only balances, month income/expense, four-purpose balances with funded/gross-spent and coverage counts — never bill rows, notes, tokens or credentials. Validate schema and every amount on write and on read and fall back to the explicit 尚未同步 state rather than zeroes; keep one account per snapshot (server plus immutable user id, session identity for a legacy login), clear it on logout/401/account switch or a cold start that ended without a usable session, prevent an in-flight read from republishing an ended account, and reload WidgetKit when a snapshot is removed or rewritten. An installation without the App Group container performs no widget reads at all. `Shared/` sources compile into both targets; `jizhang://home|plan` is the only widget deep link. App Group entitlement and extension embedding are build-time requirements, but whether a local signing identity grants the group is installation-time and must not be reported as proven by an unsigned CI build.
+
 Account-to-account transfers are edited against `/transfers`: two distinct enabled accounts, integer cents, an epoch-millisecond date and a note, never a type, category or refund link. That endpoint has no operation ID, so the editor cannot reconcile an ambiguous write by replaying it; an unconfirmed submission freezes the draft (`needsVerification`) and the user verifies the result in the transfer list before submitting again, because a second POST would move the money twice. Deletions require confirmation and broadcast `ledgerRevision`.
 
 Historical-organization analysis is started in the background and polled: one assistant generation must never await the whole batched analysis, because the server caps a generation at `MAX_GENERATION_DEADLINE_MS` (180 s) and the second clarification turn would then fail. Template proposals are neither produced nor selectable.
@@ -127,6 +129,8 @@ CI uses GitHub macOS/Xcode to build the device app with signing disabled. Packag
 | Blank key / hidden provider field | Preserve stored value unless explicitly cleared/edited |
 | Model discovery failure | Keep the draft and selected model |
 | Unavailable financial endpoint | Show unavailable/error state rather than an empty account |
+| Widget snapshot: unknown schema, implausible amount or damaged file | Widget shows 尚未同步; the app explains App Group state; never render a fabricated zero |
+| Widget read fails or session ends | Keep the last valid snapshot for a failed read; remove it on logout/401/account switch |
 | Successful CI, no phone detected | Build passed; installation still pending |
 | Wrong artifact hash or commit | Refuse local handoff |
 
@@ -194,3 +198,4 @@ same session. A request whose bounded wait times out is re-armed automatically a
 - Wrong: persisting a new login cookie before validating its response. Correct: validate response shape, then retain the accepted session.
 - Wrong: accepting an arbitrary download labelled latest. Correct: successful run ID, expected commit and SHA-256.
 - Wrong: a Windows source scan proves iOS compilation. Correct: record actual GitHub Xcode and XCTest outcomes, then separately record local installation.
+- Wrong: a widget sums loaded bills, or writes zeros when a read fails. Correct: copy the server aggregates, keep the last valid snapshot on failure, and clear it when the account changes.

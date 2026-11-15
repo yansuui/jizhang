@@ -76,6 +76,11 @@ import Combine
             } header: { Text("数据管理") } footer: {
                 Text("可通过 AI 对话查询和准备修改，确认后执行。文件与照片在专用页面核对。")
             }
+            Section("手机") {
+                NavigationLink { LedgerWidgetStatusView(api: api, userID: user.id ?? "") } label: {
+                    menuRow("桌面小组件", subtitle: "余额与四用途金额", symbol: "rectangle.3.group")
+                }
+            }
             Section {
                 Button("退出登录", role: .destructive) { confirmingLogout = true }
                     .frame(maxWidth: .infinity, minHeight: 32)
