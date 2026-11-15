@@ -289,6 +289,25 @@ final class LedgerWidgetTests: XCTestCase {
     }
 
     @MainActor
+    func testClearReloadsWidgetsOnlyWhenAContainerExists() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var reloads = 0
+        let container = LedgerWidgetSnapshotStore(directory: directory)
+        let available = LedgerWidgetSync(store: container, reload: { reloads += 1 })
+        XCTAssertTrue(container.isAvailable)
+        available.clear()
+        XCTAssertEqual(reloads, 1, "Removing a real snapshot must refresh the Home Screen")
+
+        var unavailableReloads = 0
+        let unavailable = LedgerWidgetSync(store: LedgerWidgetSnapshotStore(directory: nil),
+                                           reload: { unavailableReloads += 1 })
+        unavailable.clear()
+        XCTAssertEqual(unavailableReloads, 0, "No container means no widget can read the file")
+    }
+
+    @MainActor
     func testRefreshDoesNothingWithoutAnAppGroupContainer() async throws {
         var reloads = 0
         let sync = LedgerWidgetSync(store: LedgerWidgetSnapshotStore(directory: nil),

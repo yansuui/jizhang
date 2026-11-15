@@ -87,6 +87,10 @@ final class LedgerWidgetSync {
     func clear() {
         generation &+= 1
         store.clear()
+        // Without a container there is no file the extension could read, so there is nothing to
+        // reload. Asking WidgetKit anyway would wake an extension that has no data (and does so in
+        // the unsigned simulator test host, where no App Group is available).
+        guard store.isAvailable else { return }
         reload()
     }
 
